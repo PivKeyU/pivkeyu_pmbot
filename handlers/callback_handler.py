@@ -15,6 +15,7 @@ from rss import enable_feature as rss_enable_feature, disable_feature as rss_dis
 
 RSS_PANEL_CACHE_KEY = "rss_panel_cache"
 RSS_FEEDS_PER_PAGE = 4
+AI_MODELS_PER_PAGE = 5
 RSS_DOC_URL = "https://github.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot#-rss-%E8%AE%A2%E9%98%85%E5%8A%9F%E8%83%BD"
 
 
@@ -217,6 +218,51 @@ def _build_rss_feed_detail(application, chat_id: str, feed_url: str):
     keyboard_rows.append([InlineKeyboardButton("返回 RSS 控制台", callback_data="panel_rss")])
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+def _build_ai_model_selection_view(application, provider_type: str, feature_type: str, models: list, page: int = 1):
+    total = len(models)
+    total_pages = max(1, (total + AI_MODELS_PER_PAGE - 1) // AI_MODELS_PER_PAGE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * AI_MODELS_PER_PAGE
+    page_models = models[start:start + AI_MODELS_PER_PAGE]
+
+    feature_name_map = {
+        'filter': '内容审查',
+        'verification': '验证码生成',
+        'autoreply': '自动回复'
+    }
+    feature_name = feature_name_map.get(feature_type, feature_type)
+
+    keyboard = []
+    for model in page_models:
+        token = _cache_rss_reference(
+            application,
+            "ai_model",
+            {
+                "provider_type": provider_type,
+                "feature_type": feature_type,
+                "model_name": model,
+            },
+        )
+        keyboard.append([InlineKeyboardButton(model, callback_data=f"setmref:{token}")])
+
+    nav_buttons = []
+    callback_prefix = f"ai_select_model_{provider_type}_{feature_type}"
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("上一页", callback_data=f"{callback_prefix}_{page - 1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("下一页", callback_data=f"{callback_prefix}_{page + 1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+
+    keyboard.append([InlineKeyboardButton("返回上一级", callback_data=f"ai_config_models_{provider_type}")])
+
+    message = (
+        f"请选择 {provider_type.upper()} {feature_name} 模型:\n"
+        f"第 {page}/{total_pages} 页，共 {total} 个模型"
+    )
+    return message, InlineKeyboardMarkup(keyboard)
+
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -703,6 +749,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = data.split("_")
         provider_type = parts[3]
         feature_type = parts[4]
+        page = 1
+        if len(parts) > 5:
+            try:
+                page = int(parts[5])
+            except ValueError:
+                page = 1
         
         from services.ai_service import ai_service
         
@@ -718,28 +770,44 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
              await query.answer("未能获取到模型列表，请检查 API Key 配置。", show_alert=True)
              return
         
-        keyboard = []
-        
-        p_code = 'g' if provider_type == 'gemini' else 'o'
-        f_map = {'filter': 'f', 'verification': 'v', 'autoreply': 'a'}
-        f_code = f_map.get(feature_type, 'f')
-
-        for model in models[:20]:
-             keyboard.append([InlineKeyboardButton(model, callback_data=f"setm:{p_code}:{f_code}:{model}")])
-        
-        keyboard.append([InlineKeyboardButton("返回上一级", callback_data=f"ai_config_models_{provider_type}")])
-        
-        feature_name_map = {
-            'filter': '内容审查',
-            'verification': '验证码生成',
-            'autoreply': '自动回复'
-        }
-        feature_name = feature_name_map.get(feature_type, feature_type)
-        
-        await query.edit_message_text(
-            f"请选择 {provider_type.upper()} {feature_name} 模型:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        message, keyboard = _build_ai_model_selection_view(
+            context.application,
+            provider_type,
+            feature_type,
+            models,
+            page,
         )
+        await query.edit_message_text(message, reply_markup=keyboard)
+        return
+
+    elif data.startswith("setmref:"):
+        if not await db.is_admin(user_id): return
+
+        token = data.split(":", 1)[1]
+        payload = _resolve_rss_reference(context.application, token, "ai_model")
+        if not payload:
+            await query.answer("模型选择已过期，请重新打开模型列表。", show_alert=True)
+            return
+
+        provider_type = payload["provider_type"]
+        feature_type = payload["feature_type"]
+        model_name = payload["model_name"]
+        setting_key = f"{provider_type}_model_{feature_type}"
+
+        async with db.db_manager.get_connection() as conn:
+            await conn.execute("UPDATE settings SET value = ? WHERE key = ?", (model_name, setting_key))
+            await conn.commit()
+
+        await query.answer(f"已设置 {provider_type.upper()} {feature_type} 模型为 {model_name}")
+
+        message = f"请选择要配置的 {provider_type.upper()} 功能模型:"
+        keyboard = [
+            [InlineKeyboardButton("内容审查模型", callback_data=f"ai_select_model_{provider_type}_filter")],
+            [InlineKeyboardButton("验证码生成模型", callback_data=f"ai_select_model_{provider_type}_verification")],
+            [InlineKeyboardButton("自动回复模型", callback_data=f"ai_select_model_{provider_type}_autoreply")],
+            [InlineKeyboardButton("返回设置", callback_data="panel_ai_settings")]
+        ]
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("setm:"):
         if not await db.is_admin(user_id): return

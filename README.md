@@ -89,6 +89,7 @@ ADMIN_IDS=123456789,987654321
 # Gemini API配置 (如果您需要使用AI相关功能)
 # 从 Google AI Studio 获取
 GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_BASE_URL=
 
 # OpenAI API配置 (可选)
 OPENAI_API_KEY=your_openai_api_key_here

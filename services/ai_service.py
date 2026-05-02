@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from google.genai import Client as GeminiClient
+from google.genai import types
 from openai import AsyncOpenAI
 import json
 import re
@@ -8,6 +9,29 @@ import io
 from PIL import Image
 from config import config
 from database.db_manager import db_manager
+
+
+def _normalize_model_name(raw_name) -> str:
+    if raw_name is None:
+        return ""
+    name = str(raw_name).strip()
+    if "/models/" in name:
+        return name.rsplit("/models/", 1)[1]
+    if name.startswith("models/"):
+        return name[len("models/"):]
+    return name
+
+
+def _unique_model_names(names) -> list:
+    unique = []
+    seen = set()
+    for raw_name in names:
+        name = _normalize_model_name(raw_name)
+        if name and name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return unique
+
 
 LOCAL_VERIFICATION_QUESTIONS = [
     {"question": "中国的首都是哪里？", "correct_answer": "北京", "incorrect_answers": ["上海", "广州", "深圳"]},
@@ -63,9 +87,14 @@ class AIProvider(ABC):
         pass
 
 class GeminiProvider(AIProvider):
-    def __init__(self, api_key: str):
-        self.client = GeminiClient(api_key=api_key)
+    def __init__(self, api_key: str, base_url: str = None):
+        client_kwargs = {"api_key": api_key}
+        base_url = (base_url or "").strip()
+        if base_url:
+            client_kwargs["http_options"] = types.HttpOptions(baseUrl=base_url)
+        self.client = GeminiClient(**client_kwargs)
         self.api_key = api_key
+        self.base_url = base_url or None
         
     async def _get_model_name(self, setting_key: str, default: str) -> str:
          async with db_manager.get_connection() as db:
@@ -254,18 +283,14 @@ class GeminiProvider(AIProvider):
     async def get_models(self) -> list:
         fetched_models = []
         try:
-             async for model in await self.client.aio.models.list():
-                 name = model.name.replace('models/', '')
-                 if 'gemini' in name and 'vision' not in name:
-                     fetched_models.append(name)
+            async for model in await self.client.aio.models.list():
+                fetched_models.append(
+                    getattr(model, 'name', None) or getattr(model, 'id', None)
+                )
         except Exception as e:
             print(f"Failed to fetch Gemini models: {e}")
-        
-        default_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"]
-        
-        all_models = list(set(default_models + fetched_models))
-        all_models.sort(reverse=True)
-        return all_models
+
+        return _unique_model_names(fetched_models)
 
 
 class OpenAIProvider(AIProvider):
@@ -434,15 +459,14 @@ class OpenAIProvider(AIProvider):
         fetched_models = []
         try:
             models = await self.client.models.list()
-            fetched_models = [m.id for m in models.data if 'gpt' in m.id or 'chat' in m.id]
+            fetched_models = [
+                getattr(model, 'id', None) or getattr(model, 'name', None)
+                for model in getattr(models, 'data', [])
+            ]
         except Exception as e:
             print(f"Failed to list models: {e}")
-            
-        default_models = ["gpt-3.5-turbo", "gpt-4-turbo", "gpt-4o", "gpt-4o-mini"]
-        
-        all_models = list(set(default_models + fetched_models))
-        all_models.sort()
-        return all_models
+
+        return _unique_model_names(fetched_models)
 
 
 class AIService:
@@ -463,7 +487,7 @@ class AIService:
         if provider_type == 'gemini':
             if not config.GEMINI_API_KEY:
                 return None
-            return GeminiProvider(config.GEMINI_API_KEY)
+            return GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_BASE_URL)
         elif provider_type == 'openai':
             if not config.OPENAI_API_KEY:
                 return None
@@ -502,7 +526,7 @@ class AIService:
     async def get_available_models(self, provider_type: str) -> list:
         if provider_type == 'gemini':
             if not config.GEMINI_API_KEY: return []
-            return await GeminiProvider(config.GEMINI_API_KEY).get_models()
+            return await GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_BASE_URL).get_models()
         elif provider_type == 'openai':
              if not config.OPENAI_API_KEY: return []
              return await OpenAIProvider(config.OPENAI_API_KEY, config.OPENAI_BASE_URL).get_models()

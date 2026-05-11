@@ -26,32 +26,32 @@ async def create_verification(user_id: int):
         [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in options]
     ]
     
-    return f"请完成人机验证: \n\n{question}", InlineKeyboardMarkup(keyboard)
+    return f"请完成女仆小验证: \n\n{question}", InlineKeyboardMarkup(keyboard)
 
 async def verify_answer(user_id: int, answer: str):
     if user_id not in pending_verifications:
-        return False, "验证已过期或不存在。", False, None
+        return False, "小验证已经过期或不见啦，请主人重新来一次。", False, None
     
     verification = pending_verifications[user_id]
     
     if time.time() - verification['created_at'] > config.VERIFICATION_TIMEOUT:
         del pending_verifications[user_id]
-        return False, "验证超时，请重新发送消息。", False, None
+        return False, "小验证超时啦，请主人重新发送消息。", False, None
     
     verification['attempts'] += 1
     
     if answer == verification['answer']:
         del pending_verifications[user_id]
         await db.update_user_verification(user_id, is_verified=True)
-        return True, "验证成功！", False, None
+        return True, "验证通过啦，女仆为主人开门。", False, None
     
     if verification['attempts'] >= config.MAX_VERIFICATION_ATTEMPTS:
         del pending_verifications[user_id]
         
-        await db.add_to_blacklist(user_id, reason="人机验证失败次数过多", blocked_by=config.BOT_ID)
+        await db.add_to_blacklist(user_id, reason="女仆小验证失败次数过多", blocked_by=config.BOT_ID)
         message = (
-            "验证失败次数过多，您已被暂时封禁。\n\n"
-            "如果您是认为误封，请重新发送消息并进行验证解除限制。"
+            "小验证失败次数太多，女仆暂时把通道关上啦。\n\n"
+            "如果主人认为这是误会，请重新发送消息并完成解封验证。"
         )
         return False, message, True, None
     
@@ -72,8 +72,8 @@ async def verify_answer(user_id: int, answer: str):
         [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in new_options]
     ]
     
-    new_question_text = f"请完成人机验证: \n\n{new_question}"
-    return False, f"答案错误，还有 {config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']} 次机会。", False, (new_question_text, InlineKeyboardMarkup(keyboard))
+    new_question_text = f"请完成女仆小验证: \n\n{new_question}"
+    return False, f"答案不对哦，主人还有 {config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']} 次机会。", False, (new_question_text, InlineKeyboardMarkup(keyboard))
 
 def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     if user_id not in pending_verifications:

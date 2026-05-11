@@ -21,7 +21,7 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await _send_reply_to_user(update, context, user_id)
 
 async def _format_filtered_messages(messages, page: int, total_pages: int):
-    response = f"被过滤的消息 (第 {page}/{total_pages} 页):\n\n"
+    response = f"女仆拦截篮 (第 {page}/{total_pages} 页):\n\n"
     
     for idx, msg in enumerate(messages, 1):
         first_name = msg.get('first_name') or 'N/A'
@@ -35,10 +35,10 @@ async def _format_filtered_messages(messages, page: int, total_pages: int):
         
         response += (
             f"【{idx}】\n"
-            f"用户: {first_name} (@{username})\n"
-            f"原因: {reason}\n"
-            f"内容: {content}\n"
-            f"时间: {filtered_at}\n\n"
+            f"主人: {first_name} (@{username})\n"
+            f"拦截理由: {reason}\n"
+            f"消息内容: {content}\n"
+            f"拦截时间: {filtered_at}\n\n"
         )
     
     return response
@@ -64,7 +64,7 @@ async def _get_filtered_messages_keyboard(page: int, total_pages: int, callback_
 
 async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await db.is_admin(update.effective_user.id):
-        await update.message.reply_text("您没有权限执行此操作。")
+        await update.message.reply_text("主人没有权限吩咐这项工作哦。")
         return
 
     MESSAGES_PER_PAGE = 5
@@ -73,7 +73,7 @@ async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_count = await db.get_filtered_messages_count()
     
     if total_count == 0:
-        await update.message.reply_text("没有找到被过滤的消息。")
+        await update.message.reply_text("没有找到女仆拦截篮。")
         return
     
     total_pages = (total_count + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE
@@ -83,7 +83,7 @@ async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = await db.get_filtered_messages(MESSAGES_PER_PAGE, offset)
     
     if not messages:
-        await update.message.reply_text("没有找到被过滤的消息。")
+        await update.message.reply_text("没有找到女仆拦截篮。")
         return
 
     response = await _format_filtered_messages(messages, page, total_pages)

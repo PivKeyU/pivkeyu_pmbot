@@ -16,7 +16,7 @@ async def handle_invalid_thread(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['pending_update'] = update
     question, keyboard = await create_verification(user_id)
     full_message = (
-        "您的话题已被关闭，请重新进行验证以发送消息。\n\n"
+        "主人，之前的会客厅已经关门啦。请重新完成小验证，女仆再为您递送消息。\n\n"
         f"{question}"
     )
     await update.message.reply_text(
@@ -47,16 +47,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             await db.set_user_blacklist_strikes(user.id, 99)
             await update.message.reply_text(
-                "您收到速率警告后仍然超出速率限制，已被永久封禁。\n\n"
-                "如有疑问请联系管理员。"
+                "主人已经收到过限速提醒，但消息还是太密集啦，女仆只能把通道永久锁上。\n\n"
+                "如有疑问，请联系管理员女仆长。"
             )
             return
         else:
             await rate_limiter.mark_user_warned(user.id)
             await update.message.reply_text(
-                f"警告：您发送消息过于频繁，已超过速率限制。\n\n"
-                f"当前速率限制规则：每分钟最多 {config.MAX_MESSAGES_PER_MINUTE} 条消息。\n\n"
-                f"请稍后再试。如果继续超出限制，您将被永久封禁。"
+                f"提醒主人：消息发送得太快啦，女仆的小托盘快端不稳了。\n\n"
+                f"当前宅邸规则：每分钟最多 {config.MAX_MESSAGES_PER_MINUTE} 条消息。\n\n"
+                f"请稍等片刻再试；如果继续超速，女仆会永久锁上通道哦。"
             )
             return
     
@@ -67,11 +67,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_blocked, is_permanent = await db.is_blacklisted(user.id)
     if is_blocked:
         if is_permanent:
-            await update.message.reply_text("你已被永久封禁，如有疑问请联系管理员。")
+            await update.message.reply_text("主人的通道已被永久锁上啦，如有疑问，请联系管理员女仆长。")
             return
         
         if not config.AUTO_UNBLOCK_ENABLED:
-            await update.message.reply_text("自动解封功能已禁用。请联系管理员进行申诉。")
+            await update.message.reply_text("自动解封通道暂时休息中，请联系管理员女仆长申诉。")
             return
 
         from services.blacklist import start_unblock_process
@@ -93,10 +93,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             language_code=user.language_code
         )
         welcome_message = (
-            f"你好, {user.first_name}!\n\n"
-            "欢迎使用双向聊天机器人。\n"
-            "你可以直接在这里发送消息，管理员会尽快回复你。\n\n"
-            "不过，在你发送第一条消息前，请先完成人机验证。"
+            f"主人好呀，{user.first_name}！\n\n"
+            "这里是随时待命的双向聊天女仆。\n"
+            "主人可以直接把消息交给我，我会乖乖送到管理员那边。\n\n"
+            "不过递送第一条消息前，请先完成一个小验证哦。"
         )
         await update.message.reply_text(welcome_message)
         user_data = await db.get_user(user.id)
@@ -121,8 +121,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     question, keyboard = verification_data
                     context.user_data['pending_update'] = update
                     await update.message.reply_text(
-                        "您还有未完成的人机验证，请先完成验证后再发送消息。\n\n"
-                        f"请完成人机验证: \n\n{question}",
+                        "主人还有一个小验证没完成，请先点选答案再继续发消息。\n\n"
+                        f"请完成女仆小验证: \n\n{question}",
                         reply_markup=keyboard
                     )
                     return
@@ -151,7 +151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not is_exempted:
             analyzing_message = await context.bot.send_message(
                 chat_id=message.chat_id,
-                text="正在通过AI分析内容是否包含垃圾信息...",
+                text="女仆正在用 AI 小扫帚检查消息，请稍等...",
                 reply_to_message_id=message.message_id
             )
 
@@ -165,15 +165,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     media_type=message.photo and "photo" or message.sticker and "sticker",
                     media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
                 )
-                reason = analysis_result.get("reason", "未提供原因")
-                await analyzing_message.edit_text(f"您的消息已被系统拦截，因此未被转发\n\n原因：{reason}")
+                reason = analysis_result.get("reason", "暂时没有写明理由")
+                await analyzing_message.edit_text(f"这条消息被女仆拦进了小篮子，所以没有继续递送\n\n拦截理由：{reason}")
                 return
             else:
                 await analyzing_message.delete()
 
     thread_id, is_new = await get_or_create_thread(update, context)
     if not thread_id:
-        await update.message.reply_text("无法创建或找到您的话题，请联系管理员。")
+        await update.message.reply_text("女仆没能找到或创建专属会客厅，请联系管理员女仆长。")
         return
     
     forwarded_message_id = None
@@ -222,7 +222,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         else:
             print(f"发送消息时发生未知错误: {e}")
-            await update.message.reply_text("发送消息时发生未知错误，请稍后再试。")
+            await update.message.reply_text("递送消息时出了点小状况，请主人稍后再试。")
             return
     
     if message.text and await db.get_autoreply_enabled():
@@ -245,7 +245,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 if forwarded_message_id:
                     admin_notification = (
-                        f"自动回复内容:\n\n"
+                        f"自动回复女仆内容:\n\n"
                         f"{autoreply_text}"
                     )
                     try:
@@ -260,7 +260,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         print(f"发送自动回复通知给管理员失败（Markdown），尝试纯文本: {e}")
                         try:
                             admin_notification_plain = (
-                                f"自动回复内容:\n\n"
+                                f"自动回复女仆内容:\n\n"
                                 f"{autoreply_text}"
                             )
                             await context.bot.send_message(

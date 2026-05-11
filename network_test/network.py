@@ -31,13 +31,13 @@ def parse_ping_output(output: str) -> str:
 
     if transmitted and received and packet_loss and min_rtt and avg_rtt and max_rtt and mdev:
         summary = (
-            f"传输包数量: {transmitted}\n"
-            f"接收包数量: {received}\n"
+            f"发出包数: {transmitted}\n"
+            f"收到包数: {received}\n"
             f"丢包率: {packet_loss}%\n"
             f"最小延迟: {min_rtt} ms\n"
             f"平均延迟: {avg_rtt} ms\n"
             f"最大延迟: {max_rtt} ms\n"
-            f"标准差(mdev): {mdev} ms"
+            f"抖动(mdev): {mdev} ms"
         )
         return summary
     else:
@@ -104,10 +104,10 @@ def format_nexttrace_result(raw_output: str, server_name: str, target: str, ip_t
         condensed_hops[0] = re.sub(pattern, 'x.x.x.x', condensed_hops[0], count=1)
 
     
-    result = "<b>【NextTrace 路由追踪结果】</b>\n\n"
-    result += f"节点: {server_name}\n"
+    result = "<b>【女仆 NextTrace 路由追踪结果】</b>\n\n"
+    result += f"测试节点: {server_name}\n"
     result += f"目标: {target}\n"
-    trace_mode_text = "TCP模式" if trace_mode == "tcp" else "ICMP模式"
+    trace_mode_text = "TCP 模式" if trace_mode == "tcp" else "ICMP 模式"
     result += f"执行模式: {'直接执行' if ip_type=='direct' else ip_type} ({trace_mode_text})\n\n"
 
     filtered_header = [h for h in header_lines if h]
@@ -116,7 +116,7 @@ def format_nexttrace_result(raw_output: str, server_name: str, target: str, ip_t
         result += "<pre>" + "\n".join(filtered_header) + "</pre>\n\n"
 
     if not (found_icmp_mode or found_tcp_mode):
-        result += f"未找到路由信息，可能 NextTrace 输出异常。\n"
+        result += f"女仆没有找到路由信息，可能是 NextTrace 输出异常。\n"
         return result
 
     if condensed_hops:
@@ -128,12 +128,12 @@ def format_nexttrace_result(raw_output: str, server_name: str, target: str, ip_t
                 formatted_hops.append("")
         result += "<pre>" + "\n".join(formatted_hops) + "</pre>\n\n"
     else:
-        result += "未捕获到路由跳数信息。\n"
+        result += "女仆没有捕获到路由跳数信息。\n"
 
     if map_url_line:
         result += f"<b>{map_url_line}</b>\n"
     else:
-        result += "未发现 MapTrace URL\n"
+        result += "女仆没有发现 MapTrace URL\n"
 
     return result
 
@@ -158,11 +158,11 @@ def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
             ssh.close()
 
             if error.strip():
-                return f"命令执行错误：\n{error}"
+                return f"命令执行出错：\n{error}"
             return parse_ping_output(output)
         except Exception as e:
             ssh.close() if 'ssh' in locals() and ssh.get_transport() and ssh.get_transport().is_active() else None
-            raise Exception(f"SSH或执行命令异常: {str(e)}")
+            raise Exception(f"SSH 或执行命令异常: {str(e)}")
 
     
     return retry_operation(ssh_connect_and_execute, retries=3, delay=2)
@@ -205,12 +205,12 @@ def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode
 
             if error.strip():
                 if "RetToken failed" in error:
-                    return "路由追踪服务暂时不可用，请稍后重试。"
-                return f"命令执行错误：\n{error}"
+                    return "路由追踪服务暂时不可用，请主人稍后重试。"
+                return f"命令执行出错：\n{error}"
             return output
         except Exception as e:
             ssh.close() if 'ssh' in locals() and ssh.get_transport() and ssh.get_transport().is_active() else None
-            raise Exception(f"SSH或执行命令异常: {str(e)}")
+            raise Exception(f"SSH 或执行命令异常: {str(e)}")
 
     
     return retry_operation(ssh_connect_and_execute, retries=3, delay=2)
@@ -242,14 +242,14 @@ def install_nexttrace_on_server(server_info: dict) -> str:
             
             combined_output = output + "\n" + error
             if "一切准备就绪" in combined_output:
-                return "NextTrace 安装成功！"
+                return "NextTrace 安装成功啦。"
             elif error.strip():
-                return f"命令执行错误：\n{error}"
+                return f"命令执行出错：\n{error}"
             else:
-                return f"安装输出：\n{output}\n\n未检测到'一切准备就绪'，请手动确认安装状态。"
+                return f"安装输出：\n{output}\n\n女仆没检测到「一切准备就绪」，请主人手动确认安装状态。"
         except Exception as e:
             ssh.close() if 'ssh' in locals() and ssh.get_transport() and ssh.get_transport().is_active() else None
-            raise Exception(f"SSH或执行命令异常: {str(e)}")
+            raise Exception(f"SSH 或执行命令异常: {str(e)}")
 
     
     return retry_operation(ssh_connect_and_execute, retries=3, delay=2)

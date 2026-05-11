@@ -49,4 +49,4 @@ def retry_operation(func, *args, retries=3, delay=2, **kwargs):
                 
                 delay *= 1.5
     
-    return f"操作失败，已重试{retries}次: {str(last_exception)}"
+    return f"操作失败，女仆已重试{retries}次: {str(last_exception)}"

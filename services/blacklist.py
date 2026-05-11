@@ -9,12 +9,12 @@ pending_unblocks = {}
 
 async def block_user(user_id: int, reason: str, admin_id: int, permanent: bool = False):
     await db.add_to_blacklist(user_id, reason, admin_id, permanent)
-    return f"用户 {user_id} 已被管理员{'永久' if permanent else ''}拉黑。\n原因: {reason}"
+    return f"女仆已按管理员吩咐，将用户 {user_id}{'永久' if permanent else ''}请进黑名单小本本。\n登记理由: {reason}"
 
 async def unblock_user(user_id: int):
     await db.remove_from_blacklist(user_id)
     await db.set_user_blacklist_strikes(user_id, 0)
-    return f"用户 {user_id} 已被管理员解封。"
+    return f"女仆已按管理员吩咐，为用户 {user_id} 打开通道。"
 
 def is_unblock_pending(user_id: int) -> tuple[bool, bool]:
     if user_id not in pending_unblocks:
@@ -52,7 +52,7 @@ async def start_unblock_process(user_id: int):
     is_blocked, is_permanent = await db.is_blacklisted(user_id)
     
     if is_permanent:
-        return "您已被管理员永久封禁，无法通过申诉解封。", None
+        return "主人已被管理员永久锁门，这条自动申诉通道无法打开。", None
 
     has_pending, is_expired = is_unblock_pending(user_id)
     
@@ -61,9 +61,9 @@ async def start_unblock_process(user_id: int):
         if unblock_data:
             question, keyboard = unblock_data
             return (
-                "您还有未完成的解封验证，请先完成验证后再发送消息。\n\n"
-                f"您已被暂时封禁。\n\n"
-                f"如果您认为这是误操作，请回答以下问题以自动解封：\n\n{question}"
+                "主人还有解封小验证没完成，请先答完再继续发消息。\n\n"
+                f"主人暂时被请到门外等候啦。\n\n"
+                f"如果主人觉得这是误会，请回答下面的问题，女仆会帮您自动开门：\n\n{question}"
             ), keyboard
     
     challenge = await gemini_service.generate_unblock_question()
@@ -83,29 +83,29 @@ async def start_unblock_process(user_id: int):
     ]
     
     return (
-        "您已被暂时封禁。\n\n"
-        f"如果您认为这是误操作，请回答以下问题以自动解封：\n\n{question}"
+        "主人暂时被请到门外等候啦。\n\n"
+        f"如果主人觉得这是误会，请回答下面的问题，女仆会帮您自动开门：\n\n{question}"
     ), InlineKeyboardMarkup(keyboard)
 
 async def verify_unblock_answer(user_id: int, user_answer: str):
     if user_id not in pending_unblocks:
-        return "解封会话已过期或不存在。", False
+        return "解封小会话已经过期或不见啦。", False
 
     session = pending_unblocks[user_id]
     
     if time.time() - session['created_at'] > config.VERIFICATION_TIMEOUT:
         del pending_unblocks[user_id]
-        return "解封超时，请重新发送消息以获取新问题。", False
+        return "解封验证超时啦，请重新发送消息领取新问题。", False
 
     if user_answer == session['answer']:
         del pending_unblocks[user_id]
         await db.remove_from_blacklist(user_id)
         await db.set_user_blacklist_strikes(user_id, 0)
-        return "解封成功！您现在可以正常发送消息了。", True
+        return "解封成功啦，主人现在可以正常发送消息。", True
     else:
         del pending_unblocks[user_id]
-        await db.add_to_blacklist(user_id, reason="解封验证失败", blocked_by=config.BOT_ID, permanent=True)
-        return "答案错误，解封失败。您已被永久封禁。", False
+        await db.add_to_blacklist(user_id, reason="解封小验证失败", blocked_by=config.BOT_ID, permanent=True)
+        return "答案不对，解封失败啦。女仆只能按规则永久锁上通道。", False
 
 def _safe_text_for_markdown(text: str) -> str:
     if not text:
@@ -118,7 +118,7 @@ async def get_blacklist_keyboard(page: int = 1, per_page: int = 5):
     total_count = await db.get_blacklist_count()
     
     if total_count == 0:
-        return "黑名单中没有用户。", None
+        return "黑名单小本本现在空空如也。", None
 
     total_pages = (total_count + per_page - 1) // per_page
 
@@ -132,10 +132,10 @@ async def get_blacklist_keyboard(page: int = 1, per_page: int = 5):
     blacklist_users = await db.get_blacklist_paginated(limit=per_page, offset=offset)
     
     if not blacklist_users:
-        return "黑名单中没有用户。", None
+        return "黑名单小本本现在空空如也。", None
 
     keyboard = []
-    message = f"黑名单用户列表 (第 {page}/{total_pages} 页)\n\n"
+    message = f"黑名单小本本 (第 {page}/{total_pages} 页)\n\n"
     
     for idx, user in enumerate(blacklist_users, 1):
         user_id = user.get('user_id')
@@ -151,10 +151,10 @@ async def get_blacklist_keyboard(page: int = 1, per_page: int = 5):
         if safe_username:
             user_info += f" (@{safe_username})"
         
-        message += f"{idx}. {user_info} (`{user_id}`)\n原因: {safe_reason}\n\n"
+        message += f"{idx}. {user_info} (`{user_id}`)\n登记理由: {safe_reason}\n\n"
         
         keyboard.append([
-            InlineKeyboardButton(f"解封 {first_name}", callback_data=f"admin_unblock_{user_id}")
+            InlineKeyboardButton(f"为 {first_name} 开门", callback_data=f"admin_unblock_{user_id}")
         ])
     
     navigation_buttons = []
@@ -168,13 +168,13 @@ async def get_blacklist_keyboard(page: int = 1, per_page: int = 5):
 
     return message, InlineKeyboardMarkup(keyboard)
 
-async def get_all_users_keyboard(page: int = 1, per_page: int = 5, callback_prefix: str = "stats_list_all_users_page_", back_callback: str = "stats_back_to_menu", back_text: str = "返回统计菜单"):
+async def get_all_users_keyboard(page: int = 1, per_page: int = 5, callback_prefix: str = "stats_list_all_users_page_", back_callback: str = "stats_back_to_menu", back_text: str = "返回统计小本本"):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     
     total_count = await db.get_total_users_count()
     
     if total_count == 0:
-        return "没有用户。", None
+        return "主人名册现在还是空的。", None
 
     total_pages = (total_count + per_page - 1) // per_page
 
@@ -188,10 +188,10 @@ async def get_all_users_keyboard(page: int = 1, per_page: int = 5, callback_pref
     users = await db.get_all_users_paginated(limit=per_page, offset=offset)
     
     if not users:
-        return "没有用户。", None
+        return "主人名册现在还是空的。", None
 
     keyboard = []
-    message = f"所有用户列表 (第 {page}/{total_pages} 页)\n\n"
+    message = f"主人名册 (第 {page}/{total_pages} 页)\n\n"
     
     for idx, user in enumerate(users, 1):
         user_id = user.get('user_id')
@@ -212,9 +212,9 @@ async def get_all_users_keyboard(page: int = 1, per_page: int = 5, callback_pref
         
         message += (
             f"{idx}. {user_info} (`{user_id}`)\n"
-            f"   是否被拉黑: {blacklist_status}\n"
-            f"   是否发送过垃圾信息: {has_spam}\n"
-            f"   发送垃圾信息条数: {spam_count}\n\n"
+            f"   是否在黑名单小本本: {blacklist_status}\n"
+            f"   是否递过可疑消息: {has_spam}\n"
+            f"   可疑消息条数: {spam_count}\n\n"
         )
     
     navigation_buttons = []
@@ -240,7 +240,7 @@ async def get_blacklist_keyboard_detailed(page: int = 1, per_page: int = 5):
     total_count = await db.get_blacklist_count()
     
     if total_count == 0:
-        return "黑名单中没有用户。", None
+        return "黑名单小本本现在空空如也。", None
 
     total_pages = (total_count + per_page - 1) // per_page
 
@@ -254,10 +254,10 @@ async def get_blacklist_keyboard_detailed(page: int = 1, per_page: int = 5):
     blacklist_users = await db.get_blacklist_paginated(limit=per_page, offset=offset)
     
     if not blacklist_users:
-        return "黑名单中没有用户。", None
+        return "黑名单小本本现在空空如也。", None
 
     keyboard = []
-    message = f"黑名单用户列表 (第 {page}/{total_pages} 页)\n\n"
+    message = f"黑名单小本本 (第 {page}/{total_pages} 页)\n\n"
     
     for idx, user in enumerate(blacklist_users, 1):
         user_id = user.get('user_id')
@@ -283,19 +283,19 @@ async def get_blacklist_keyboard_detailed(page: int = 1, per_page: int = 5):
             if safe_username:
                 user_info += f" (@{safe_username})"
             
-            permanent_text = "永久封禁" if permanent else "临时封禁"
+            permanent_text = "永久锁门" if permanent else "临时锁门"
             
             display_strikes = blacklist_strikes
             
             message += (
                 f"{idx}. {user_info} (`{user_id}`)\n"
-                f"   封禁类型: {permanent_text}\n"
-                f"   封禁原因: {safe_reason}\n"
-                f"   封禁次数: {display_strikes}\n"
-                f"   垃圾信息条数: {spam_count}\n"
+                f"   锁门类型: {permanent_text}\n"
+                f"   锁门理由: {safe_reason}\n"
+                f"   锁门次数: {display_strikes}\n"
+                f"   可疑消息条数: {spam_count}\n"
             )
             if blocked_at:
-                message += f"   封禁时间: {blocked_at}\n"
+                message += f"   锁门时间: {blocked_at}\n"
             message += "\n"
         else:
             first_name = user.get('first_name') or 'N/A'
@@ -310,10 +310,10 @@ async def get_blacklist_keyboard_detailed(page: int = 1, per_page: int = 5):
             if safe_username:
                 user_info += f" (@{safe_username})"
             
-            message += f"{idx}. {user_info} (`{user_id}`)\n原因: {safe_reason}\n\n"
+            message += f"{idx}. {user_info} (`{user_id}`)\n登记理由: {safe_reason}\n\n"
         
         keyboard.append([
-            InlineKeyboardButton(f"解封 {first_name}", callback_data=f"admin_unblock_{user_id}")
+            InlineKeyboardButton(f"为 {first_name} 开门", callback_data=f"admin_unblock_{user_id}")
         ])
     
     navigation_buttons = []
@@ -322,14 +322,14 @@ async def get_blacklist_keyboard_detailed(page: int = 1, per_page: int = 5):
     if page < total_pages:
         navigation_buttons.append(InlineKeyboardButton("下一页", callback_data=f"stats_list_blacklist_page_{page + 1}"))
     
-    back_button = [InlineKeyboardButton("返回统计菜单", callback_data="stats_back_to_menu")]
+    back_button = [InlineKeyboardButton("返回统计小本本", callback_data="stats_back_to_menu")]
     keyboard.append(back_button)
     
     if navigation_buttons:
         keyboard.append(navigation_buttons)
 
     if not keyboard:
-        keyboard = [[InlineKeyboardButton("返回统计菜单", callback_data="stats_back_to_menu")]]
+        keyboard = [[InlineKeyboardButton("返回统计小本本", callback_data="stats_back_to_menu")]]
     
     return message, InlineKeyboardMarkup(keyboard)
 
@@ -340,7 +340,7 @@ async def get_exemptions_keyboard(page: int = 1, per_page: int = 5):
     total_count = await db.get_exemptions_count()
     
     if total_count == 0:
-        return "豁免名单中没有用户。", None
+        return "通行证名单现在空空如也。", None
 
     total_pages = (total_count + per_page - 1) // per_page
 
@@ -354,10 +354,10 @@ async def get_exemptions_keyboard(page: int = 1, per_page: int = 5):
     exemptions = await db.get_exemptions_paginated(limit=per_page, offset=offset)
     
     if not exemptions:
-        return "豁免名单中没有用户。", None
+        return "通行证名单现在空空如也。", None
 
     keyboard = []
-    message = f"豁免名单 (第 {page}/{total_pages} 页)\n\n"
+    message = f"通行证名单 (第 {page}/{total_pages} 页)\n\n"
     
     for idx, exemption in enumerate(exemptions, 1):
         user_id = exemption.get('user_id')
@@ -375,7 +375,7 @@ async def get_exemptions_keyboard(page: int = 1, per_page: int = 5):
         if safe_username:
             user_info += f" (@{safe_username})"
         
-        exemption_type = "永久豁免" if is_permanent else "临时豁免"
+        exemption_type = "永久通行证" if is_permanent else "临时通行证"
         expires_info = ""
         if not is_permanent and expires_at:
             try:
@@ -392,12 +392,12 @@ async def get_exemptions_keyboard(page: int = 1, per_page: int = 5):
         
         message += (
             f"{idx}. {user_info} (`{user_id}`)\n"
-            f"   类型: {exemption_type}\n"
-            f"   原因: {safe_reason}{expires_info}\n\n"
+            f"   通行证类型: {exemption_type}\n"
+            f"   登记理由: {safe_reason}{expires_info}\n\n"
         )
         
         keyboard.append([
-            InlineKeyboardButton(f"移除豁免 {first_name}", callback_data=f"admin_remove_exemption_{user_id}")
+            InlineKeyboardButton(f"收回 {first_name} 的通行证", callback_data=f"admin_remove_exemption_{user_id}")
         ])
     
     navigation_buttons = []

@@ -18,7 +18,7 @@ def build_direct_contact_url(username: str | None) -> str | None:
 def build_user_info_markdown(user) -> str:
     name_parts = [part.strip() for part in [user.first_name or "", user.last_name or ""] if part and part.strip()]
     display_name = " ".join(name_parts) if name_parts else str(user.id)
-    username = f"@{user.username}" if user.username else "未设置"
+    username = f"@{user.username}" if user.username else "暂未登记"
     first_contact = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     escaped_display_name = escape_markdown(display_name, version=2)
@@ -26,11 +26,11 @@ def build_user_info_markdown(user) -> str:
     escaped_first_contact = escape_markdown(first_contact, version=2)
 
     return (
-        "*用户信息*\n\n"
-        f"*名称:* {escaped_display_name}\n"
+        "*来访主人档案*\n\n"
+        f"*称呼:* {escaped_display_name}\n"
         f"*TG ID:* `{user.id}`\n"
         f"*用户名:* {escaped_username}\n"
-        f"*首次联系:* {escaped_first_contact}"
+        f"*首次敲门:* {escaped_first_contact}"
     )
 
 
@@ -78,18 +78,18 @@ async def build_user_info_card_keyboard(
 
     row = [
         InlineKeyboardButton(
-            "解除封禁" if is_blocked else "封禁",
+            "打开通道" if is_blocked else "锁上通道",
             callback_data=f"usercard_block_{user_id}"
         ),
         InlineKeyboardButton(
-            "取消豁免" if is_exempted else "豁免",
+            "收回通行证" if is_exempted else "发通行证",
             callback_data=f"usercard_exempt_{user_id}"
         ),
     ]
 
     direct_contact_url = build_direct_contact_url(username)
     if direct_contact_url:
-        row.append(InlineKeyboardButton("直接联系", url=direct_contact_url))
+        row.append(InlineKeyboardButton("直接问候", url=direct_contact_url))
 
     return InlineKeyboardMarkup([row])
 

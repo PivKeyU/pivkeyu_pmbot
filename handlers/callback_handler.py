@@ -8,6 +8,7 @@ from services.gemini_service import gemini_service
 from database import models as db
 from utils.media_converter import sticker_to_image
 from services.thread_manager import get_or_create_thread, build_user_info_card_keyboard
+from services import broadcast as broadcast_service
 from .user_handler import _resend_message
 from config import config
 from rss import data_manager as rss_data_manager, settings as rss_settings
@@ -47,6 +48,32 @@ async def _refresh_usercard_keyboard(query, target_user_id: int):
     except BadRequest as exc:
         if "message is not modified" not in exc.message.lower():
             raise
+
+
+async def _build_panel_back_view():
+    total_users = await db.get_total_users_count()
+    blocked_users = await db.get_blocked_users_count()
+    exempted_users = await db.get_exemptions_count()
+    is_enabled = await db.get_autoreply_enabled()
+
+    message = (
+        f"女仆长管理面板\n\n"
+        f"宅邸统计:\n\n"
+        f"接待过的主人: {total_users}\n"
+        f"黑名单里的捣乱者: {blocked_users}\n"
+        f"持有通行证的主人: {exempted_users}\n"
+        f"自动回复女仆: {'正在值班' if is_enabled else '正在休息'}\n\n"
+        f"主人，请挑选要打理的事项："
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("黑名单小本本", callback_data="panel_blacklist_page_1"), InlineKeyboardButton("主人名册", callback_data="panel_stats")],
+        [InlineKeyboardButton("拦截消息篮", callback_data="panel_filtered_page_1"), InlineKeyboardButton("自动回复女仆管理", callback_data="panel_autoreply")],
+        [InlineKeyboardButton("通行证名单管理", callback_data="panel_exemptions_page_1"), InlineKeyboardButton("网络测试茶具管理", callback_data="panel_network_test")],
+        [InlineKeyboardButton("广播与分组", callback_data="panel_broadcast"), InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss")],
+        [InlineKeyboardButton("AI 模型衣柜", callback_data="panel_ai_settings")],
+    ]
+    return message, InlineKeyboardMarkup(keyboard)
 
 
 def _collect_rss_feeds():
@@ -386,34 +413,109 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
             return
         
-        total_users = await db.get_total_users_count()
-        blocked_users = await db.get_blocked_users_count()
-        exempted_users = await db.get_exemptions_count()
-        is_enabled = await db.get_autoreply_enabled()
-        
-        message = (
-            f"女仆长管理面板\n\n"
-            f"宅邸统计:\n\n"
-            f"接待过的主人: {total_users}\n"
-            f"黑名单里的捣乱者: {blocked_users}\n"
-            f"持有通行证的主人: {exempted_users}\n"
-            f"自动回复女仆: {'正在值班' if is_enabled else '正在休息'}\n\n"
-            f"主人，请挑选要打理的事项："
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("黑名单小本本", callback_data="panel_blacklist_page_1"), InlineKeyboardButton("主人名册", callback_data="panel_stats")],
-            [InlineKeyboardButton("拦截消息篮", callback_data="panel_filtered_page_1"), InlineKeyboardButton("自动回复女仆管理", callback_data="panel_autoreply")],
-            [InlineKeyboardButton("通行证名单管理", callback_data="panel_exemptions_page_1"), InlineKeyboardButton("网络测试茶具管理", callback_data="panel_network_test")],
-            [InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss")],
-        ]
+        message, keyboard = await _build_panel_back_view()
         
         await query.edit_message_text(
             message,
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            reply_markup=keyboard,
             parse_mode='Markdown'
         )
     
+    elif data == "panel_broadcast":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        groups = await db.get_all_user_groups()
+        message = broadcast_service.build_broadcast_panel_text(groups)
+        keyboard = broadcast_service.build_broadcast_panel_keyboard()
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "broadcast_groups":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        groups = await db.get_all_user_groups()
+        if not groups:
+            await query.edit_message_text(
+                "当前还没有分组。\n\n请使用 /group create <分组名> 创建。",
+                reply_markup=broadcast_service.build_broadcast_panel_keyboard(),
+            )
+            return
+        await query.edit_message_text("请选择要查看的分组：", reply_markup=broadcast_service.build_groups_keyboard(groups))
+
+    elif data.startswith("broadcast_group_view_"):
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        try:
+            group_id = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            await query.answer("这个分组编号不对劲，主人。", show_alert=True)
+            return
+
+        group = await db.get_user_group_by_id(group_id)
+        if not group:
+            await query.answer("没有找到这个分组。", show_alert=True)
+            return
+
+        message = await broadcast_service.format_group_members(group['name'])
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("回分组列表", callback_data="broadcast_groups")],
+            [InlineKeyboardButton("回广播与分组", callback_data="panel_broadcast")],
+        ])
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data.startswith("usercard_groups_"):
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        try:
+            target_user_id = int(data.split("_")[-1])
+        except (ValueError, IndexError):
+            await query.answer("这个用户 ID 不对劲，主人。", show_alert=True)
+            return
+
+        message, keyboard = await broadcast_service.build_user_group_keyboard(target_user_id)
+        await query.message.reply_text(message, reply_markup=keyboard)
+
+    elif data.startswith("usergroup_toggle_"):
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        try:
+            _, _, target_user_id_text, group_id_text = data.split("_", 3)
+            target_user_id = int(target_user_id_text)
+            group_id = int(group_id_text)
+        except (ValueError, IndexError):
+            await query.answer("这份分组请求不对劲，主人。", show_alert=True)
+            return
+
+        group = await db.get_user_group_by_id(group_id)
+        if not group:
+            await query.answer("分组不存在。", show_alert=True)
+            return
+
+        user_groups = await db.get_groups_for_user(target_user_id)
+        user_group_ids = {item['id'] for item in user_groups}
+        if group_id in user_group_ids:
+            await db.remove_user_from_group(group['name'], target_user_id)
+            await query.answer(f"已移出 {group['name']}")
+        else:
+            await db.add_user_to_group(group['name'], target_user_id, user_id)
+            await query.answer(f"已加入 {group['name']}")
+
+        message, keyboard = await broadcast_service.build_user_group_keyboard(target_user_id)
+        try:
+            await query.edit_message_text(message, reply_markup=keyboard)
+        except BadRequest as exc:
+            if "message is not modified" not in exc.message.lower():
+                raise
+
     elif data.startswith("panel_blacklist_page_"):
         from services import blacklist
         

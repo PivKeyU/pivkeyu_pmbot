@@ -3,6 +3,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
+from services import broadcast as broadcast_service
 from utils.decorators import admin_only
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -39,6 +40,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/stats` - 查看宅邸统计\n"
         "- `/view_filtered` - 查看被女仆拦下的消息\n"
         "- `/exempt` - 给可信用户发放审查通行证（临时或永久）\n"
+        "- `/group` - 管理私聊用户分组\n"
+        "- `/broadcast` - 向全部用户或指定分组广播\n"
     )
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -154,7 +157,8 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("黑名单小本本", callback_data="panel_blacklist_page_1"), InlineKeyboardButton("主人名册", callback_data="panel_stats")],
         [InlineKeyboardButton("拦截消息篮", callback_data="panel_filtered_page_1"), InlineKeyboardButton("自动回复女仆管理", callback_data="panel_autoreply")],
         [InlineKeyboardButton("通行证名单管理", callback_data="panel_exemptions_page_1"), InlineKeyboardButton("网络测试茶具管理", callback_data="panel_network_test")],
-        [InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss"), InlineKeyboardButton("AI 模型衣柜", callback_data="panel_ai_settings")],
+        [InlineKeyboardButton("广播与分组", callback_data="panel_broadcast"), InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss")],
+        [InlineKeyboardButton("AI 模型衣柜", callback_data="panel_ai_settings")],
     ]
     
     await update.message.reply_text(
@@ -306,6 +310,202 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except (ValueError, IndexError):
         await update.message.reply_text("这个用户 ID 看起来不对劲，主人再检查一下吧。")
+
+
+def _group_help_text() -> str:
+    return (
+        "分组管理小抄:\n"
+        "/group list - 查看全部分组\n"
+        "/group create <分组名> [说明] - 创建分组\n"
+        "/group delete <分组名> - 删除分组\n"
+        "/group members <分组名> - 查看成员\n"
+        "/group add <分组名> [user_id] - 添加用户；在用户话题里可省略 user_id\n"
+        "/group remove <分组名> [user_id] - 移除用户；在用户话题里可省略 user_id"
+    )
+
+
+async def _resolve_group_target_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE, arg_index: int):
+    if len(context.args) > arg_index:
+        try:
+            return int(context.args[arg_index])
+        except ValueError:
+            return None
+
+    message = update.message
+    if message and message.is_topic_message:
+        user = await db.get_user_by_thread_id(message.message_thread_id)
+        if user:
+            return user['user_id']
+    return None
+
+
+@admin_only
+async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(_group_help_text())
+        return
+
+    subcommand = context.args[0].lower()
+    admin_id = update.effective_user.id
+
+    if subcommand == "list":
+        groups = await db.get_all_user_groups()
+        if not groups:
+            await update.message.reply_text("当前还没有任何分组。")
+            return
+
+        lines = ["用户分组列表", ""]
+        for item in groups:
+            lines.append(f"- {item['name']}：{item['member_count']} 人")
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    if subcommand == "create":
+        if len(context.args) < 2:
+            await update.message.reply_text("女仆小抄: /group create <分组名> [说明]")
+            return
+        name = broadcast_service.normalize_group_name(context.args[1])
+        description = " ".join(context.args[2:]) if len(context.args) > 2 else None
+        if not name:
+            await update.message.reply_text("分组名不能为空。")
+            return
+        group_data, created = await db.get_or_create_user_group(name, admin_id, description)
+        if created:
+            await update.message.reply_text(f"已创建分组：{group_data['name']}")
+        else:
+            await update.message.reply_text(f"分组 {group_data['name']} 已经存在。")
+        return
+
+    if subcommand == "delete":
+        if len(context.args) < 2:
+            await update.message.reply_text("女仆小抄: /group delete <分组名>")
+            return
+        name = broadcast_service.normalize_group_name(context.args[1])
+        deleted = await db.delete_user_group(name)
+        await update.message.reply_text(f"已删除分组：{name}" if deleted else f"没有找到分组：{name}")
+        return
+
+    if subcommand == "members":
+        if len(context.args) < 2:
+            await update.message.reply_text("女仆小抄: /group members <分组名>")
+            return
+        name = broadcast_service.normalize_group_name(context.args[1])
+        await update.message.reply_text(await broadcast_service.format_group_members(name))
+        return
+
+    if subcommand in {"add", "remove"}:
+        if len(context.args) < 2:
+            await update.message.reply_text(f"女仆小抄: /group {subcommand} <分组名> [user_id]")
+            return
+
+        name = broadcast_service.normalize_group_name(context.args[1])
+        target_user_id = await _resolve_group_target_user_id(update, context, 2)
+        if not target_user_id:
+            await update.message.reply_text("请提供有效用户 ID，或在用户专属话题中使用这条命令。")
+            return
+
+        if not await db.get_user(target_user_id):
+            await update.message.reply_text(f"用户 {target_user_id} 还没有和机器人建立过会话。")
+            return
+
+        if subcommand == "add":
+            group_data, created, added = await db.add_user_to_group(name, target_user_id, admin_id)
+            suffix = "（新分组已创建）" if created else ""
+            if added:
+                await update.message.reply_text(f"已将用户 {target_user_id} 加入分组 {group_data['name']}。{suffix}")
+            else:
+                await update.message.reply_text(f"用户 {target_user_id} 已经在分组 {group_data['name']} 里。")
+        else:
+            removed = await db.remove_user_from_group(name, target_user_id)
+            await update.message.reply_text(
+                f"已将用户 {target_user_id} 移出分组 {name}。" if removed else f"用户 {target_user_id} 不在分组 {name} 中。"
+            )
+        return
+
+    await update.message.reply_text(_group_help_text())
+
+
+def _broadcast_help_text() -> str:
+    return (
+        "广播小抄:\n"
+        "/broadcast all <内容> - 广播给全部未拉黑用户\n"
+        "/broadcast group <分组名> <内容> - 广播给指定分组\n"
+        "也可以回复一条文本、图片、视频、文件、音频、语音、贴纸消息后使用：\n"
+        "/broadcast all\n"
+        "/broadcast group <分组名>\n"
+        "回复消息方式支持后续编辑同步。"
+    )
+
+
+@admin_only
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(_broadcast_help_text())
+        return
+
+    scope = context.args[0].lower()
+    admin_id = update.effective_user.id
+    group_data = None
+    group_name = None
+    text_start = 1
+
+    if scope == "all":
+        _, recipients = await db.get_broadcast_recipients()
+        broadcast_scope = "all"
+    elif scope == "group":
+        if len(context.args) < 2:
+            await update.message.reply_text("女仆小抄: /broadcast group <分组名> [内容]")
+            return
+        group_name = broadcast_service.normalize_group_name(context.args[1])
+        group_data, recipients = await db.get_broadcast_recipients(group_name)
+        if not group_data:
+            await update.message.reply_text(f"没有找到分组：{group_name}")
+            return
+        broadcast_scope = "group"
+        text_start = 2
+    else:
+        await update.message.reply_text(_broadcast_help_text())
+        return
+
+    if not recipients:
+        target = "全部用户" if scope == "all" else f"分组 {group_name}"
+        await update.message.reply_text(f"{target} 中没有可广播的用户。")
+        return
+
+    source_message = update.message.reply_to_message
+    text = " ".join(context.args[text_start:]).strip()
+    status_message = await update.message.reply_text(f"开始广播，目标用户 {len(recipients)} 人，请稍等。")
+
+    if source_message:
+        result = await broadcast_service.send_message_broadcast(
+            context=context,
+            recipients=recipients,
+            source_message=source_message,
+            admin_id=admin_id,
+            scope=broadcast_scope,
+            group_id=group_data['id'] if group_data else None,
+        )
+    elif text:
+        result = await broadcast_service.send_text_broadcast(
+            context=context,
+            recipients=recipients,
+            text=text,
+            admin_id=admin_id,
+            scope=broadcast_scope,
+            group_id=group_data['id'] if group_data else None,
+        )
+    else:
+        await status_message.edit_text(_broadcast_help_text())
+        return
+
+    target = "全部用户" if scope == "all" else f"分组 {group_data['name']}"
+    await status_message.edit_text(
+        f"广播完成：{target}\n"
+        f"任务 ID: {result.broadcast_id}\n"
+        f"目标: {result.total}\n"
+        f"成功: {result.success}\n"
+        f"失败: {result.failed}"
+    )
 
 @admin_only
 async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):

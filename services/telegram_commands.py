@@ -37,6 +37,8 @@ ADMIN_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
     ("view_filtered", "查看拦截篮"),
     ("autoreply", "安排自动回复女仆"),
     ("exempt", "管理审查通行证"),
+    ("group", "管理用户分组"),
+    ("broadcast", "发送用户广播"),
 )
 
 RSS_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
@@ -73,6 +75,8 @@ ADMIN_GROUP_COMMANDS: tuple[CommandSpec, ...] = (
     ("view_filtered", "查看拦截篮"),
     ("autoreply", "安排自动回复女仆"),
     ("exempt", "管理审查通行证"),
+    ("group", "管理用户分组"),
+    ("broadcast", "发送用户广播"),
 )
 
 

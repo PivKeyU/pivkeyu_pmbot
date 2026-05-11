@@ -1,10 +1,42 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from database import models as db
-from utils.message_sender import send_message_by_type
+from utils.message_sender import edit_message_by_type, send_message_by_type
 
 async def _send_reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    await send_message_by_type(context.bot, update.message, user_id, None, True)
+    reply_to_message_id = None
+    if update.message.reply_to_message:
+        mapping = await db.get_message_mapping_for_user(
+            update.message.chat_id,
+            update.message.reply_to_message.message_id,
+            user_id,
+        )
+        if mapping and mapping.get('user_id') == user_id:
+            if mapping['source_chat_id'] == user_id:
+                reply_to_message_id = mapping['source_message_id']
+            elif mapping['dest_chat_id'] == user_id:
+                reply_to_message_id = mapping['dest_message_id']
+
+    sent = await send_message_by_type(
+        context.bot,
+        update.message,
+        user_id,
+        None,
+        True,
+        reply_to_message_id=reply_to_message_id,
+    )
+    if sent:
+        await db.save_message_mapping(
+            user_id=user_id,
+            source_chat_id=update.message.chat_id,
+            source_message_id=update.message.message_id,
+            dest_chat_id=user_id,
+            dest_message_id=sent.message_id,
+            direction="admin_to_user",
+            thread_id=update.message.message_thread_id,
+        )
+    return sent
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.is_topic_message:
@@ -19,6 +51,31 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = user['user_id']
     
     await _send_reply_to_user(update, context, user_id)
+
+
+async def handle_edited_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.edited_message
+    if not message:
+        return
+
+    mappings = await db.get_message_mappings_by_source(message.chat_id, message.message_id)
+    if not mappings:
+        return
+
+    for mapping in mappings:
+        try:
+            await edit_message_by_type(
+                context.bot,
+                message,
+                mapping['dest_chat_id'],
+                mapping['dest_message_id'],
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in exc.message.lower():
+                print(f"同步管理员编辑失败: {exc}")
+        except TelegramError as exc:
+            print(f"同步管理员编辑失败: {exc}")
 
 async def _format_filtered_messages(messages, page: int, total_pages: int):
     response = f"女仆拦截篮 (第 {page}/{total_pages} 页):\n\n"

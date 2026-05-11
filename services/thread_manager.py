@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -9,7 +10,7 @@ from config import config
 from database import models as db
 
 
-def build_direct_contact_url(username: str | None) -> str | None:
+def build_direct_contact_url(username: Optional[str]) -> Optional[str]:
     if not username:
         return None
     return f"tg://resolve?domain={username}"
@@ -67,7 +68,7 @@ async def get_or_create_thread(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def build_user_info_card_keyboard(
     user_id: int,
-    username: str | None = None
+    username: Optional[str] = None
 ) -> InlineKeyboardMarkup:
     is_blocked, _ = await db.is_blacklisted(user_id)
     is_exempted = await db.is_exempted(user_id)
@@ -91,7 +92,10 @@ async def build_user_info_card_keyboard(
     if direct_contact_url:
         row.append(InlineKeyboardButton("直接问候", url=direct_contact_url))
 
-    return InlineKeyboardMarkup([row])
+    return InlineKeyboardMarkup([
+        row,
+        [InlineKeyboardButton("用户分组", callback_data=f"usercard_groups_{user_id}")],
+    ])
 
 
 async def send_user_info_card(update: Update, context: ContextTypes.DEFAULT_TYPE, thread_id: int):

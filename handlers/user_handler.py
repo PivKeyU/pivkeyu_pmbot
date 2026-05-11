@@ -1,12 +1,12 @@
 from telegram import Update, constants
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from database import models as db
 from services.verification import create_verification, is_verification_pending, get_pending_verification_message
 from services.thread_manager import get_or_create_thread
 from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
-from utils.message_sender import send_message_by_type
+from utils.message_sender import edit_message_by_type, send_message_by_type
 from services.rate_limiter import rate_limiter
 from config import config
 
@@ -24,8 +24,50 @@ async def handle_invalid_thread(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=keyboard
     )
 
+async def _get_private_reply_target(message, user_id: int, thread_id: int):
+    if not message.reply_to_message:
+        return None
+
+    mapping = await db.get_message_mapping(message.chat_id, message.reply_to_message.message_id)
+    if not mapping or mapping.get('user_id') != user_id:
+        return None
+
+    if mapping['source_chat_id'] == config.FORUM_GROUP_ID or mapping['dest_chat_id'] == config.FORUM_GROUP_ID:
+        if not mapping.get('thread_id') or mapping['thread_id'] != thread_id:
+            return None
+
+    if mapping.get('thread_id') and mapping['thread_id'] != thread_id:
+        return None
+
+    if mapping['source_chat_id'] == config.FORUM_GROUP_ID:
+        return mapping['source_message_id']
+    if mapping['dest_chat_id'] == config.FORUM_GROUP_ID:
+        return mapping['dest_message_id']
+    return None
+
+
 async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, thread_id: int):
-    return await send_message_by_type(context.bot, update.message, config.FORUM_GROUP_ID, thread_id, True)
+    message = update.message
+    reply_to_message_id = await _get_private_reply_target(message, update.effective_user.id, thread_id)
+    sent = await send_message_by_type(
+        context.bot,
+        message,
+        config.FORUM_GROUP_ID,
+        thread_id,
+        True,
+        reply_to_message_id=reply_to_message_id,
+    )
+    if sent:
+        await db.save_message_mapping(
+            user_id=update.effective_user.id,
+            source_chat_id=message.chat_id,
+            source_message_id=message.message_id,
+            dest_chat_id=config.FORUM_GROUP_ID,
+            dest_message_id=sent.message_id,
+            direction="user_to_admin",
+            thread_id=thread_id,
+        )
+    return sent
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from network_test.handlers import handle_message as network_handle_message
@@ -203,18 +245,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Topic probe failed with unexpected error: {e}")
     
     try:
-        sent_msg = None
-        if message.text:
-            sent_msg = await context.bot.send_message(
-                chat_id=config.FORUM_GROUP_ID,
-                text=message.text,
-                entities=message.entities,
-                message_thread_id=thread_id,
-                disable_web_page_preview=True
-            )
+        sent_msg = await _resend_message(update, context, thread_id)
+        if sent_msg:
             forwarded_message_id = sent_msg.message_id
         else:
-            await _resend_message(update, context, thread_id)
+            await update.message.reply_text("这类消息女仆暂时递送不了，请主人换一种格式。")
             return
     except BadRequest as e:
         if "thread not found" in e.message.lower() or "topic not found" in e.message.lower():
@@ -271,3 +306,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                         except Exception as e2:
                             print(f"发送自动回复通知给管理员失败: {e2}")
+
+
+async def handle_edited_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.edited_message
+    if not message:
+        return
+
+    mappings = await db.get_message_mappings_by_source(message.chat_id, message.message_id)
+    if not mappings:
+        return
+
+    for mapping in mappings:
+        try:
+            await edit_message_by_type(
+                context.bot,
+                message,
+                mapping['dest_chat_id'],
+                mapping['dest_message_id'],
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in exc.message.lower():
+                print(f"同步用户编辑失败: {exc}")
+        except TelegramError as exc:
+            print(f"同步用户编辑失败: {exc}")

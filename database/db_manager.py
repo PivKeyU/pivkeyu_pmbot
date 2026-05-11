@@ -31,6 +31,9 @@ class DatabaseManager:
             await self.create_filtered_messages_table(db)
             await self.create_knowledge_base_table(db)
             await self.create_exemptions_table(db)
+            await self.create_user_groups_table(db)
+            await self.create_message_mappings_table(db)
+            await self.create_broadcasts_table(db)
             await self.migrate_database(db)
             await db.commit()
         logging.info("数据库初始化完成。")
@@ -218,6 +221,93 @@ class DatabaseManager:
         ''')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_exemptions_expires ON exemptions(expires_at)')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_exemptions_permanent ON exemptions(is_permanent)')
+
+    async def create_user_groups_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS user_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                description TEXT,
+                created_by INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_user_groups_name ON user_groups(name)')
+
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS user_group_members (
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                added_by INTEGER NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (group_id, user_id),
+                FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_user_group_members_user ON user_group_members(user_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_user_group_members_group ON user_group_members(group_id)')
+
+    async def create_message_mappings_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS message_mappings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_chat_id INTEGER NOT NULL,
+                source_message_id INTEGER NOT NULL,
+                dest_chat_id INTEGER NOT NULL,
+                dest_message_id INTEGER NOT NULL,
+                thread_id INTEGER,
+                direction TEXT NOT NULL,
+                broadcast_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_chat_id, source_message_id, dest_chat_id, dest_message_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_message_mappings_source ON message_mappings(source_chat_id, source_message_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_message_mappings_dest ON message_mappings(dest_chat_id, dest_message_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_message_mappings_user ON message_mappings(user_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_message_mappings_broadcast ON message_mappings(broadcast_id)')
+
+    async def create_broadcasts_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope TEXT NOT NULL,
+                group_id INTEGER,
+                source_chat_id INTEGER,
+                source_message_id INTEGER,
+                content_preview TEXT,
+                created_by INTEGER NOT NULL,
+                total_count INTEGER DEFAULT 0,
+                success_count INTEGER DEFAULT 0,
+                failed_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (group_id) REFERENCES user_groups(id) ON DELETE SET NULL
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcasts_created ON broadcasts(created_at)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcasts_scope ON broadcasts(scope)')
+
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS broadcast_deliveries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                broadcast_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                message_id INTEGER,
+                status TEXT NOT NULL,
+                error TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(broadcast_id, user_id),
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_broadcast ON broadcast_deliveries(broadcast_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_user ON broadcast_deliveries(user_id)')
 
     async def get_filtered_messages_by_user(self, user_id, limit=5):
         async with self.get_connection() as db:

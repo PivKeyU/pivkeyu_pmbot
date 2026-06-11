@@ -39,6 +39,10 @@
 | 🤖 **智能自动回复** | 基于知识库的 AI 自动回复功能，在内容审查通过后自动回答用户问题，支持 Markdown 格式，管理员可随时查看自动回复内容。 |
 | 🌐 **网络测试工具** | 集成网络测试功能，支持通过远程服务器进行 Ping 测试和路由追踪（NextTrace），支持 ICMP 和 TCP 模式，方便进行网络诊断。 |
 | 📰 **RSS 订阅推送** | 在私聊中管理 RSS 列表、关键词和自定义页脚，并按需推送最新条目。 |
+| 🔎 **TG 群/频道关键词监听** | 支持 Bot 入群监听，也支持 Telethon 用户会话监听 Bot 无法加入的群/频道，命中关键词后推送给管理员。 |
+| 🕸️ **网页关键词/变化监控** | 支持网页 CSS 选择器监控、关键词命中、新条目和内容/价格/库存变化提醒。 |
+| 🚫 **关键词广告拦截** | 在 AI 审查前进行轻量关键词拦截，可配置命中后自动拉黑，降低固定广告话术的处理成本。 |
+| 🔧 **安全更新与运行状态** | 提供 `/updatebot` ff-only 安全更新检查/回滚，以及 RSS/TG/网页监控运行状态记录。 |
 
 ---
 
@@ -142,6 +146,31 @@ MAX_MESSAGES_PER_MINUTE=30
 
 # 填入 通知渠道 的钩子（以 Telegram 举例）
 #WATCHTOWER_NOTIFICATION_URL=telegram://token@telegram?chats=channel-1[,chat-id-1,...]
+
+# --- TG 群/频道关键词监听（可选） ---
+
+# 使用 user_session 监听时需要，从 https://my.telegram.org 获取
+TG_API_ID=
+TG_API_HASH=
+
+# Telethon StringSession。未配置时，用户会话监听不会启动
+TG_API_SESSION=
+
+# 可选代理，例如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890
+TG_PROXY=
+
+# 是否允许启动 TG 监听服务
+TG_MONITOR_ENABLED=true
+
+# 新监听默认来源：user_session 或 bot
+TG_MONITOR_DEFAULT_SOURCE=user_session
+
+# TG 监听推送目标，留空则使用 ADMIN_IDS
+TG_MONITOR_NOTIFY_CHAT_IDS=
+
+# --- 关键词广告拦截（可选） ---
+SPAM_KEYWORD_FILTER_ENABLED=false
+SPAM_KEYWORD_AUTO_BLOCK=true
 ```
 </details>
 
@@ -236,6 +265,55 @@ python bot.py
 ---
 
 ## 📖 使用指南
+
+### TG 群/频道关键词监听
+
+```bash
+/tgmon add 监听名称 -1001234567890 关键词1,关键词2 user_session
+/tgmon list
+/tgmon discovered
+/tgmon on 1
+/tgmon off 1
+/tgmon delete 1
+```
+
+`user_session` 模式需要配置 `TG_API_ID`、`TG_API_HASH`、`TG_API_SESSION`；`bot` 模式需要机器人已经在目标群/频道中。
+
+### 网页关键词/变化监控
+
+```bash
+/webmon add 监控名称 https://example.com 关键词1,关键词2
+/webmon list
+/webmon run 1
+/webmon interval 1 300
+/webmon off 1
+```
+
+首次检查只建立基线，不推送页面上已有内容；后续发现新条目、关键词命中或内容变化时推送管理员。
+
+### 关键词广告拦截
+
+```bash
+/spamrules on
+/spamrules add 广告词1,广告词2
+/spamrules autoblock on
+/spamrules
+```
+
+### 运行状态与安全更新
+
+```bash
+/monitor_status
+/monitor_status rss
+/monitor_status tg
+/monitor_status web
+
+/updatebot status
+/updatebot apply
+/updatebot rollback
+```
+
+`/updatebot apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新。
 
 ### 🔑 获取必要信息
 

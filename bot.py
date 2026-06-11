@@ -6,6 +6,7 @@ from handlers import register_handlers
 from rss import setup as setup_rss
 from database.db_manager import DatabaseManager
 from services.telegram_commands import register_bot_commands
+from services import tg_monitor, web_monitor
 
 async def post_init(app: Application):
     config.BOT_ID = app.bot.id
@@ -13,6 +14,7 @@ async def post_init(app: Application):
     print(f"Bot ID: {config.BOT_ID} 已设置")
     print(f"Bot Username: {config.BOT_USERNAME} 已设置")
     await register_bot_commands(app)
+    await tg_monitor.start_user_session_listener(app)
 
 def main():
     logging.basicConfig(
@@ -31,6 +33,7 @@ def main():
 
     register_handlers(app)
     setup_rss(app)
+    web_monitor.setup(app)
 
     config.validate()
 

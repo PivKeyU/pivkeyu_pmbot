@@ -1,0 +1,9 @@
+services:
+  pivkeyu-pmbot:
+    container_name: pivkeyu-pmbot
+    image: pivkeyu/pivkeyu_pmbot:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data

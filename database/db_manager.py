@@ -6,9 +6,13 @@ from datetime import datetime
 class DatabaseManager:
     _instance = None
 
-    def __new__(cls, db_path='./data/bot.db'):
+    def __new__(cls, db_path=None):
+        db_path = db_path or './data/bot.db'
         if cls._instance is None:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance.db_path = db_path
+            cls._instance.ensure_data_directory()
+        elif db_path and cls._instance.db_path != db_path:
             cls._instance.db_path = db_path
             cls._instance.ensure_data_directory()
         return cls._instance
@@ -34,6 +38,13 @@ class DatabaseManager:
             await self.create_user_groups_table(db)
             await self.create_message_mappings_table(db)
             await self.create_broadcasts_table(db)
+            await self.create_read_receipts_table(db)
+            await self.create_spam_keywords_table(db)
+            await self.create_runtime_status_table(db)
+            await self.create_tg_group_monitors_table(db)
+            await self.create_discovered_tg_chats_table(db)
+            await self.create_web_monitors_table(db)
+            await self.create_app_meta_table(db)
             await self.migrate_database(db)
             await db.commit()
         logging.info("数据库初始化完成。")
@@ -309,6 +320,151 @@ class DatabaseManager:
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_broadcast ON broadcast_deliveries(broadcast_id)')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_user ON broadcast_deliveries(user_id)')
 
+    async def create_read_receipts_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS read_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                forum_message_id INTEGER NOT NULL,
+                thread_id INTEGER NOT NULL,
+                is_read INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                read_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_read_receipts_user_unread ON read_receipts(user_id, is_read)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_read_receipts_thread ON read_receipts(thread_id)')
+
+    async def create_spam_keywords_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS spam_keywords (
+                keyword TEXT PRIMARY KEY COLLATE NOCASE,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+    async def create_runtime_status_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS runtime_status (
+                name TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                last_run_at TIMESTAMP,
+                last_success_at TIMESTAMP,
+                last_error_at TIMESTAMP,
+                last_error TEXT,
+                last_duration_ms INTEGER DEFAULT 0,
+                last_sent_count INTEGER DEFAULT 0,
+                consecutive_failures INTEGER DEFAULT 0,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_runtime_status_category ON runtime_status(category)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_runtime_status_updated ON runtime_status(updated_at)')
+
+    async def create_tg_group_monitors_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS tg_group_monitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                chat_id INTEGER NOT NULL,
+                chat_title TEXT,
+                listen_source TEXT DEFAULT 'user_session',
+                keywords TEXT NOT NULL,
+                exclude_keywords TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                notify_telegram INTEGER DEFAULT 1,
+                min_interval_seconds INTEGER DEFAULT 30,
+                dedupe_window_seconds INTEGER DEFAULT 300,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_tg_group_monitors_chat ON tg_group_monitors(chat_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_tg_group_monitors_enabled ON tg_group_monitors(enabled)')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS tg_monitor_recent (
+                monitor_id INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                sent_at_ts REAL NOT NULL,
+                PRIMARY KEY (monitor_id, fingerprint),
+                FOREIGN KEY (monitor_id) REFERENCES tg_group_monitors(id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_tg_monitor_recent_sent ON tg_monitor_recent(sent_at_ts)')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS tg_monitor_last_send (
+                monitor_id INTEGER PRIMARY KEY,
+                sent_at_ts REAL NOT NULL,
+                FOREIGN KEY (monitor_id) REFERENCES tg_group_monitors(id) ON DELETE CASCADE
+            )
+        ''')
+
+    async def create_discovered_tg_chats_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS discovered_tg_chats (
+                chat_id INTEGER PRIMARY KEY,
+                title TEXT,
+                username TEXT,
+                last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                active INTEGER DEFAULT 1
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_discovered_tg_chats_seen ON discovered_tg_chats(last_seen_at)')
+
+    async def create_web_monitors_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS web_monitors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+                url TEXT NOT NULL,
+                keywords TEXT DEFAULT '',
+                item_selector TEXT DEFAULT 'article, .thread, .post, li',
+                title_selector TEXT DEFAULT 'h1, h2, h3, a',
+                link_selector TEXT DEFAULT 'a',
+                price_selector TEXT DEFAULT '',
+                stock_selector TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                interval_seconds INTEGER DEFAULT 300,
+                notify_telegram INTEGER DEFAULT 1,
+                notify_on_keyword INTEGER DEFAULT 1,
+                notify_on_new_item INTEGER DEFAULT 1,
+                notify_on_change INTEGER DEFAULT 1,
+                last_checked_at TIMESTAMP,
+                created_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_web_monitors_enabled ON web_monitors(enabled)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_web_monitors_last_checked ON web_monitors(last_checked_at)')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS web_monitor_state (
+                monitor_id INTEGER NOT NULL,
+                item_key TEXT NOT NULL,
+                title TEXT,
+                link TEXT,
+                content_hash TEXT,
+                price TEXT,
+                stock TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (monitor_id, item_key),
+                FOREIGN KEY (monitor_id) REFERENCES web_monitors(id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_web_monitor_state_monitor ON web_monitor_state(monitor_id)')
+
+    async def create_app_meta_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS app_meta (
+                meta_key TEXT PRIMARY KEY,
+                meta_value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
     async def get_filtered_messages_by_user(self, user_id, limit=5):
         async with self.get_connection() as db:
             cursor = await db.execute(
@@ -358,5 +514,19 @@ class DatabaseManager:
             logging.info("数据库迁移：成功添加细分AI设置。")
         except Exception as e:
             logging.warning(f"添加AI设置时出错: {e}")
+
+        try:
+            default_settings = [
+                ('spam_keyword_filter_enabled', '0', '是否启用关键词广告拦截 (1=是, 0=否)'),
+                ('spam_keyword_auto_block', '1', '关键词广告拦截命中后是否自动拉黑 (1=是, 0=否)'),
+            ]
+            for key, value, description in default_settings:
+                await db.execute(
+                    'INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)',
+                    (key, value, description)
+                )
+            logging.info("数据库迁移：成功添加关键词拦截设置。")
+        except Exception as e:
+            logging.warning(f"添加关键词拦截设置时出错: {e}")
 
 db_manager = DatabaseManager()

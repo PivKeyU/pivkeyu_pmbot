@@ -50,7 +50,17 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     user_id = user['user_id']
     
-    await _send_reply_to_user(update, context, user_id)
+    sent = await _send_reply_to_user(update, context, user_id)
+    if sent:
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=update.message.chat_id,
+                message_id=update.message.message_id,
+                reaction=[{"type": "emoji", "emoji": "👁"}],
+            )
+        except (BadRequest, TelegramError):
+            pass
+        await db.add_read_receipt(user_id, update.message.message_id, thread_id)
 
 
 async def handle_edited_admin_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
-from services import broadcast as broadcast_service
+from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -42,6 +43,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/exempt` - 给可信用户发放审查通行证（临时或永久）\n"
         "- `/group` - 管理私聊用户分组\n"
         "- `/broadcast` - 向全部用户或指定分组广播\n"
+        "- `/spamrules` - 管理关键词广告拦截\n"
+        "- `/tgmon` - 管理 TG 群/频道关键词监听\n"
+        "- `/webmon` - 管理网页关键词/变化监控\n"
+        "- `/monitor_status` - 查看监听与 RSS 运行状态\n"
+        "- `/updatebot` - 安全检查/更新/回滚本地代码\n"
     )
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
@@ -158,6 +164,9 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("拦截消息篮", callback_data="panel_filtered_page_1"), InlineKeyboardButton("自动回复女仆管理", callback_data="panel_autoreply")],
         [InlineKeyboardButton("通行证名单管理", callback_data="panel_exemptions_page_1"), InlineKeyboardButton("网络测试茶具管理", callback_data="panel_network_test")],
         [InlineKeyboardButton("广播与分组", callback_data="panel_broadcast"), InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss")],
+        [InlineKeyboardButton("TG 监听", callback_data="panel_tg_monitor"), InlineKeyboardButton("网页监控", callback_data="panel_web_monitor")],
+        [InlineKeyboardButton("关键词拦截", callback_data="panel_spamrules")],
+        [InlineKeyboardButton("运行状态", callback_data="panel_monitor_status"), InlineKeyboardButton("安全更新", callback_data="panel_updatebot")],
         [InlineKeyboardButton("AI 模型衣柜", callback_data="panel_ai_settings")],
     ]
     
@@ -166,6 +175,42 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
+
+
+def _format_runtime_statuses(statuses: list[dict]) -> str:
+    if not statuses:
+        return "暂时还没有运行状态记录。"
+
+    lines = ["运行状态", ""]
+    for item in statuses[:30]:
+        failures = int(item.get('consecutive_failures') or 0)
+        badge = "正常" if failures == 0 else f"异常 x{failures}"
+        lines.extend([
+            f"{item.get('name')} [{badge}]",
+            f"  类别: {item.get('category')}",
+            f"  最近运行: {item.get('last_run_at') or '-'}",
+            f"  最近成功: {item.get('last_success_at') or '-'}",
+            f"  最近失败: {item.get('last_error_at') or '-'}",
+            f"  耗时: {item.get('last_duration_ms') or 0} ms, 推送: {item.get('last_sent_count') or 0}",
+        ])
+        if item.get('last_error'):
+            error_text = str(item['last_error'])
+            lines.append(f"  错误: {error_text[:180]}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+@admin_only
+async def monitor_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    category = context.args[0].lower() if context.args else None
+    if category in {"tg", "tgmon"}:
+        category = "tg_monitor"
+    elif category not in {None, "rss", "web", "tg_monitor"}:
+        await update.message.reply_text("女仆小抄: /monitor_status [rss|tg|web]")
+        return
+
+    statuses = await db.get_runtime_statuses(category=category)
+    await update.message.reply_text(_format_runtime_statuses(statuses))
 
 @admin_only
 async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -506,6 +551,363 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"成功: {result.success}\n"
         f"失败: {result.failed}"
     )
+
+
+def _spamrules_help_text() -> str:
+    return (
+        "关键词广告拦截小抄:\n"
+        "/spamrules - 查看当前设置\n"
+        "/spamrules on|off - 开关拦截\n"
+        "/spamrules autoblock on|off - 开关命中后自动拉黑\n"
+        "/spamrules add <关键词> - 添加关键词，多个用逗号分隔\n"
+        "/spamrules del <关键词> - 删除关键词\n"
+        "/spamrules clear - 清空全部关键词"
+    )
+
+
+def _parse_keyword_args(raw_text: str) -> list[str]:
+    return [item.strip() for item in raw_text.replace(",", "\n").splitlines() if item.strip()]
+
+
+@admin_only
+async def spamrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        text = await spam_filter.format_settings()
+        await update.message.reply_text(f"{text}\n\n{_spamrules_help_text()}")
+        return
+
+    subcommand = context.args[0].lower()
+    admin_id = update.effective_user.id
+
+    if subcommand in {"on", "off"}:
+        await db.set_spam_keyword_filter_enabled(subcommand == "on")
+        await update.message.reply_text(f"关键词广告拦截已{'启用' if subcommand == 'on' else '关闭'}。")
+        return
+
+    if subcommand == "autoblock":
+        if len(context.args) < 2 or context.args[1].lower() not in {"on", "off"}:
+            await update.message.reply_text("女仆小抄: /spamrules autoblock on|off")
+            return
+        enabled = context.args[1].lower() == "on"
+        await db.set_spam_keyword_auto_block(enabled)
+        await update.message.reply_text(f"命中后自动拉黑已{'启用' if enabled else '关闭'}。")
+        return
+
+    if subcommand in {"add", "del", "delete", "remove"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("请提供关键词。")
+            return
+        keywords = _parse_keyword_args(" ".join(context.args[1:]))
+        if not keywords:
+            await update.message.reply_text("请提供有效关键词。")
+            return
+
+        changed = 0
+        if subcommand == "add":
+            for keyword in keywords:
+                if await db.add_spam_keyword(keyword, created_by=admin_id):
+                    changed += 1
+            await update.message.reply_text(f"已添加 {changed} 个关键词。")
+        else:
+            for keyword in keywords:
+                if await db.remove_spam_keyword(keyword):
+                    changed += 1
+            await update.message.reply_text(f"已删除 {changed} 个关键词。")
+        return
+
+    if subcommand == "clear":
+        count = await db.clear_spam_keywords()
+        await update.message.reply_text(f"已清空 {count} 个关键词。")
+        return
+
+    await update.message.reply_text(_spamrules_help_text())
+
+
+def _tgmon_help_text() -> str:
+    return (
+        "TG 群/频道监听小抄:\n"
+        "/tgmon - 打开监听面板\n"
+        "/tgmon list - 查看监听列表\n"
+        "/tgmon discovered - 查看用户会话发现的群/频道\n"
+        "/tgmon add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]\n"
+        "/tgmon on <ID> /tgmon off <ID>\n"
+        "/tgmon delete <ID>\n"
+        "/tgmon keywords <ID> <关键词1,关键词2>\n"
+        "/tgmon exclude <ID> <排除词1,排除词2>\n"
+        "/tgmon interval <ID> <秒数>"
+    )
+
+
+async def _refresh_tg_monitor_after_change(context: ContextTypes.DEFAULT_TYPE):
+    await tg_monitor.refresh_user_session_listener(context.application)
+
+
+@admin_only
+async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            await tg_monitor.build_panel_text(),
+            reply_markup=tg_monitor.build_panel_keyboard(),
+        )
+        return
+
+    subcommand = context.args[0].lower()
+    admin_id = update.effective_user.id
+
+    if subcommand == "list":
+        await update.message.reply_text(await tg_monitor.build_monitor_list_text())
+        return
+
+    if subcommand == "discovered":
+        chats = await db.list_discovered_tg_chats(limit=50)
+        if not chats:
+            await update.message.reply_text("暂时还没有发现的群/频道。配置 TG_API_SESSION 并启动用户会话监听后会自动记录。")
+            return
+        lines = ["发现的 TG 群/频道", ""]
+        for chat in chats:
+            username = f" @{chat['username']}" if chat.get('username') else ""
+            lines.append(
+                f"- {chat.get('title') or chat['chat_id']}{username}\n"
+                f"  chat_id: {chat['chat_id']}\n"
+                f"  最近看到: {chat.get('last_seen_at') or '-'}"
+            )
+        await update.message.reply_text("\n".join(lines))
+        return
+
+    if subcommand == "add":
+        if len(context.args) < 4:
+            await update.message.reply_text("女仆小抄: /tgmon add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]")
+            return
+        name = context.args[1].strip()
+        try:
+            chat_id = int(context.args[2])
+        except ValueError:
+            await update.message.reply_text("chat_id 要写成数字。")
+            return
+
+        source = config.TG_MONITOR_DEFAULT_SOURCE
+        keyword_args = context.args[3:]
+        if keyword_args and keyword_args[-1].lower() in {"bot", "user_session"}:
+            source = keyword_args[-1].lower()
+            keyword_args = keyword_args[:-1]
+        if source not in {"bot", "user_session"}:
+            source = "user_session"
+
+        keywords = tg_monitor.parse_keywords(" ".join(keyword_args))
+        if not keywords:
+            await update.message.reply_text("请至少提供一个关键词。")
+            return
+        try:
+            monitor_id = await db.create_tg_group_monitor(
+                name=name,
+                chat_id=chat_id,
+                keywords=keywords,
+                created_by=admin_id,
+                listen_source=source,
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"创建监听失败：{exc}")
+            return
+        await _refresh_tg_monitor_after_change(context)
+        await update.message.reply_text(f"已创建 TG 监听 #{monitor_id}: {name}")
+        return
+
+    if subcommand in {"on", "off", "delete", "del", "rm"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("请提供监听 ID。")
+            return
+        try:
+            monitor_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("监听 ID 要写成数字。")
+            return
+        if subcommand in {"delete", "del", "rm"}:
+            changed = await db.delete_tg_group_monitor(monitor_id)
+            await update.message.reply_text(f"已删除监听 #{monitor_id}。" if changed else "没有找到这个监听。")
+        else:
+            changed = await db.update_tg_group_monitor(monitor_id, enabled=(subcommand == "on"))
+            await update.message.reply_text(
+                f"监听 #{monitor_id} 已{'启用' if subcommand == 'on' else '停用'}。" if changed else "没有找到这个监听。"
+            )
+        await _refresh_tg_monitor_after_change(context)
+        return
+
+    if subcommand in {"keywords", "exclude"}:
+        if len(context.args) < 3:
+            await update.message.reply_text(f"女仆小抄: /tgmon {subcommand} <ID> <关键词1,关键词2>")
+            return
+        try:
+            monitor_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("监听 ID 要写成数字。")
+            return
+        words = tg_monitor.parse_keywords(" ".join(context.args[2:]))
+        field = "keywords" if subcommand == "keywords" else "exclude_keywords"
+        changed = await db.update_tg_group_monitor(monitor_id, **{field: words})
+        await update.message.reply_text("监听词已更新。" if changed else "没有找到这个监听。")
+        await _refresh_tg_monitor_after_change(context)
+        return
+
+    if subcommand == "interval":
+        if len(context.args) < 3:
+            await update.message.reply_text("女仆小抄: /tgmon interval <ID> <秒数>")
+            return
+        try:
+            monitor_id = int(context.args[1])
+            seconds = max(0, int(context.args[2]))
+        except ValueError:
+            await update.message.reply_text("监听 ID 和秒数都要写成数字。")
+            return
+        changed = await db.update_tg_group_monitor(monitor_id, min_interval_seconds=seconds)
+        await update.message.reply_text("监听最小推送间隔已更新。" if changed else "没有找到这个监听。")
+        return
+
+    await update.message.reply_text(_tgmon_help_text())
+
+
+def _webmon_help_text() -> str:
+    return (
+        "网页监控小抄:\n"
+        "/webmon - 打开网页监控面板\n"
+        "/webmon list - 查看监控列表\n"
+        "/webmon add <名称> <url> [关键词1,关键词2]\n"
+        "/webmon on <ID> /webmon off <ID>\n"
+        "/webmon run <ID> - 立即检查\n"
+        "/webmon delete <ID>\n"
+        "/webmon keywords <ID> <关键词1,关键词2>\n"
+        "/webmon interval <ID> <秒数>"
+    )
+
+
+@admin_only
+async def webmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            await web_monitor.build_panel_text(),
+            reply_markup=web_monitor.build_panel_keyboard(),
+        )
+        return
+
+    subcommand = context.args[0].lower()
+    admin_id = update.effective_user.id
+
+    if subcommand == "list":
+        await update.message.reply_text(await web_monitor.build_monitor_list_text())
+        return
+
+    if subcommand == "add":
+        if len(context.args) < 3:
+            await update.message.reply_text("女仆小抄: /webmon add <名称> <url> [关键词1,关键词2]")
+            return
+        name = context.args[1].strip()
+        url = context.args[2].strip()
+        keywords = web_monitor.parse_keywords(" ".join(context.args[3:])) if len(context.args) > 3 else []
+        try:
+            monitor_id = await db.create_web_monitor(
+                name=name,
+                url=url,
+                keywords=keywords,
+                created_by=admin_id,
+            )
+        except Exception as exc:
+            await update.message.reply_text(f"创建网页监控失败：{exc}")
+            return
+        await update.message.reply_text(f"已创建网页监控 #{monitor_id}: {name}")
+        return
+
+    if subcommand in {"on", "off", "delete", "del", "rm", "run"}:
+        if len(context.args) < 2:
+            await update.message.reply_text("请提供监控 ID。")
+            return
+        try:
+            monitor_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("监控 ID 要写成数字。")
+            return
+
+        if subcommand == "run":
+            monitor = await db.get_web_monitor(monitor_id)
+            if not monitor:
+                await update.message.reply_text("没有找到这个网页监控。")
+                return
+            status_message = await update.message.reply_text("正在检查网页监控，请稍等。")
+            sent = await web_monitor.run_monitor(context.application, monitor)
+            await status_message.edit_text(f"检查完成，推送 {sent} 条。")
+            return
+
+        if subcommand in {"delete", "del", "rm"}:
+            changed = await db.delete_web_monitor(monitor_id)
+            await update.message.reply_text(f"已删除网页监控 #{monitor_id}。" if changed else "没有找到这个网页监控。")
+        else:
+            changed = await db.update_web_monitor(monitor_id, enabled=(subcommand == "on"))
+            await update.message.reply_text(
+                f"网页监控 #{monitor_id} 已{'启用' if subcommand == 'on' else '停用'}。" if changed else "没有找到这个网页监控。"
+            )
+        return
+
+    if subcommand == "keywords":
+        if len(context.args) < 3:
+            await update.message.reply_text("女仆小抄: /webmon keywords <ID> <关键词1,关键词2>")
+            return
+        try:
+            monitor_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("监控 ID 要写成数字。")
+            return
+        keywords = web_monitor.parse_keywords(" ".join(context.args[2:]))
+        changed = await db.update_web_monitor(monitor_id, keywords=keywords)
+        await update.message.reply_text("网页监控关键词已更新。" if changed else "没有找到这个网页监控。")
+        return
+
+    if subcommand == "interval":
+        if len(context.args) < 3:
+            await update.message.reply_text("女仆小抄: /webmon interval <ID> <秒数>")
+            return
+        try:
+            monitor_id = int(context.args[1])
+            seconds = max(60, int(context.args[2]))
+        except ValueError:
+            await update.message.reply_text("监控 ID 和秒数都要写成数字。")
+            return
+        changed = await db.update_web_monitor(monitor_id, interval_seconds=seconds)
+        await update.message.reply_text("网页监控间隔已更新。" if changed else "没有找到这个网页监控。")
+        return
+
+    await update.message.reply_text(_webmon_help_text())
+
+
+@admin_only
+async def updatebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    repo_dir = Path(__file__).resolve().parent.parent
+    action = context.args[0].lower() if context.args else "status"
+    status_message = await update.message.reply_text("正在检查 Git 状态，请稍等。")
+
+    try:
+        if action == "status":
+            status = await safe_update.get_status(repo_dir, fetch_remote=True)
+            rollback = await db.get_app_meta("last_update_rollback")
+            await status_message.edit_text(safe_update.format_status(status, rollback))
+            return
+
+        if action in {"apply", "run", "update"}:
+            status = await safe_update.apply_update(repo_dir)
+            rollback = await db.get_app_meta("last_update_rollback")
+            await status_message.edit_text(
+                safe_update.format_status(status, rollback) + "\n\n更新流程已完成。请按部署方式重启 Bot。"
+            )
+            return
+
+        if action == "rollback":
+            commit = await safe_update.rollback_last_update(repo_dir)
+            await status_message.edit_text(f"已回滚到 {commit[:12]}。请按部署方式重启 Bot。")
+            return
+
+        await status_message.edit_text("女仆小抄: /updatebot [status|apply|rollback]")
+    except safe_update.SafeUpdateError as exc:
+        await status_message.edit_text(f"安全更新被拒绝：{exc}")
+    except Exception as exc:
+        await status_message.edit_text(f"安全更新失败：{exc}")
+
 
 @admin_only
 async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):

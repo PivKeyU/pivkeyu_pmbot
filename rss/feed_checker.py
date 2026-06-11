@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import time
 import feedparser
 from typing import Dict, Any, Optional
 from telegram.ext import ContextTypes
 from telegram import constants
 from config import config
+from database import models as db
 from . import data_manager, retry_utils, settings
 
 logger = logging.getLogger(__name__)
@@ -69,8 +71,10 @@ async def check_single_feed(
     feed_url: str,
     feed_config: Dict[str, Any],
     data_file: str,
-) -> None:
+) -> int:
     logger.info("正在为用户 %s 检查订阅源: %s", chat_id, feed_url)
+    start = time.monotonic()
+    status_name = f"rss:{chat_id}:{feed_config.get('title') or feed_url}"
 
     try:
         if hasattr(asyncio, "to_thread"):
@@ -103,7 +107,14 @@ async def check_single_feed(
                     chat_id,
                     current_feed_latest_entry_id,
                 )
-            return
+            await db.record_runtime_status(
+                status_name,
+                "rss",
+                True,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                sent_count=0,
+            )
+            return 0
 
         temp_new_entries = []
         found_last_known = False
@@ -208,8 +219,25 @@ async def check_single_feed(
                     id_of_newest_identified_entry,
                 )
 
+        await db.record_runtime_status(
+            status_name,
+            "rss",
+            True,
+            duration_ms=int((time.monotonic() - start) * 1000),
+            sent_count=sent_count,
+        )
+        return sent_count
+
     except Exception as exc:
         logger.error("处理用户 %s 的订阅源 %s 时出错: %s", chat_id, feed_url, exc, exc_info=True)
+        await db.record_runtime_status(
+            status_name,
+            "rss",
+            False,
+            duration_ms=int((time.monotonic() - start) * 1000),
+            error=str(exc),
+        )
+        return 0
 
 
 async def check_feeds_job(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -254,4 +282,3 @@ async def check_feeds_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning("此周期有 %s/%s 个订阅源检查失败。", error_count, len(all_feed_checks))
     else:
         logger.info("此周期的所有订阅源检查已完成。")
-

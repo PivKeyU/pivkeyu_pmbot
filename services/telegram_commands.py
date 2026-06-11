@@ -39,6 +39,11 @@ ADMIN_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
     ("exempt", "管理审查通行证"),
     ("group", "管理用户分组"),
     ("broadcast", "发送用户广播"),
+    ("spamrules", "管理关键词拦截"),
+    ("tgmon", "管理TG监听"),
+    ("webmon", "管理网页监控"),
+    ("monitor_status", "查看监听状态"),
+    ("updatebot", "安全更新机器人"),
 )
 
 RSS_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
@@ -77,6 +82,11 @@ ADMIN_GROUP_COMMANDS: tuple[CommandSpec, ...] = (
     ("exempt", "管理审查通行证"),
     ("group", "管理用户分组"),
     ("broadcast", "发送用户广播"),
+    ("spamrules", "管理关键词拦截"),
+    ("tgmon", "管理TG监听"),
+    ("webmon", "管理网页监控"),
+    ("monitor_status", "查看监听状态"),
+    ("updatebot", "安全更新机器人"),
 )
 
 

@@ -1,8 +1,12 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
-from .command_handler import start, help_command, block, unblock, blacklist, stats, getid, autoreply, panel, exempt, group, broadcast
+from .command_handler import (
+    start, help_command, block, unblock, blacklist, stats, getid, autoreply,
+    panel, exempt, group, broadcast, spamrules, tgmon, webmon, monitor_status, updatebot
+)
 from .user_handler import handle_message, handle_edited_private_message
 from .callback_handler import handle_callback
 from .admin_handler import handle_admin_reply, handle_edited_admin_message, view_filtered
+from services.tg_monitor import handle_bot_group_message
 from config import config
 from network_test.commands import (
     ping_command, nexttrace_command, add_user_command, rm_user_command,
@@ -33,6 +37,11 @@ def register_handlers(app: Application):
         app.add_handler(CommandHandler("exempt", exempt))
         app.add_handler(CommandHandler("group", group))
         app.add_handler(CommandHandler("broadcast", broadcast))
+        app.add_handler(CommandHandler("spamrules", spamrules))
+        app.add_handler(CommandHandler("tgmon", tgmon))
+        app.add_handler(CommandHandler("webmon", webmon))
+        app.add_handler(CommandHandler("monitor_status", monitor_status))
+        app.add_handler(CommandHandler("updatebot", updatebot))
         
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & filters.Chat(chat_id=config.FORUM_GROUP_ID) & filters.REPLY & ~filters.COMMAND,
@@ -42,6 +51,16 @@ def register_handlers(app: Application):
         app.add_handler(MessageHandler(
             filters.Chat(chat_id=config.FORUM_GROUP_ID) & filters.UpdateType.EDITED_MESSAGE & ~filters.COMMAND,
             handle_edited_admin_message
+        ))
+
+        app.add_handler(MessageHandler(
+            filters.UpdateType.MESSAGE & filters.ChatType.GROUPS & ~filters.COMMAND,
+            handle_bot_group_message
+        ))
+
+        app.add_handler(MessageHandler(
+            filters.UpdateType.CHANNEL_POST & ~filters.COMMAND,
+            handle_bot_group_message
         ))
 
         app.add_handler(MessageHandler(

@@ -8,6 +8,7 @@ from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
 from utils.message_sender import edit_message_by_type, send_message_by_type
 from services.rate_limiter import rate_limiter
+from services import spam_filter
 from config import config
 
 async def handle_invalid_thread(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
@@ -123,9 +124,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif message:
             await update.message.reply_text(message)
         return
-    
+
     user_data = await db.get_user(user.id)
-    
+    is_new_user = False
+
     if not user_data:
         await db.add_user(
             user_id=user.id,
@@ -134,14 +136,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_name=user.last_name,
             language_code=user.language_code
         )
-        welcome_message = (
-            f"主人好呀，{user.first_name}！\n\n"
-            "这里是随时待命的双向聊天女仆。\n"
-            "主人可以直接把消息交给我，我会乖乖送到管理员那边。\n\n"
-            "不过递送第一条消息前，请先完成一个小验证哦。"
-        )
-        await update.message.reply_text(welcome_message)
         user_data = await db.get_user(user.id)
+        is_new_user = True
     else:
         await db.update_user_profile(
             user_id=user.id,
@@ -150,6 +146,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_name=user.last_name,
             language_code=user.language_code
         )
+
+    message = update.message
+    spam_text = message.text or message.caption or ""
+    spam_result = await spam_filter.check_message_text(spam_text)
+    if spam_result.matched:
+        reason = "关键词广告拦截命中: " + ", ".join(spam_result.hits)
+        await db.save_filtered_message(
+            user_id=user.id,
+            message_id=message.message_id,
+            content=spam_text,
+            reason=reason,
+            media_type=message.photo and "photo" or message.sticker and "sticker",
+            media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
+        )
+        if spam_result.auto_block:
+            await db.add_to_blacklist(
+                user.id,
+                reason=reason,
+                blocked_by=config.BOT_ID,
+                permanent=True,
+            )
+            await db.set_user_blacklist_strikes(user.id, 99)
+            await update.message.reply_text("这条消息被系统拦截，通道已按规则锁上。")
+        else:
+            await update.message.reply_text("这条消息被系统拦截，没有继续递送。")
+        return
+
+    if is_new_user:
+        welcome_message = (
+            f"主人好呀，{user.first_name}！\n\n"
+            "这里是随时待命的双向聊天女仆。\n"
+            "主人可以直接把消息交给我，我会乖乖送到管理员那边。\n\n"
+            "不过递送第一条消息前，请先完成一个小验证哦。"
+        )
+        await update.message.reply_text(welcome_message)
 
     if not user_data.get('is_verified'):
         if not config.VERIFICATION_ENABLED:
@@ -174,7 +205,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(question, reply_markup=keyboard)
                 return
     
-    message = update.message
     image_bytes = None
 
     if message.photo:
@@ -259,6 +289,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             print(f"发送消息时发生未知错误: {e}")
             await update.message.reply_text("递送消息时出了点小状况，请主人稍后再试。")
             return
+
+    # Mark previous admin messages as read
+    unread = await db.mark_receipts_read(user.id)
+    for entry in unread:
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=config.FORUM_GROUP_ID,
+                message_id=entry['forum_message_id'],
+                reaction=[{"type": "emoji", "emoji": "✅"}],
+            )
+        except (BadRequest, TelegramError):
+            pass
     
     if message.text and await db.get_autoreply_enabled():
         knowledge_base_content = await db.get_all_knowledge_content()

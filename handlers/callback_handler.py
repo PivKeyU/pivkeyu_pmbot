@@ -1,5 +1,6 @@
 import re
 import secrets
+from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -8,7 +9,7 @@ from services.gemini_service import gemini_service
 from database import models as db
 from utils.media_converter import sticker_to_image
 from services.thread_manager import get_or_create_thread, build_user_info_card_keyboard
-from services import broadcast as broadcast_service
+from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
 from .user_handler import _resend_message
 from config import config
 from rss import data_manager as rss_data_manager, settings as rss_settings
@@ -71,6 +72,9 @@ async def _build_panel_back_view():
         [InlineKeyboardButton("拦截消息篮", callback_data="panel_filtered_page_1"), InlineKeyboardButton("自动回复女仆管理", callback_data="panel_autoreply")],
         [InlineKeyboardButton("通行证名单管理", callback_data="panel_exemptions_page_1"), InlineKeyboardButton("网络测试茶具管理", callback_data="panel_network_test")],
         [InlineKeyboardButton("广播与分组", callback_data="panel_broadcast"), InlineKeyboardButton("RSS 订阅茶点管理", callback_data="panel_rss")],
+        [InlineKeyboardButton("TG 监听", callback_data="panel_tg_monitor"), InlineKeyboardButton("网页监控", callback_data="panel_web_monitor")],
+        [InlineKeyboardButton("关键词拦截", callback_data="panel_spamrules")],
+        [InlineKeyboardButton("运行状态", callback_data="panel_monitor_status"), InlineKeyboardButton("安全更新", callback_data="panel_updatebot")],
         [InlineKeyboardButton("AI 模型衣柜", callback_data="panel_ai_settings")],
     ]
     return message, InlineKeyboardMarkup(keyboard)
@@ -245,6 +249,65 @@ def _build_rss_feed_detail(application, chat_id: str, feed_url: str):
     keyboard_rows.append([InlineKeyboardButton("回 RSS 控制台", callback_data="panel_rss")])
 
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+
+def _format_runtime_statuses(statuses: list[dict]) -> str:
+    if not statuses:
+        return "暂时还没有运行状态记录。"
+
+    lines = ["运行状态", ""]
+    for item in statuses[:30]:
+        failures = int(item.get("consecutive_failures") or 0)
+        badge = "正常" if failures == 0 else f"异常 x{failures}"
+        lines.extend([
+            f"{item.get('name')} [{badge}]",
+            f"  类别: {item.get('category')}",
+            f"  最近运行: {item.get('last_run_at') or '-'}",
+            f"  最近成功: {item.get('last_success_at') or '-'}",
+            f"  最近失败: {item.get('last_error_at') or '-'}",
+            f"  耗时: {item.get('last_duration_ms') or 0} ms, 推送: {item.get('last_sent_count') or 0}",
+        ])
+        if item.get("last_error"):
+            lines.append(f"  错误: {str(item['last_error'])[:180]}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+async def _build_spamrules_view():
+    text = await spam_filter.format_settings()
+    settings = await db.get_spam_keyword_filter_settings()
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "关闭关键词拦截" if settings["enabled"] else "启用关键词拦截",
+                callback_data="panel_spamrules_toggle",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "关闭自动拉黑" if settings["auto_block"] else "启用自动拉黑",
+                callback_data="panel_spamrules_autoblock",
+            )
+        ],
+        [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+    ]
+    return text + "\n\n命令管理: /spamrules", InlineKeyboardMarkup(keyboard)
+
+
+async def _build_updatebot_view():
+    repo_dir = Path(__file__).resolve().parent.parent
+    status = await safe_update.get_status(repo_dir, fetch_remote=True)
+    rollback = await db.get_app_meta("last_update_rollback")
+    text = (
+        safe_update.format_status(status, rollback)
+        + "\n\n执行更新: /updatebot apply\n执行回滚: /updatebot rollback"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("刷新状态", callback_data="panel_updatebot")],
+        [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+    ])
+    return text, keyboard
+
 
 def _build_ai_model_selection_view(application, provider_type: str, feature_type: str, models: list, page: int = 1):
     total = len(models)
@@ -728,6 +791,147 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         message, keyboard = _build_rss_panel_view()
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_tg_monitor":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        message = await tg_monitor.build_panel_text()
+        await query.edit_message_text(message, reply_markup=tg_monitor.build_panel_keyboard())
+
+    elif data == "panel_tg_monitor_list":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        message = await tg_monitor.build_monitor_list_text()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("回 TG 监听", callback_data="panel_tg_monitor")],
+            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        ])
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_tg_monitor_discovered":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        chats = await db.list_discovered_tg_chats(limit=40)
+        if not chats:
+            message = "暂时还没有发现的群/频道。"
+        else:
+            lines = ["发现的 TG 群/频道", ""]
+            for chat in chats:
+                username = f" @{chat['username']}" if chat.get("username") else ""
+                lines.append(
+                    f"- {chat.get('title') or chat['chat_id']}{username}\n"
+                    f"  chat_id: {chat['chat_id']}\n"
+                    f"  最近看到: {chat.get('last_seen_at') or '-'}"
+                )
+            message = "\n".join(lines)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("回 TG 监听", callback_data="panel_tg_monitor")],
+            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        ])
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_web_monitor":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        message = await web_monitor.build_panel_text()
+        await query.edit_message_text(message, reply_markup=web_monitor.build_panel_keyboard())
+
+    elif data == "panel_web_monitor_list":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        message = await web_monitor.build_monitor_list_text()
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("回网页监控", callback_data="panel_web_monitor")],
+            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        ])
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_spamrules":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        message, keyboard = await _build_spamrules_view()
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_spamrules_toggle":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        settings = await db.get_spam_keyword_filter_settings()
+        await db.set_spam_keyword_filter_enabled(not settings["enabled"])
+        await query.answer("关键词拦截开关已更新。", show_alert=True)
+        message, keyboard = await _build_spamrules_view()
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_spamrules_autoblock":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        settings = await db.get_spam_keyword_filter_settings()
+        await db.set_spam_keyword_auto_block(not settings["auto_block"])
+        await query.answer("自动拉黑开关已更新。", show_alert=True)
+        message, keyboard = await _build_spamrules_view()
+        await query.edit_message_text(message, reply_markup=keyboard)
+
+    elif data == "panel_monitor_status":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        statuses = await db.get_runtime_statuses()
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("只看 RSS", callback_data="panel_monitor_status_rss"),
+                InlineKeyboardButton("只看 TG", callback_data="panel_monitor_status_tg"),
+            ],
+            [InlineKeyboardButton("只看网页监控", callback_data="panel_monitor_status_web")],
+            [InlineKeyboardButton("刷新", callback_data="panel_monitor_status")],
+            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        ])
+        await query.edit_message_text(_format_runtime_statuses(statuses), reply_markup=keyboard)
+
+    elif data in {"panel_monitor_status_rss", "panel_monitor_status_tg", "panel_monitor_status_web"}:
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        if data.endswith("_rss"):
+            category = "rss"
+        elif data.endswith("_web"):
+            category = "web"
+        else:
+            category = "tg_monitor"
+        statuses = await db.get_runtime_statuses(category=category)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("全部状态", callback_data="panel_monitor_status")],
+            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        ])
+        await query.edit_message_text(_format_runtime_statuses(statuses), reply_markup=keyboard)
+
+    elif data == "panel_updatebot":
+        if not await db.is_admin(user_id):
+            await query.answer("主人没有权限吩咐这项工作哦。", show_alert=True)
+            return
+
+        try:
+            message, keyboard = await _build_updatebot_view()
+        except Exception as exc:
+            message = f"读取安全更新状态失败：{exc}"
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("回女仆长面板", callback_data="panel_back")]])
         await query.edit_message_text(message, reply_markup=keyboard)
 
     elif data == "panel_ai_settings":

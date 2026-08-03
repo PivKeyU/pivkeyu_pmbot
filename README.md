@@ -1,272 +1,337 @@
-<h1 align="center">🛡️ Telegram 双向聊天机器人</h1>
+<h1 align="center">🛡️ pivkeyu_pmbot — Telegram 双向聊天机器人</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10+-blue.svg" alt="Python Version">
-  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
-  <a href="https://github.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot/stargazers">
-    <img src="https://img.shields.io/github/stars/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot.svg?style=social&label=Star" alt="GitHub Stars">
-  </a>
+  <em>用户消息直达管理员，AI 审查护航，论坛话题群管理，全维度监控</em>
 </p>
 
-> 一个功能完善、支持 AI 驱动的 Telegram 双向聊天机器人，专为提升用户与管理员之间的沟通效率和安全性而设计。
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/python--telegram--bot-v20%2B-2CA5E0?logo=telegram" alt="python-telegram-bot v20+">
+  <img src="https://img.shields.io/github/license/PivKeyU/pivkeyu_pmbot" alt="License: MIT">
+  <img src="https://img.shields.io/github/actions/workflow/status/PivKeyU/pivkeyu_pmbot/docker-publish.yml?label=Docker%20Build" alt="Docker Build">
+  <a href="https://github.com/PivKeyU/pivkeyu_pmbot/stargazers">
+    <img src="https://img.shields.io/github/stars/PivKeyU/pivkeyu_pmbot.svg?style=social&label=Star" alt="GitHub Stars">
+  </a>
+</p>
 
 ---
 
 ## 📜 目录
 
-- [✨ 核心特性](#-核心特性)
-- [🚀 快速开始 (Docker 推荐)](#-快速开始-docker-推荐)
-- [🛠️ (可选) 手动部署](#️-可选-手动部署)
-- [📖 使用指南](#-使用指南)
+- [📖 项目简介](#-项目简介)
+- [✨ 功能特性](#-功能特性)
+- [🏗️ 架构与消息流](#️-架构与消息流)
+- [🚀 快速开始](#-快速开始)
 - [🔧 配置说明](#-配置说明)
+- [📖 使用指南与命令参考](#-使用指南与命令参考)
+- [❓ 常见问题 (FAQ)](#-常见问题-faq)
+- [🧰 技术栈](#-技术栈)
 - [🤝 贡献指南](#-贡献指南)
 - [📄 许可证](#-许可证)
 
 ---
 
-## ✨ 核心特性
+## 📖 项目简介
 
-| 特性 | 描述 |
-| :--- | :--- |
-| 💬 **话题群组管理** | 利用 Telegram Forum 功能，为每位用户创建独立对话线程，自动展示用户信息，便于消息追溯与管理。 |
-| 🤖 **AI 智能筛选** | 集成 Google Gemini API 及 OpenAI (兼容) API，可智能识别潜在的垃圾信息或恶意内容，并用于生成多样化的人机验证问题。支持动态切换模型和多模态识别。 |
-| 🛡️ **人机验证系统** | 新用户首次交互时需通过 AI 生成的验证问题，有效拦截自动化机器人骚扰。 |
-| ⚡ **高性能处理** | 基于 `asyncio` 的异步消息队列和多 Worker 并行处理机制，轻松应对高并发场景，杜绝消息堵塞。 |
-| 🖼️ **多媒体支持** | 无缝转发图片、视频、音频、文档等多种媒体格式，并完整保留 Markdown 格式。 |
-| ⚫ **黑名单管理** | 管理员可轻松拉黑/解封用户。被拉黑用户将收到友好提示，并可通过 AI 生成的问答挑战进行自助解封。 |
-| 🛡️ **内容审查豁免** | 管理员可以为信任用户设置临时或永久豁免，跳过 AI 内容审查，提升沟通效率。 |
-| 🔐 **权限控制** | 基于 Telegram ID 的多管理员权限系统，确保只有授权人员才能执行管理操作。 |
-| 🤖 **智能自动回复** | 基于知识库的 AI 自动回复功能，在内容审查通过后自动回答用户问题，支持 Markdown 格式，管理员可随时查看自动回复内容。 |
-| 🌐 **网络测试工具** | 集成网络测试功能，支持通过远程服务器进行 Ping 测试和路由追踪（NextTrace），支持 ICMP 和 TCP 模式，方便进行网络诊断。 |
-| 📰 **RSS 订阅推送** | 在私聊中管理 RSS 列表、关键词和自定义页脚，并按需推送最新条目。 |
-| 🔎 **TG 群/频道关键词监听** | 支持 Bot 入群监听，也支持 Telethon 用户会话监听 Bot 无法加入的群/频道，命中关键词后推送给管理员。 |
-| 🕸️ **网页关键词/变化监控** | 支持网页 CSS 选择器监控、关键词命中、新条目和内容/价格/库存变化提醒。 |
-| 🚫 **关键词广告拦截** | 在 AI 审查前进行轻量关键词拦截，可配置命中后自动拉黑，降低固定广告话术的处理成本。 |
-| 🔧 **安全更新与运行状态** | 提供 `/updatebot` ff-only 安全更新检查/回滚，以及 RSS/TG/网页监控运行状态记录。 |
+一个功能完善、AI 驱动的 Telegram 双向聊天机器人：用户通过私聊把消息交给机器人，机器人自动为每位用户创建**论坛话题 (Forum Topic)** 工单转发给管理员，管理员在话题中回复后实时回传用户——既是客服工单系统，也是反骚扰安全网关。
+
+核心卖点：**AI 内容审查 + AI 人机验证 + 关键词广告拦截** 三重防护过滤垃圾与骚扰，同时提供 TG 群/频道关键词监听、网页变化监控、RSS 订阅推送等监控能力，配合 `/inbox` 待办聚合、安全自更新等运维工具，开箱即用。
+
+**适用于以下场景：**
+
+- 需要屏蔽骚扰/垃圾消息的公开 Telegram 客服机器人
+- 管理员想用「私聊 → 论坛话题工单」模式集中处理用户消息
+- 需要监听 TG 群/频道关键词、网页价格/库存变化、RSS 更新推送
 
 ---
 
-## 🚀 快速开始 (Docker 推荐)
+## ✨ 功能特性
 
-> [!TIP]\
-> 我们强烈推荐使用 Docker 进行部署，这可以为您免去环境配置的麻烦。
+### 🗣️ 双向沟通
 
-1. 首先，在您的服务器上创建一个目录，用于存放机器人的配置和数据。
+| 特性 | 说明 |
+| :--- | :--- |
+| 💬 **论坛话题工单** | 每位用户自动分配独立话题线程，消息自动附带用户信息，便于追溯与管理 |
+| 📦 **全媒体递送** | 转发文本、图片、视频、音频、语音、文档、贴纸，并保留 Markdown 格式 |
+| 🔄 **双向同步** | 用户消息转发到话题，管理员在话题中回复自动回传；双方**编辑**消息也会同步更新 |
+| 📋 **待办小本本 `/inbox`** | 列出最近发来消息、管理员尚未回复的用户话题，附内容预览与深链一键跳转 |
+
+### 🤖 AI 能力
+
+| 特性 | 说明 |
+| :--- | :--- |
+| 🕵️ **AI 内容审查** | Gemini / OpenAI 双提供商，识别垃圾信息与恶意内容，支持图片等多模态输入 |
+| 🧩 **AI 人机验证** | 新用户首次交互需完成 AI 生成的验证题，答错自动换题，超限自动拉黑 |
+| 📚 **知识库自动回复** | 审查通过后基于知识库自动回答用户，支持 Markdown，回复同时通知管理员 |
+| 🎨 **AI 模型衣柜** | `/panel` 中为「内容审查 / 验证题生成 / 自动回复」分别挑选模型，可动态切换提供商与模型 |
+
+### 🛡️ 安全防护
+
+| 特性 | 说明 |
+| :--- | :--- |
+| ⚫ **黑名单管理** | 管理员可拉黑/解封用户；被拉黑用户可答 AI 挑战题自助解封（永久拉黑除外） |
+| 🚫 **关键词广告拦截** | 在 AI 审查前做轻量关键词拦截，可配置命中后自动拉黑，降低固定话术处理成本 |
+| 🎫 **审查通行证** | 为可信用户发放临时（按小时）/永久豁免，跳过 AI 内容审查，其余规则仍生效 |
+| ⏱️ **速率限制** | 按用户限速，多次超限自动永久拉黑，防刷屏攻击 |
+
+### 🔎 监控体系
+
+| 特性 | 说明 |
+| :--- | :--- |
+| 📡 **TG 群/频道监听** | Bot 入群监听 + Telethon 用户会话监听（Bot 无法加入的群/频道），关键词命中推送管理员；`/tgmon discovered` 不再包含论坛群自身，避免污染发现列表 |
+| 🕸️ **网页监控** | CSS 选择器解析条目，支持新条目、关键词命中、内容/价格/库存变化提醒 |
+| 📰 **RSS 订阅推送** | 私聊管理订阅源、关键词、自定义页脚与链接预览；新条目最多推送 5 条，多余用摘要提示防刷屏 |
+| 📊 **运行状态** | `/monitor_status` 查看 RSS / TG / 网页监控的运行状态记录 |
+
+### 🛠️ 管理工具
+
+| 特性 | 说明 |
+| :--- | :--- |
+| 🎛️ **女仆长面板 `/panel`** | 统计、黑名单、拦截篮、豁免名单、自动回复、广播分组、监控、模型等一站式管理 |
+| 📢 **分组与广播** | 管理用户分组，向全部用户或指定分组广播消息 |
+| 🌐 **网络测试** | 通过 SSH 远程服务器执行 Ping 与 NextTrace 路由追踪（ICMP/TCP），管理员授权后可用 |
+| 🔧 **安全更新** | `/updatebot` 仅执行 `ff-only` 更新并支持回滚，本地有未提交改动时拒绝更新 |
+| 🗄️ **aiosqlite 连接池** | 8 连接池 + 事务安全包装（出错自动回滚），高并发下数据库读写稳定 |
+
+---
+
+## 🏗️ 架构与消息流
+
+```mermaid
+flowchart LR
+    U[👤 用户私聊] -->|发送消息| B{🤖 机器人}
+    B -->|限速检查| RL[⏱️ 速率限制<br/>超限警告→自动拉黑]
+    B -->|黑名单检查| BL[⚫ 已拉黑<br/>永久:拒绝 / 临时:AI 解封挑战]
+    B -->|关键词广告拦截| SF[🚫 命中→拦截篮<br/>可配置自动拉黑]
+    B -->|AI 人机验证| V[🧩 未验证用户<br/>AI 验证题]
+    B -->|AI 内容审查| AI[🕵️ Gemini / OpenAI<br/>支持多模态图片]
+    AI -->|疑似垃圾| FB[🧺 拦截篮<br/>/view_filtered 可查看]
+    AI -->|通过| F[📨 转发到论坛话题群]
+    F -->|创建或复用话题| T[🗂️ 用户专属话题线程]
+    A[🧑‍💼 管理员] -->|在话题中回复| T
+    T -->|回复转发回私聊| U
+    B -->|审查通过后| AR[📚 知识库自动回复<br/>并通知管理员]
+```
+
+> 管理员在话题中的回复与**编辑**都会被同步回用户的私聊会话；用户的编辑同样会同步到话题中。
+
+---
+
+## 🚀 快速开始
+
+> [!TIP]
+> 推荐使用 Docker 部署，免去环境配置的麻烦。配置文件与数据均存放在宿主机，升级容器不丢数据。
+
+### 1. 准备配置
+
+创建部署目录并下载配置模板（或直接复制本仓库的 `.env.example`）：
 
 ```bash
-mkdir tg-bot-data
-cd tg-bot-data
+mkdir tg-bot-data && cd tg-bot-data
+wget https://raw.githubusercontent.com/PivKeyU/pivkeyu_pmbot/main/.env.example -O .env
+nano .env   # 填入 BOT_TOKEN、FORUM_GROUP_ID、ADMIN_IDS 等配置
 ```
 
-2. 下载 .env.example 配置文件模板，并重命名为 .env
+### 2. 使用 Docker Compose（推荐）
 
-```bash
-wget https://raw.githubusercontent.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot/main/.env.example -O .env
+```yaml
+services:
+  pivkeyu-pmbot:
+    container_name: pivkeyu-pmbot
+    image: pivkeyu/pivkeyu_pmbot:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
 ```
 
-3. 编辑 .env 文件，填入您的配置
-```bash
-nano .env
-```
-
-<details>
-<summary>📝 .env 文件配置示例 (点击展开)</summary>
-
-创建 `.env` 文件后，您可以将以下内容复制进去，并根据注释修改为您自己的配置：
-
-```env
-# --- 必需配置 ---
-
-# Telegram Bot配置
-# 从 @BotFather 获取您的 Bot Token
-BOT_TOKEN=your_bot_token_here
-
-# 您的Telegram话题群组ID
-# 将机器人设为群组管理员后，在群组里发送 /getid ，机器人会自动回复群组ID
-FORUM_GROUP_ID=-1001234567890
-
-# 管理员ID（您的Telegram用户ID），多个ID用逗号分隔
-ADMIN_IDS=123456789,987654321
-
-# --- 可选配置 ---
-
-# Gemini API配置 (如果您需要使用AI相关功能)
-# 从 Google AI Studio 获取
-GEMINI_API_KEY=your_gemini_api_key_here
-GEMINI_BASE_URL=
-
-# OpenAI API配置 (可选)
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 是否启用AI自动识别垃圾信息和恶意内容
-ENABLE_AI_FILTER=true
-
-# AI判断的置信度阈值（0-100），高于此值才会被认为是恶意内容
-AI_CONFIDENCE_THRESHOLD=70
-
-# --- 功能开关 ---
-
-# 是否启用新用户人机验证
-VERIFICATION_ENABLED=true
-
-# 是否启用黑名单用户自动解封机制
-AUTO_UNBLOCK_ENABLED=true
-
-# --- 数据库配置 ---
-# 容器内路径，通常不需要修改
-DATABASE_PATH=./data/bot.db
-
-# --- 性能配置 ---
-
-# 消息队列处理的worker数量
-MAX_WORKERS=5
-
-# 队列中消息的超时时间（秒）
-QUEUE_TIMEOUT=30
-
-# --- 验证配置 ---
-
-# 人机验证的超时时间（秒）
-VERIFICATION_TIMEOUT=300
-
-# 用户最大尝试验证次数
-MAX_VERIFICATION_ATTEMPTS=3
-
-# --- 速率限制 ---
-# 通常不需要修改
-
-# Bot每分钟最大处理消息数（每个用户）
-MAX_MESSAGES_PER_MINUTE=30
-
-# -- Watchtower 通知钩子（默认禁用，启用需去除配置的#注释） --
-
-# Watchtower 使用 shoutrrr 作为统一通知系统（支持包括 Telegram 在内的等多种渠道）
-#WATCHTOWER_NOTIFICATIONS=shoutrrr
-
-# 填入 通知渠道 的钩子（以 Telegram 举例）
-#WATCHTOWER_NOTIFICATION_URL=telegram://token@telegram?chats=channel-1[,chat-id-1,...]
-
-# --- TG 群/频道关键词监听（可选） ---
-
-# 使用 user_session 监听时需要，从 https://my.telegram.org 获取
-TG_API_ID=
-TG_API_HASH=
-
-# Telethon StringSession。未配置时，用户会话监听不会启动
-TG_API_SESSION=
-
-# 可选代理，例如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890
-TG_PROXY=
-
-# 是否允许启动 TG 监听服务
-TG_MONITOR_ENABLED=true
-
-# 新监听默认来源：user_session 或 bot
-TG_MONITOR_DEFAULT_SOURCE=user_session
-
-# TG 监听推送目标，留空则使用 ADMIN_IDS
-TG_MONITOR_NOTIFY_CHAT_IDS=
-
-# --- 关键词广告拦截（可选） ---
-SPAM_KEYWORD_FILTER_ENABLED=false
-SPAM_KEYWORD_AUTO_BLOCK=true
-```
-</details>
-
---- 
-> [!TIP]\
-> 配置好 .env 文件，选择 Docker-compose / Docker 部署 Chatbot
-
-### 使用 Docker-Compose
-
-1. 下载 docker-compose.yml:
-```bash
-wget https://raw.githubusercontent.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot/main/docker-compose.yml
-```
-
-2. 使用 Docker Compose 运行:
 ```bash
 docker compose up -d
 ```
 
 更新容器：
+
 ```bash
-# 在tg-bot-data目录下，执行以下命令
-docker compose down
-docker compose pull
-docker compose up -d
+docker compose down && docker compose pull && docker compose up -d
 ```
 
-[使用 Watchtower 自动更新本项目](watchtower/README.md)
+> 使用 [Watchtower 自动更新本项目](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 shoutrrr 通知配置示例）。
 
----
-### 使用 Docker Run
+### 3. 使用 Docker Run
 
 ```bash
 docker run -d \
-  --name tg-antiharassment-bot \
+  --name pivkeyu-pmbot \
   -v $(pwd)/.env:/app/.env \
   -v $(pwd)/data:/app/data \
   --restart unless-stopped \
-  weijiaqaq/tg-antiharassment-bot:latest
-```
-> **命令解析:**
-> - `-d`: 在后台运行容器。
-> - `--name tg-antiharassment-bot`: 为容器指定一个名字。
-> - `-v $(pwd)/.env:/app/.env`: 将您当前目录下的 `.env` 文件挂载到容器中。
-> - `-v $(pwd)/data:/app/data`: 将数据目录挂载出来，确保持久化存储。
-> - `--restart unless-stopped`: 容器退出时自动重启，保证服务高可用。
-> - `weijiaqaq/tg-antiharassment-bot:latest`: 指定要运行的 Docker Hub 镜像。
-
----
-
-## 🛠️ 手动部署
-
-如果您不想使用 Docker，也可以通过以下步骤手动部署。
-
-#### 1. 克隆项目
-
-```bash
-git clone https://github.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot.git
-cd Telegram_Anti-harassment_two-way_chatbot
+  pivkeyu/pivkeyu_pmbot:latest
 ```
 
-#### 2. 安装依赖
+> **命令解析：** `-d` 后台运行；`--name` 指定容器名；两个 `-v` 分别挂载 `.env` 配置与 `data` 数据目录（持久化 SQLite 数据库与监控数据）；`--restart unless-stopped` 容器退出自动重启；末尾为 Docker Hub 镜像名（也可用仓库根目录的 `docker-compose.yml` 中引用的镜像名）。
+
+### 4. 手动部署（可选）
 
 ```bash
-# 建议创建并激活虚拟环境
+git clone https://github.com/PivKeyU/pivkeyu_pmbot.git
+cd pivkeyu_pmbot
+
+# 创建并激活虚拟环境
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate  # Windows
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
 
-# 安装依赖
 pip install -r requirements.txt
-```
 
-#### 3. 配置环境变量
-
-复制 `.env.example` 文件为 `.env`，并填入您的配置。详细配置项请参考 Docker 部署部分的示例。
-
-```bash
-# 复制配置模板
+# 配置环境变量
 cp .env.example .env
-
-# 编辑.env文件
 nano .env
-```
 
-#### 4. 运行Bot
-
-```bash
+# 启动
 python bot.py
 ```
 
 ---
 
-## 📖 使用指南
+## 🔧 配置说明
 
-### TG 群/频道关键词监听
+所有配置通过 `.env` 文件加载（项目使用 `python-dotenv`）。以下变量以 `.env.example` 为准逐项列出；**扩展配置**（TG 监听、关键词拦截、RSS）由代码 `config.py` 读取并提供默认值，可按需自行追加到 `.env`。
+
+### Bot / 管理员
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `BOT_TOKEN` | ✅ | Telegram Bot Token，从 [@BotFather](https://t.me/BotFather) 获取 |
+| `FORUM_GROUP_ID` | ✅ | 论坛话题群组 ID（超级群组需开启 Topics），机器人须为该群管理员 |
+| `ADMIN_IDS` | ✅ | 管理员 Telegram 用户 ID，多个用逗号分隔 |
+
+### AI
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `GEMINI_API_KEY` | ❌ | Gemini API 密钥（从 [Google AI Studio](https://aistudio.google.com/api-keys) 获取），启用 AI 功能需要 |
+| `GEMINI_BASE_URL` | ❌ | Gemini 自定义 Base URL，留空使用官方接口 |
+| `ENABLE_AI_FILTER` | ❌ | 是否启用 AI 内容审查，默认 `true` |
+| `AI_CONFIDENCE_THRESHOLD` | ❌ | AI 判断置信度阈值（0-100），高于此值判定为恶意内容，默认 `70` |
+| `OPENAI_API_KEY` | ❌ | OpenAI API 密钥（可选，作为第二提供商） |
+| `OPENAI_BASE_URL` | ❌ | OpenAI Base URL，默认 `https://api.openai.com/v1` |
+
+### 功能开关 / 数据库 / 性能
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `VERIFICATION_ENABLED` | ❌ | 是否启用新用户 AI 人机验证，默认 `true` |
+| `AUTO_UNBLOCK_ENABLED` | ❌ | 是否启用黑名单用户 AI 挑战自助解封，默认 `true` |
+| `DATABASE_PATH` | ❌ | SQLite 数据库路径，默认 `./data/bot.db`（容器内路径通常无需修改） |
+| `MAX_WORKERS` | ❌ | 消息队列 Worker 数量，默认 `5`（预留配置，当前代码未使用） |
+| `QUEUE_TIMEOUT` | ❌ | 队列消息超时时间（秒），默认 `30`（预留配置，当前代码未使用） |
+
+### 验证 / 限速
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `VERIFICATION_TIMEOUT` | ❌ | 人机验证超时时间（秒），默认 `300` |
+| `MAX_VERIFICATION_ATTEMPTS` | ❌ | 用户最大尝试验证次数，默认 `3`，超限自动拉黑 |
+| `MAX_MESSAGES_PER_MINUTE` | ❌ | 每用户每分钟最大消息数，默认 `30`，忽略警告会永久拉黑 |
+
+### Watchtower 通知钩子（默认禁用）
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `WATCHTOWER_NOTIFICATIONS` | ❌ | 使用 shoutrrr 作为统一通知系统，启用需去除 `#` 注释并设为 `shoutrrr` |
+| `WATCHTOWER_NOTIFICATION_URL` | ❌ | 通知渠道钩子，如 `telegram://token@telegram?chats=channel-1[,chat-id-1,...]` |
+
+### 🔎 扩展配置：TG 群/频道关键词监听
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `TG_API_ID` / `TG_API_HASH` | ❌ | Telegram API ID 与 Hash，从 https://my.telegram.org 获取，user_session 监听需要 |
+| `TG_API_SESSION` | ❌ | Telethon StringSession，**未配置时用户会话监听不会启动** |
+| `TG_PROXY` | ❌ | 可选代理，如 `socks5://127.0.0.1:1080` 或 `http://127.0.0.1:7890` |
+| `TG_MONITOR_ENABLED` | ❌ | 是否允许启动 TG 监听服务，默认 `true` |
+| `TG_MONITOR_DEFAULT_SOURCE` | ❌ | 新监听默认来源：`user_session` 或 `bot`，默认 `user_session` |
+| `TG_MONITOR_NOTIFY_CHAT_IDS` | ❌ | TG 监听推送目标（逗号分隔），留空则使用 `ADMIN_IDS` |
+
+### 🚫 扩展配置：关键词广告拦截
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `SPAM_KEYWORD_FILTER_ENABLED` | ❌ | 是否启用关键词广告拦截，默认 `false` |
+| `SPAM_KEYWORD_AUTO_BLOCK` | ❌ | 命中后是否自动拉黑，默认 `true` |
+
+### 📰 扩展配置：RSS（代码支持，未收录于 .env.example）
+
+| 变量 | 必填 | 说明 |
+| :--- | :---: | :--- |
+| `RSS_ENABLED` | ❌ | 是否启用 RSS 轮询推送，默认 `false` |
+| `RSS_DATA_FILE` | ❌ | RSS 订阅数据文件，默认 `./data/rss_subscriptions.json` |
+| `RSS_CHECK_INTERVAL` | ❌ | RSS 轮询间隔（秒），默认 `300`，建议 ≥ 120 |
+| `RSS_AUTHORIZED_USER_IDS` | ❌ | RSS 命令授权用户（逗号分隔），不填则仅 `ADMIN_IDS` 可用 |
+
+---
+
+## 📖 使用指南与命令参考
+
+> 命令菜单会在启动时自动同步到 Telegram（私聊 / 群聊分别设置）。以下命令表与代码 `services/telegram_commands.py` 保持一致。
+
+### 👤 用户命令（私聊与群聊通用）
+
+| 命令 | 描述 |
+| :--- | :--- |
+| `/start` | 唤醒女仆（仅私聊） |
+| `/getid` | 查看主人 ID / 查看群组 ID |
+| `/ping` | 端来 Ping 测试 |
+| `/nexttrace` | 端来路由追踪 |
+| `/adduser` | 登记授权主人（管理员） |
+| `/rmuser` | 移除授权主人（管理员） |
+| `/addserver` | 登记测试服务器（管理员） |
+| `/rmserver` | 撤下测试服务器（管理员） |
+| `/install_nexttrace` | 安装追踪工具（管理员） |
+
+### 🧑‍💼 管理员命令（私聊）
+
+| 命令 | 描述 |
+| :--- | :--- |
+| `/help` | 查看女仆小手册 |
+| `/block` | 记入黑名单 |
+| `/unblock` | 移出黑名单 |
+| `/panel` | 打开女仆长面板 |
+| `/blacklist` | 查看黑名单小本本 |
+| `/stats` | 查看宅邸统计 |
+| `/inbox` | 查看待办小本本 |
+| `/view_filtered` | 查看拦截篮 |
+| `/autoreply` | 安排自动回复女仆 |
+| `/exempt` | 管理审查通行证 |
+| `/group` | 管理用户分组 |
+| `/broadcast` | 发送用户广播 |
+| `/spamrules` | 管理关键词拦截 |
+| `/tgmon` | 管理TG监听 |
+| `/webmon` | 管理网页监控 |
+| `/monitor_status` | 查看监听状态 |
+| `/updatebot` | 安全更新机器人 |
+
+> 群聊中同样注册以上管理员命令（除 `/help` 外），便于在话题内直接操作。
+
+### 📰 RSS 命令（仅限私聊）
+
+| 命令 | 描述 |
+| :--- | :--- |
+| `/rss_add <url>` | 添加 RSS 茶点 |
+| `/rss_remove <url\|ID>` | 撤下 RSS 茶点 |
+| `/rss_list` | 查看 RSS 茶点 |
+| `/rss_addkeyword <id> <关键词>` | 添加 RSS 口味词 |
+| `/rss_removekeyword <id> <关键词>` | 删除 RSS 口味词 |
+| `/rss_listkeywords <id>` | 查看 RSS 口味词 |
+| `/rss_removeallkeywords <id>` | 清空 RSS 口味词 |
+| `/rss_setfooter [文本]` | 设置 RSS 小尾巴 |
+| `/rss_togglepreview` | 切换链接预览 |
+| `/rss_add_user <user_id>` | 登记 RSS 授权（管理员） |
+| `/rss_rm_user <user_id>` | 移除 RSS 授权（管理员） |
+
+### 🎯 常用功能速览
+
+**TG 群/频道关键词监听**
 
 ```bash
 /tgmon add 监听名称 -1001234567890 关键词1,关键词2 user_session
@@ -277,9 +342,9 @@ python bot.py
 /tgmon delete 1
 ```
 
-`user_session` 模式需要配置 `TG_API_ID`、`TG_API_HASH`、`TG_API_SESSION`；`bot` 模式需要机器人已经在目标群/频道中。
+`user_session` 模式需要配置 `TG_API_ID`、`TG_API_HASH`、`TG_API_SESSION`；`bot` 模式需要机器人已经在目标群/频道中。支持 `keywords` / `exclude` / `interval` 子命令细化监听。
 
-### 网页关键词/变化监控
+**网页关键词/变化监控**
 
 ```bash
 /webmon add 监控名称 https://example.com 关键词1,关键词2
@@ -289,9 +354,9 @@ python bot.py
 /webmon off 1
 ```
 
-首次检查只建立基线，不推送页面上已有内容；后续发现新条目、关键词命中或内容变化时推送管理员。
+首次检查只建立基线，不推送页面上已有内容；后续发现新条目、关键词命中或内容/价格/库存变化时推送管理员。
 
-### 关键词广告拦截
+**关键词广告拦截**
 
 ```bash
 /spamrules on
@@ -300,7 +365,7 @@ python bot.py
 /spamrules
 ```
 
-### 运行状态与安全更新
+**运行状态与安全更新**
 
 ```bash
 /monitor_status
@@ -317,293 +382,70 @@ python bot.py
 
 ### 🔑 获取必要信息
 
-1.  **Bot Token**: 在 Telegram 中与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 命令创建机器人即可获得。
-2.  **话题群组 ID**: 创建一个超级群组 (Supergroup)，在设置中启用“话题”(Topics) 功能。然后将您的机器人添加为该群组的管理员。在群组中发送/getid，机器人会自动回复包含群组 ID 的信息。
-3.  **Gemini API 密钥** (可选): 访问 [Google AI Studio](https://aistudio.google.com/api-keys) 创建并复制您的 API 密钥。
-
-### 📜 命令列表
-
-#### 用户命令
-- `/start` - 启动机器人，显示欢迎信息。
-- `/getid` - 显示当前用户/群组ID。
-- `/help` - 显示帮助信息。
-
-#### 管理员命令
-- `/panel` - 打开管理面板
-- `/block` - 对应话题直接发送永久拉黑用户。
-- `/blacklist` - 查看当前的黑名单列表。
-- `/stats` - 查看机器人运行统计信息。
-
-> [!TIP]\
-> 更多命令请查看相应功能介绍中的详细说明
+1. **Bot Token**：与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 创建机器人即可获得。
+2. **话题群组 ID**：创建超级群组并启用「话题」(Topics)，将机器人添加为管理员，在群组中发送 `/getid`，机器人会自动回复群组 ID。
+3. **Gemini API 密钥**（可选）：访问 [Google AI Studio](https://aistudio.google.com/api-keys) 创建。
+4. **Telethon StringSession**（可选，user_session 监听）：在 https://my.telegram.org 获取 API ID/Hash，再用任意 Telethon 工具生成 StringSession 填入 `TG_API_SESSION`。
 
 ---
 
-### 🤖 自动回复功能
+## ❓ 常见问题 (FAQ)
 
-机器人支持基于知识库的智能自动回复功能，可以在内容审查通过后自动回答用户的问题。
+**Q1：用户发了消息，为什么管理员没收到？**
 
-#### 功能特点
+消息要经过「限速 → 黑名单 → 关键词拦截 → 人机验证 → AI 审查」多道关卡，任一关被拦下管理员就收不到：
 
-- **严格基于知识库**：AI 只会根据知识库中的内容回答，不会编造信息
-- **内容审查后触发**：自动回复仅在内容审查通过后执行
-- **Markdown 格式支持**：自动回复支持 Markdown 格式，提供更好的阅读体验
-- **管理员通知**：自动回复内容会同时发送给管理员，方便监控和管理
+1. **触发限速**：收到限速提醒后继续刷屏会被自动拉黑；
+2. **被拉黑**：永久拉黑直接拒绝，临时拉黑需完成 AI 解封挑战；
+3. **命中关键词广告拦截**：消息进入拦截篮，管理员可用 `/view_filtered` 查看；
+4. **未通过 AI 人机验证**：新用户首次发消息会收到验证题，答对后才递送；
+5. **AI 审查判为垃圾**：同样进入拦截篮，不会转发到话题群。
 
-<details>
-<summary>📝 更多详细说明 (点击展开)</summary>
+**Q2：如何获取群组 ID？**
 
-#### 使用步骤
+把机器人加为群组管理员，在群里发送 `/getid`，机器人会回复「群组 ID」和「您的用户 ID」。
 
-1. **开启自动回复**
-   - 使用 `/autoreply` 命令打开管理菜单
-   - 点击"开启自动回复"按钮
+**Q3：`user_session` 监听需要什么？**
 
-2. **添加知识库条目**
-   - 方式一：在管理菜单中点击"添加知识条目"
-   - 方式二：使用命令 `/autoreply add <标题> <内容>`
-   - 示例：`/autoreply add 常见问题 这是问题的答案`
+必须同时满足：Telethon 已安装（`requirements.txt` 自带）；`TG_API_ID`、`TG_API_HASH`、`TG_API_SESSION` 三项完整配置（缺任一项监听都不会启动）；`TG_MONITOR_ENABLED` 为 `true`；且存在至少一个启用中、来源为 `user_session` 的监听。
 
-3. **管理知识库**
-   - 使用 `/autoreply` 命令进入管理菜单
-   - 点击"管理知识库"查看所有条目
-   - 可以查看、编辑、删除知识条目
+**Q4：`/updatebot apply` 失败怎么办？**
 
-#### 命令说明
+失败是保护机制生效：本地有未提交改动、本地分支领先远端、或没有可用的回滚点。先提交/清理本地改动再重试；`/updatebot rollback` 可回滚到上一次更新前。
 
-- `/autoreply` - 显示自动回复管理菜单
-- `/autoreply on` - 开启自动回复
-- `/autoreply off` - 关闭自动回复
-- `/autoreply add <标题> <内容>` - 添加知识条目
-- `/autoreply edit <ID> <标题> <内容>` - 编辑知识条目
-- `/autoreply delete <ID>` - 删除知识条目
-- `/autoreply list` - 列出所有知识条目
+**Q5：验证失败被拉黑，还能解封吗？**
 
-#### 工作流程
+临时拉黑可重新发消息触发 AI 解封挑战自动开门；永久拉黑（管理员 `/block`、关键词拦截自动拉黑、多次超限等）只能由管理员 `/unblock` 解封。
 
-1. 用户发送消息
-2. 系统进行内容审查（AI 垃圾信息检测）
-3. 内容审查通过后，系统检查是否启用自动回复
-4. 如果启用，系统根据知识库生成回复
-5. 自动回复以 Markdown 格式发送给用户
-6. 自动回复内容同时发送给管理员（回复用户消息）
+**Q6：为什么 `/tgmon discovered` 看不到我的论坛群？**
 
-#### 注意事项
+这是刻意设计：论坛话题群自身（`FORUM_GROUP_ID`）不会再被记录进发现列表，避免污染 `/tgmon discovered`；其余群/频道照常被发现与监听。
 
-- 自动回复仅在知识库中有相关内容时才会触发
-- 如果知识库中没有相关内容，系统不会回复，等待管理员手动回复
-- 建议定期更新知识库，添加常见问题和答案
-</details>
+**Q7：网页监控添加后为什么不推送？**
+
+首次检查只建立基线、不推送已有内容；之后出现新条目、关键词命中或内容/价格/库存变化才会推送。可先用 `/webmon run <ID>` 手动触发一次检查验证。
+
+**Q8：RSS 命令没反应？**
+
+RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_IDS` 中的用户可用；另外 `RSS_ENABLED` 默认 `false`，未开启时不会轮询推送（可在 `/panel` → RSS 功能管理中开启）。
 
 ---
 
-### 🛡️ 内容审查豁免功能
+## 🧰 技术栈
 
-机器人支持为信任用户设置内容审查豁免，被豁免的用户可以跳过 AI 内容审查，直接发送消息。
-
-#### 功能特点
-
-- **临时豁免**：支持设置指定小时数的临时豁免，到期后自动恢复审查
-- **永久豁免**：支持设置永久豁免，适用于高度信任的用户
-- **话题操作**：在用户话题中直接发送命令即可豁免该用户，操作便捷
-- **状态查询**：可以随时查看用户的豁免状态和到期时间
-- **灵活管理**：支持随时移除豁免，恢复内容审查
-
-<details>
-<summary>📝 更多详细说明 (点击展开)</summary>
-
-#### 使用步骤
-
-1. **在用户话题中豁免用户**（推荐）
-   - 进入用户的话题
-   - 发送 `/exempt permanent [原因]` 永久豁免
-   - 或发送 `/exempt temp <小时数> [原因]` 临时豁免
-   - 例如：`/exempt temp 24 临时测试`
-
-2. **通过用户ID豁免**
-   - 使用 `/exempt <user_id> permanent [原因]` 永久豁免
-   - 或使用 `/exempt <user_id> temp <小时数> [原因]` 临时豁免
-
-3. **查看豁免状态**
-   - 在话题中发送 `/exempt` 查看该用户的豁免状态
-   - 或使用 `/exempt <user_id>` 查看指定用户的豁免状态
-
-4. **移除豁免**
-   - 在话题中发送 `/exempt remove`
-   - 或使用 `/exempt <user_id> remove`
-
-#### 命令说明
-
-**在话题中使用：**
-- `/exempt` - 查看当前用户的豁免状态
-- `/exempt permanent [原因]` - 永久豁免该用户
-- `/exempt temp <小时数> [原因]` - 临时豁免该用户（例如：`/exempt temp 24`）
-- `/exempt remove` - 移除该用户的豁免
-
-**通过用户ID使用：**
-- `/exempt <user_id>` - 查看指定用户的豁免状态
-- `/exempt <user_id> permanent [原因]` - 永久豁免指定用户
-- `/exempt <user_id> temp <小时数> [原因]` - 临时豁免指定用户
-- `/exempt <user_id> remove` - 移除指定用户的豁免
-
-#### 使用示例
-
-```bash
-# 在用户话题中永久豁免
-/exempt permanent 信任用户，无需审查
-
-# 在用户话题中临时豁免24小时
-/exempt temp 24 临时测试
-
-# 通过用户ID永久豁免
-/exempt 123456789 permanent 管理员信任
-
-# 移除豁免
-/exempt remove
-```
-
-#### 工作流程
-
-1. 管理员在用户话题中发送豁免命令
-2. 系统记录豁免信息（永久或临时）
-3. 用户发送消息时，系统检查豁免状态
-4. 如果用户被豁免，跳过 AI 内容审查，直接转发消息
-5. 临时豁免到期后，自动恢复内容审查
-
-#### 注意事项
-
-- 豁免功能仅跳过内容审查，其他功能（如速率限制、黑名单检查）仍然有效
-- 临时豁免到期后会自动恢复审查，无需手动操作
-- 建议谨慎使用永久豁免，仅对高度信任的用户使用
-- 可以随时通过 `/exempt remove` 移除豁免
-</details>
-
----
-
-### 🌐 网络测试功能
-
-机器人集成了强大的网络测试功能，支持通过远程服务器进行网络诊断。
-
-#### 功能特点
-
-- **Ping 测试**：通过远程服务器执行 Ping 测试，统计丢包率和延迟信息
-- **路由追踪**：使用 NextTrace 工具进行路由追踪，支持 ICMP 和 TCP 模式
-- **多服务器支持**：支持配置多个测试服务器，灵活选择测试节点
-- **交互式操作**：提供命令式和交互式两种使用模式，操作简单直观
-- **权限管理**：管理员自动拥有权限，普通用户需要授权才能使用
-
-<details>
-<summary>📝 更多详细说明 (点击展开)</summary>
-
-#### 使用步骤
-
-1. **配置服务器**（管理员）
-   - 使用 `/addserver` 命令添加测试服务器
-   - 支持交互式向导，逐步输入服务器信息
-   - 或使用命令格式：`/addserver "服务器名称" host port username password`
-
-2. **授权用户**（管理员）
-   - 使用 `/adduser <user_id>` 将用户添加到授权列表
-   - 管理员自动拥有权限，无需手动添加
-
-3. **执行测试**（授权用户）
-   - 使用 `/ping` 命令进行 Ping 测试
-   - 使用 `/nexttrace` 命令进行路由追踪
-   - 支持命令式（直接提供参数）和交互式（按提示操作）两种模式
-
-#### 命令说明
-
-**用户命令：**
-- `/ping [目标] [次数]` - 执行 Ping 测试，例如：`/ping 8.8.8.8 10`
-- `/nexttrace [目标]` - 执行路由追踪，例如：`/nexttrace google.com`
-
-**管理员命令：**
-- `/adduser <user_id>` - 添加授权用户
-- `/rmuser <user_id>` - 删除授权用户
-- `/addserver` - 交互式添加服务器
-- `/addserver "名称" host port username password` - 快速添加服务器
-- `/rmserver` - 删除服务器（显示列表选择）
-- `/rmserver "服务器名称"` - 快速删除指定服务器
-- `/install_nexttrace` - 在服务器上安装 NextTrace 工具
-
-#### 配置说明
-
-网络测试配置保存在 `data/network_test_config.json` 文件中，首次使用时会自动创建。配置文件格式：
-
-```json
-{
-  "ADMIN_USERS": [123456789],
-  "AUTHORIZED_USERS": [123456789, 987654321],
-  "SERVERS": [
-    {
-      "name": "测试服务器",
-      "host": "example.com",
-      "port": 22,
-      "username": "user",
-      "password": "password"
-    }
-  ]
-}
-```
-
-**注意：**
-- 管理员列表会自动从主配置（`.env` 中的 `ADMIN_IDS`）同步
-- 服务器密码以明文形式存储，请妥善保管配置文件
-- 建议定期备份配置文件
-
-#### 工作流程
-
-1. 用户发送 `/ping` 或 `/nexttrace` 命令
-2. 系统检查用户权限（管理员自动通过）
-3. 用户选择测试服务器（如果配置了多个）
-4. 用户输入测试目标（交互式模式）
-5. 系统通过 SSH 连接到服务器执行测试
-6. 返回格式化的测试结果
-
-#### 注意事项
-
-- 首次使用前需要管理员先添加测试服务器
-- 普通用户需要管理员授权才能使用网络测试功能
-- 路由追踪功能需要服务器上安装 NextTrace 工具（可使用 `/install_nexttrace` 自动安装）
-</details>
-
----
-
-### 📰 RSS 订阅功能
-
-本项目已整合高并发 RSS 机器人，可直接在 Telegram 私聊里管理订阅并按关键词过滤更新。
-
-#### 功能特点
-- 支持任意数量的 RSS 链接，自动并发轮询，新增条目即时推送
-- 为每个订阅源配置关键词、定制页脚和链接预览策略
-
-<details>
-<summary>📝 更多详细说明 (点击展开)</summary>
-
-#### 提示
-- 初次运行会在 `RSS_DATA_FILE` 指定的位置创建 JSON 文件，文件可备份以迁移订阅数据。
-- 管理员也可以随时在 `/panel` → “RSS 功能管理” 中开关功能、查看订阅并执行删除操作。
-- 在 `.env` 中添加 `RSS_CHECK_INTERVAL=300` 控制轮询间隔（秒），建议 ≥ 120 
-
-#### 命令列表（仅限私聊）
-- `/rss_add <url>` `/rss_remove <url|ID>` `/rss_list`：管理订阅源
-- `/rss_addkeyword <id> <关键词>` `/rss_removekeyword <id> <关键词>` `/rss_listkeywords <id>` `/rss_removeallkeywords <id>`：维护关键词过滤
-- `/rss_setfooter [文本]` `/rss_togglepreview`：设置自定义页脚与链接预览
-- `/rss_add_user <user_id>` `/rss_rm_user <user_id>`：仅管理员可用，用于维护 RSS 授权用户列表
-
-#### 工作流程
-1. 用户通过命令添加订阅源，机器人会在后台解析标题并记录 `last_entry_id`
-2. 轮询任务按 `RSS_CHECK_INTERVAL` 间隔并发抓取所有订阅
-3. 新条目会按关键词过滤，最多推送 5 条；剩余条目使用摘要提示防止刷屏
-4. 消息会附带自定义页脚并遵循是否显示链接预览的设定
-5. RSS 命令仅对 `ADMIN_IDS` 以及 `RSS_AUTHORIZED_USER_IDS` 中的用户生效
-</details>
-
----
-
-## 🔧 配置说明
-
-所有配置项均通过 `.env` 文件进行管理。详细的变量说明请参考 [快速开始](#-快速开始-docker-推荐) 部分的 `.env` 文件示例。
+| 技术 | 用途 |
+| :--- | :--- |
+| [Python 3.11+](https://www.python.org/) | 开发语言（Docker 基础镜像 `python:3.11-slim`） |
+| [python-telegram-bot v20+](https://github.com/python-telegram-bot/python-telegram-bot) | Telegram Bot 框架（长轮询 + 异步） |
+| [aiosqlite](https://github.com/omnilib/aiosqlite) | 异步 SQLite，内置 8 连接池与事务安全包装 |
+| [Google Gemini](https://ai.google.dev/) | AI 内容审查 / 验证题生成 / 自动回复 / 多模态识别 |
+| [OpenAI](https://openai.com/) | 可选第二 AI 提供商 |
+| [Telethon](https://github.com/LonamiWebs/Telethon) | 用户会话监听 Bot 无法加入的群/频道 |
+| [aiohttp](https://docs.aiohttp.org/) | 异步 HTTP 抓取（网页监控） |
+| [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | 网页 CSS 选择器解析 |
+| [feedparser](https://pythonhosted.org/feedparser/) | RSS 解析 |
+| [paramiko](https://github.com/paramiko/paramiko) | SSH 远程网络测试（Ping / NextTrace） |
+| [Docker](https://www.docker.com/) | 容器化部署（amd64 / arm64 多架构镜像） |
 
 ---
 
@@ -611,14 +453,11 @@ python bot.py
 
 欢迎任何形式的贡献！如果您有好的想法或发现了 Bug，请随时提交 Pull Request 或创建 Issue。
 
+开发小贴士：项目包含 `pytest` / `pytest-asyncio` 测试依赖，提交前建议运行 `black` 与 `flake8`（见 `requirements.txt` 开发工具段）。
+
 ## 📄 许可证
 
 本项目采用 [MIT 许可协议](LICENSE)。
-
-## 🙏 致谢
-
-- [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - 优秀的 Telegram Bot 框架。
-- [Google Gemini](https://ai.google.dev/) - 提供强大的 AI 能力。
 
 ---
 
@@ -626,7 +465,7 @@ python bot.py
   如果这个项目对你有帮助，请给个 Star ⭐️
 </p>
 <p align="center">
-  <a href="https://www.star-history.com/#Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot&type=date&legend=bottom-right">
-    <img src="https://api.star-history.com/svg?repos=Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot&type=date&legend=bottom-right" alt="Star History Chart">
+  <a href="https://www.star-history.com/#PivKeyU/pivkeyu_pmbot&type=date">
+    <img src="https://api.star-history.com/svg?repos=PivKeyU/pivkeyu_pmbot&type=date" alt="Star History Chart">
   </a>
 </p>

@@ -1,6 +1,6 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from .command_handler import (
-    start, help_command, block, unblock, blacklist, stats, getid, autoreply,
+    start, help_command, block, unblock, blacklist, stats, inbox, getid, autoreply,
     panel, exempt, group, broadcast, spamrules, tgmon, webmon, monitor_status, updatebot
 )
 from .user_handler import handle_message, handle_edited_private_message
@@ -32,6 +32,7 @@ def register_handlers(app: Application):
         app.add_handler(CommandHandler("panel", panel))
         app.add_handler(CommandHandler("blacklist", blacklist))
         app.add_handler(CommandHandler("stats", stats))
+        app.add_handler(CommandHandler("inbox", inbox))
         app.add_handler(CommandHandler("view_filtered", view_filtered))
         app.add_handler(CommandHandler("autoreply", autoreply))
         app.add_handler(CommandHandler("exempt", exempt))

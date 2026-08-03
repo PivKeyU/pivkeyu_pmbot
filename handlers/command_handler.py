@@ -2,10 +2,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
+from telegram.helpers import escape_markdown
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
 from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
+from config import config
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -39,6 +41,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/block` - 在用户话题中把捣乱者请进黑名单小本本\n"
         "- `/blacklist` - 查看黑名单小本本\n"
         "- `/stats` - 查看宅邸统计\n"
+        "- `/inbox` - 查看待办小本本\n"
         "- `/view_filtered` - 查看被女仆拦下的消息\n"
         "- `/exempt` - 给可信用户发放审查通行证（临时或永久）\n"
         "- `/group` - 管理私聊用户分组\n"
@@ -126,6 +129,72 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
+
+
+def _forum_message_link(thread_id: int, message_id: int) -> str:
+    """生成论坛话题内消息的深链（t.me/c/ 形式，剥掉超群 -100 前缀）。"""
+    chat_id_str = str(abs(config.FORUM_GROUP_ID))
+    if chat_id_str.startswith("100") and len(chat_id_str) > 3:
+        chat_id_str = chat_id_str[3:]
+    return f"https://t.me/c/{chat_id_str}/{thread_id}/{message_id}"
+
+
+def _format_local_time(created_at) -> str:
+    """把 SQLite 的 UTC 时间戳转成本地时间显示。"""
+    if not created_at:
+        return "-"
+    try:
+        dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(created_at)
+
+
+@admin_only
+async def inbox(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """待办小本本：列出最近发来消息、管理员尚未回复的用户话题，附深链跳转。"""
+    rows = await db.get_pending_reply_topics(limit=15)
+    total = await db.count_pending_reply_topics()
+
+    if not rows:
+        await update.message.reply_text("主人的待办小本本干干净净，没有积压的消息哦～")
+        return
+
+    if total > len(rows):
+        title = f"女仆长待办小本本（共 {total} 条，先端上前 {len(rows)} 条）"
+    else:
+        title = f"女仆长待办小本本（共 {total} 条）"
+
+    lines = [title, ""]
+    for idx, row in enumerate(rows, 1):
+        first_name = escape_markdown(str(row.get('first_name') or row.get('user_id') or '?'), version=1)
+        username = row.get('username')
+        name_part = (
+            f"{first_name} (@{escape_markdown(str(username), version=1)})"
+            if username else first_name
+        )
+        created_at = _format_local_time(row.get('created_at'))
+        lines.append(f"{idx}. {name_part} · {created_at}")
+
+        content = (row.get('content') or '').strip()
+        if content:
+            if len(content) > 50:
+                content = content[:50] + "..."
+            preview = f"内容: {escape_markdown(content, version=1)}"
+        elif row.get('media_type'):
+            preview = f"内容: [{escape_markdown(str(row['media_type']), version=1)}]"
+        else:
+            preview = "内容: （无文本内容）"
+        lines.append(f"   {preview}")
+
+        if row.get('thread_id') is not None and row.get('dest_message_id'):
+            link = _forum_message_link(row['thread_id'], row['dest_message_id'])
+            lines.append(f"   [跳转话题]({link})")
+        lines.append("")
+
+    await update.message.reply_text("\n".join(lines), parse_mode='Markdown')
 
 async def getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_type = update.effective_chat.type

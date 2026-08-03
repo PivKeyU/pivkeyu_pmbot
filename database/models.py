@@ -782,6 +782,68 @@ async def get_broadcast_delivery_mapping(user_id: int, broadcast_id: int):
             return None
 
 
+async def get_pending_reply_topics(limit: int = 15):
+    """列出最近发来消息、管理员尚未回复的用户话题（待办聚合）。
+
+    对每个 user_id 取其非广播映射（broadcast_id IS NULL）中 created_at 最新
+    （同秒时取 id 最大）的一条，该条为 user_to_admin 的即为待回复。广播记录
+    只是管理员主动推送的投递痕迹，不视为回复，也不影响待办判定。
+    返回按 created_at 倒序，含 user_id / first_name / username / thread_id /
+    dest_message_id / source_message_id / created_at / content / media_type。
+    """
+    async with db_manager.get_connection() as db:
+        async with db.execute('''
+            SELECT t.user_id, t.first_name, t.username, t.thread_id,
+                   t.dest_message_id, t.source_message_id, t.created_at,
+                   COALESCE(m_src.content, m_dst.content) AS content,
+                   COALESCE(m_src.media_type, m_dst.media_type) AS media_type
+            FROM (
+                SELECT mm.*, u.first_name, u.username,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY mm.user_id
+                           ORDER BY mm.created_at DESC, mm.id DESC
+                       ) AS rn
+                FROM message_mappings mm
+                JOIN users u ON u.user_id = mm.user_id
+                WHERE mm.broadcast_id IS NULL
+            ) t
+            LEFT JOIN messages m_src
+                ON m_src.user_id = t.user_id AND m_src.message_id = t.source_message_id
+            LEFT JOIN messages m_dst
+                ON m_dst.user_id = t.user_id AND m_dst.message_id = t.dest_message_id
+            WHERE t.rn = 1
+              AND t.direction = 'user_to_admin'
+            ORDER BY t.created_at DESC, t.id DESC
+            LIMIT ?
+        ''', (int(limit),)) as cursor:
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+            cols = [description[0] for description in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+
+async def count_pending_reply_topics() -> int:
+    """统计待回复话题总数（与 get_pending_reply_topics 同一筛选口径，不限制条数）。"""
+    async with db_manager.get_connection() as db:
+        async with db.execute('''
+            SELECT COUNT(*)
+            FROM (
+                SELECT mm.direction,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY mm.user_id
+                           ORDER BY mm.created_at DESC, mm.id DESC
+                       ) AS rn
+                FROM message_mappings mm
+                WHERE mm.broadcast_id IS NULL
+            ) t
+            WHERE t.rn = 1
+              AND t.direction = 'user_to_admin'
+        ''') as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
 # --- Read Receipts ---
 
 async def add_read_receipt(user_id: int, forum_message_id: int, thread_id: int):

@@ -1,27 +1,186 @@
+import asyncio
+import threading
 import aiosqlite
 import os
 import logging
+from collections import deque
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+class _PooledConnection:
+    """async-with wrapper around a pooled aiosqlite connection.
+
+    ``async with db_manager.get_connection() as db:`` checks out one of a small
+    set of persistent connections and returns it to the pool afterwards instead
+    of opening/closing a brand new connection on every statement, which is the
+    dominant latency/overhead in this hot path.  On exception the transaction is
+    rolled back so the pooled connection is never left in a dirty state.
+    """
+
+    __slots__ = ("_raw", "_owner")
+
+    def __init__(self, owner):
+        self._raw = None
+        self._owner = owner
+
+    def __getattr__(self, item):
+        if self._raw is None:
+            raise AttributeError(item)
+        return getattr(self._raw, item)
+
+    async def __aenter__(self):
+        self._raw = await self._owner._acquire()
+        return self._raw
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._raw is None:
+            return False
+        raw, self._raw = self._raw, None
+        reusable = True
+        if exc_type is not None:
+            try:
+                await raw.rollback()
+            except Exception:
+                logger.exception("回滚事务失败，关闭该连接")
+                reusable = False
+        else:
+            # 确保归还连接前事务状态干净，
+            # 避免把未提交事务泄漏给下一个使用者
+            try:
+                await raw.commit()
+            except Exception:
+                logger.exception("提交事务失败，关闭该连接")
+                reusable = False
+        if reusable:
+            try:
+                await self._owner._release(raw)
+            except Exception:
+                # 归还失败不应掩盖调用方的异常，连接将随引用被 GC 回收
+                logger.exception("归还连接失败")
+        else:
+            # 事务状态已不可信（可能残留未提交事务），不能放回池中复用
+            await self._owner._discard(raw)
+        return False
+
 
 class DatabaseManager:
     _instance = None
+    _POOL_SIZE = 8
 
     def __new__(cls, db_path=None):
         db_path = db_path or './data/bot.db'
         if cls._instance is None:
             cls._instance = super(DatabaseManager, cls).__new__(cls)
             cls._instance.db_path = db_path
+            cls._instance._init_pool()
             cls._instance.ensure_data_directory()
+            # 池中常驻的连接让 aiosqlite 的非 daemon worker 线程永不退出，
+            # 解释器退出时 threading._shutdown 会无限期 join 它们（atexit 模块
+            # 的回调在 join 之后才执行，救不了场）。threading._register_atexit
+            # 注册的回调在 join 之前运行，在这里关掉所有池连接让 worker 线程
+            # 自行退出。
+            threading._register_atexit(cls._instance._close_on_exit)
         elif db_path and cls._instance.db_path != db_path:
+            # 只更新路径（对之后新建的连接生效），绝不重复初始化池：重置会
+            # 清空空闲连接并把 _live 归零，导致正在使用的连接数量失控，且旧
+            # 空闲连接永远不会被关闭（泄漏）。
             cls._instance.db_path = db_path
             cls._instance.ensure_data_directory()
         return cls._instance
+
+    def _init_pool(self):
+        self._pool = deque()
+        self._pool_size = self._POOL_SIZE
+        # 当前由 Manager 创建且尚未关闭的连接数（含空闲与借出，不随归还回收）
+        self._live = 0
+        # 惰性初始化：asyncio.Condition 必须在 running loop 中创建，而模块
+        # import 时还没有 loop（Python 3.11 会隐式绑定到一个永不运行的 loop，
+        # 3.12+ 直接抛 RuntimeError）。首次真正使用时才在 _ensure_cond() 中创建。
+        self._cond = None
+        self._cond_loop = None
+
+    def _ensure_cond(self):
+        """返回绑定到当前 running loop 的 Condition（首次调用时惰性创建）。
+
+        若之后换了一个新的事件循环（例如 bot 重启时新建 loop），也会重新创建，
+        避免用到已废弃的旧 loop 对象。
+        """
+        loop = asyncio.get_running_loop()
+        if self._cond is None or self._cond_loop is not loop:
+            self._cond = asyncio.Condition()
+            self._cond_loop = loop
+        return self._cond
 
     def ensure_data_directory(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
 
     def get_connection(self):
-        return aiosqlite.connect(self.db_path)
+        return _PooledConnection(self)
+
+    async def _acquire(self):
+        cond = self._ensure_cond()
+        async with cond:
+            # 优先复用空闲；少于上限时新建；否则等待一个连接归还。
+            # 等待期间持锁，保证 wait/notify 配对与 _live 计数一致。
+            while not self._pool and self._live >= self._pool_size:
+                await cond.wait()
+            if self._pool:
+                raw = self._pool.popleft()
+            else:
+                raw = await aiosqlite.connect(self.db_path)
+                await raw.execute("PRAGMA foreign_keys = ON")
+                await raw.execute("PRAGMA busy_timeout = 5000")
+                self._live += 1
+            return raw
+
+    async def _release(self, raw):
+        cond = self._ensure_cond()
+        async with cond:
+            if len(self._pool) >= self._pool_size:
+                # 极端情况：池已满，直接关闭避免超出容量
+                if self._live > self._pool_size:
+                    self._live -= 1
+                await raw.close()
+            else:
+                self._pool.append(raw)
+            # 只唤醒一个等待者：每归还一个连接只满足一个 _acquire
+            cond.notify()
+
+    async def close_all(self):
+        """关闭全部空闲池连接（供进程退出钩子调用）。"""
+        cond = self._ensure_cond()
+        async with cond:
+            while self._pool:
+                raw = self._pool.popleft()
+                self._live -= 1
+                try:
+                    await raw.close()
+                except Exception:
+                    logger.exception("关闭连接失败")
+            cond.notify_all()
+
+    def _close_on_exit(self):
+        """threading 退出钩子：主事件循环已关闭，临时起一个 loop 同步关掉所有
+        池连接，避免 aiosqlite 的非 daemon worker 线程在解释器退出时被
+        无限期 join。"""
+        try:
+            asyncio.run(self.close_all())
+        except Exception:
+            logger.exception("进程退出时关闭连接池失败")
+
+    async def _discard(self, raw):
+        """关闭一个事务状态已不可信（提交/回滚失败）的连接，不放回池中复用。"""
+        cond = self._ensure_cond()
+        async with cond:
+            if self._live > 0:
+                self._live -= 1
+            try:
+                await raw.close()
+            except Exception:
+                logger.exception("关闭连接失败")
+            cond.notify()
 
     async def initialize(self):
         async with self.get_connection() as db:

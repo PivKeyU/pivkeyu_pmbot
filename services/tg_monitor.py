@@ -165,11 +165,13 @@ async def handle_bot_group_message(update: Update, context: ContextTypes.DEFAULT
     if not message or not message.chat:
         return False
 
-    await db.record_discovered_tg_chat(
-        int(message.chat.id),
-        str(getattr(message.chat, "title", "") or message.chat.id),
-        str(getattr(message.chat, "username", "") or ""),
-    )
+    # 跳过机器人自己的论坛话题群，避免污染 /tgmon discovered 发现列表（其余监听逻辑保持不变）
+    if not (config.FORUM_GROUP_ID and int(message.chat.id) == config.FORUM_GROUP_ID):
+        await db.record_discovered_tg_chat(
+            int(message.chat.id),
+            str(getattr(message.chat, "title", "") or message.chat.id),
+            str(getattr(message.chat, "username", "") or ""),
+        )
 
     hit = await _match_monitor(message, "bot")
     if not hit:
@@ -267,11 +269,13 @@ async def _handle_user_session_event(application: Application, event: Any) -> No
     if pseudo is None:
         return
 
-    await db.record_discovered_tg_chat(
-        int(pseudo.chat.id),
-        str(getattr(pseudo.chat, "title", "") or pseudo.chat.id),
-        str(getattr(pseudo.chat, "username", "") or ""),
-    )
+    # 跳过机器人自己的论坛话题群，避免污染 /tgmon discovered 发现列表（其余监听逻辑保持不变）
+    if not (config.FORUM_GROUP_ID and int(pseudo.chat.id) == config.FORUM_GROUP_ID):
+        await db.record_discovered_tg_chat(
+            int(pseudo.chat.id),
+            str(getattr(pseudo.chat, "title", "") or pseudo.chat.id),
+            str(getattr(pseudo.chat, "username", "") or ""),
+        )
 
     hit = await _match_monitor(pseudo, "user_session")
     if not hit:

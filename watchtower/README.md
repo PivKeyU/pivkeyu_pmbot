@@ -13,7 +13,7 @@ nano docker-compose.yml
 > **配置解析**
 > - `--cleanup`: 更新容器镜像并重启容器成功后，自动删除旧镜像。
 > - `--interval 3600`: 每隔 3600 秒（1 小时）检查一次镜像是否有更新。
-> - `TG-Antiharassment-Bot`: 容器名，如果自定义过，记得修改。
+> - `pivkeyu-pmbot`: 容器名，如果自定义过，记得修改。
 > - `max-size`： 单个日志文件最大 10MB
 > - `max-file`： 最多保留 3 个日志文件
 

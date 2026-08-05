@@ -192,9 +192,7 @@ docker compose down && docker compose pull && docker compose up -d
 ```
 
 > [!NOTE]
-> 仓库根目录提供两份 Compose 文件，镜像名不同（详见 [FAQ](#-常见问题-faq)）：
-> - `dockercompose.yaml`：新镜像名 `pivkeyu/pivkeyu_pmbot:latest`
-> - `docker-compose.yml`：历史镜像名 `weijiaqaq/tg-antiharassment-bot:latest`（Docker Hub 持续推送）
+> 仓库根目录提供两份等效的 Compose 文件（`docker-compose.yml` 与 `dockercompose.yaml`），均使用镜像 `pivkeyu/pivkeyu_pmbot:latest`，任选其一即可。
 
 > 使用 [Watchtower 自动更新本项目](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 shoutrrr 通知配置示例）。
 
@@ -560,9 +558,9 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 
 可以。人机验证会自动使用内置本地题库兜底（AI 生成的题在无 Key 或调用失败时也会回退）；但 AI 内容审查会放行（`No AI provider configured`）、知识库自动回复不会回复。要获得完整的 AI 能力，至少配置一个 API Key。
 
-**Q10：为什么仓库里有两个 compose 文件、两个镜像名？**
+**Q10：为什么仓库里有两个 compose 文件？**
 
-`dockercompose.yaml` 使用新镜像名 `pivkeyu/pivkeyu_pmbot:latest`；`docker-compose.yml` 与 `watchtower/` 使用历史镜像名 `weijiaqaq/tg-antiharassment-bot:latest`（Docker Hub 持续推送该名）。两者部署效果一致，任选其一；若同时使用 Watchtower，请保持 compose 中的容器名与镜像名一致。
+根目录的 `docker-compose.yml` 与 `dockercompose.yaml` 内容等效，均使用镜像 `pivkeyu/pivkeyu_pmbot:latest`，任选其一即可；`watchtower/` 目录提供配套的 Watchtower 自动更新配置（含 shoutrrr 通知示例）。
 
 **Q11：Docker 升级容器会丢数据吗？**
 

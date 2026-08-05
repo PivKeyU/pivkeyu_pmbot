@@ -1,7 +1,7 @@
 services:
-  TG-Antiharassment-Bot:
-    container_name: TG-Antiharassment-Bot
-    image: weijiaqaq/tg-antiharassment-bot:latest
+  pivkeyu-pmbot:
+    container_name: pivkeyu-pmbot
+    image: pivkeyu/pivkeyu_pmbot:latest
     restart: unless-stopped
     env_file:
      - .env
@@ -16,7 +16,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
-    command: --cleanup --interval 3600 TG-Antiharassment-Bot 
+    command: --cleanup --interval 3600 pivkeyu-pmbot
     logging:
       driver: "json-file"
       options:

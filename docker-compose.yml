@@ -1,9 +1,9 @@
 services:
-  TG-Antiharassment-Bot:
-    container_name: TG-Antiharassment-Bot  # 容器名，可定义
-    image: weijiaqaq/tg-antiharassment-bot:latest
+  pivkeyu-pmbot:
+    container_name: pivkeyu-pmbot
+    image: pivkeyu/pivkeyu_pmbot:latest
     restart: unless-stopped
     env_file:
-     - .env
+      - .env
     volumes:
-     - ./data:/app/data
+      - ./data:/app/data

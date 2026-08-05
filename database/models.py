@@ -1,4 +1,5 @@
 import json
+import aiosqlite
 from datetime import datetime, timezone, timedelta
 from .db_manager import db_manager
 from config import config
@@ -42,9 +43,15 @@ async def get_user(user_id: int):
 async def add_user(user_id: int, username: str, first_name: str, last_name: str = None, language_code: str = None):
     async with db_manager.get_connection() as db:
         await db.execute('''
-            INSERT OR REPLACE INTO users
+            INSERT INTO users
             (user_id, username, first_name, last_name, language_code, last_active)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = excluded.first_name,
+                last_name = excluded.last_name,
+                language_code = excluded.language_code,
+                last_active = excluded.last_active
         ''', (user_id, username, first_name, last_name, language_code, datetime.now()))
         await db.commit()
 
@@ -87,13 +94,38 @@ async def get_user_by_thread_id(thread_id: int):
                 return dict(zip([col[0] for col in cursor.description], row))
             return None
 
-async def save_message(user_id: int, message_id: int, content: str, direction: str, media_type: str = None, media_file_id: str = None):
+async def _ensure_messages_dest_column(db):
+    """幂等确保 messages 表包含 dest_message_id 列，兼容旧数据库平滑升级。
+
+    SQLite 的 ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS，因此先用
+    PRAGMA table_info 检查列是否存在，缺失时才执行 ALTER。
+    """
+    async with db.execute('PRAGMA table_info(messages)') as cursor:
+        rows = await cursor.fetchall()
+    columns = {row[1] for row in rows}
+    if 'dest_message_id' not in columns:
+        try:
+            await db.execute('ALTER TABLE messages ADD COLUMN dest_message_id INTEGER')
+        except aiosqlite.OperationalError as e:
+            # 并发连接可能同时检测到列缺失并 ALTER，后者会因重复列名失败
+            if 'duplicate column name' not in str(e):
+                raise
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(dest_message_id)')
+
+
+async def save_message(user_id: int, message_id: int, content: str, direction: str, media_type: str = None, media_file_id: str = None, dest_message_id: int = None, thread_id: int = None):
+    """保存一条消息记录。
+
+    message_id 为用户私聊侧消息 id；dest_message_id 为论坛侧消息 id
+    （转发到论坛后由 Telegram 返回），供 get_pending_reply_topics 做预览匹配。
+    """
     async with db_manager.get_connection() as db:
+        await _ensure_messages_dest_column(db)
         await db.execute('''
             INSERT INTO messages
-            (user_id, message_id, content, direction, media_type, media_file_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, message_id, content, direction, media_type, media_file_id))
+            (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id))
         await db.commit()
 
 async def save_filtered_message(user_id: int, message_id: int, content: str, reason: str, media_type: str = None, media_file_id: str = None):
@@ -810,7 +842,7 @@ async def get_pending_reply_topics(limit: int = 15):
             LEFT JOIN messages m_src
                 ON m_src.user_id = t.user_id AND m_src.message_id = t.source_message_id
             LEFT JOIN messages m_dst
-                ON m_dst.user_id = t.user_id AND m_dst.message_id = t.dest_message_id
+                ON m_dst.user_id = t.user_id AND m_dst.dest_message_id = t.dest_message_id
             WHERE t.rn = 1
               AND t.direction = 'user_to_admin'
             ORDER BY t.created_at DESC, t.id DESC
@@ -1244,11 +1276,24 @@ async def tg_monitor_allow_send(
                 (now_ts - dedupe_window_seconds,),
             )
 
-        await db.execute('''
-            INSERT INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts)
-            VALUES (?, ?, ?)
-            ON CONFLICT(monitor_id, fingerprint) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
-        ''', (int(monitor_id), fingerprint, now_ts))
+            # 原子去重：tg_monitor_recent 主键 (monitor_id, fingerprint) 保证并发
+            # 触发时（bot 监听 / user_session 监听）只有一个任务能插入成功，
+            # 冲突即代表该指纹刚刚已发送过，直接拒绝，避免 TOCTOU 重复推送。
+            cursor = await db.execute(
+                'INSERT OR IGNORE INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts) VALUES (?, ?, ?)',
+                (int(monitor_id), fingerprint, now_ts),
+            )
+            if cursor.rowcount == 0:
+                await db.commit()
+                return False, f'dedupe({dedupe_window_seconds}s)'
+        else:
+            # dedupe 窗口为 0 时不拦截，仅记录最近指纹供 min_interval 参考
+            await db.execute('''
+                INSERT INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts)
+                VALUES (?, ?, ?)
+                ON CONFLICT(monitor_id, fingerprint) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
+            ''', (int(monitor_id), fingerprint, now_ts))
+
         await db.execute('''
             INSERT INTO tg_monitor_last_send (monitor_id, sent_at_ts)
             VALUES (?, ?)

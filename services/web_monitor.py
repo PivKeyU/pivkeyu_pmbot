@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import logging
@@ -169,9 +170,35 @@ async def _send_admins(application: Application, text: str) -> int:
     return sent
 
 
+# 按 monitor_id 区分的运行锁：防止定时轮询与手动触发并发执行同一监控时重复推送
+_run_locks: dict[int, asyncio.Lock] = {}
+_RUN_LOCK_MAX = 256
+
+
+def _get_run_lock(monitor_id: int) -> asyncio.Lock:
+    """获取指定监控的运行锁；锁表过大时清空重建，防止字典无限增长。"""
+    lock = _run_locks.get(monitor_id)
+    if lock is None:
+        if len(_run_locks) >= _RUN_LOCK_MAX:
+            _run_locks.clear()
+        lock = asyncio.Lock()
+        _run_locks[monitor_id] = lock
+    return lock
+
+
 async def run_monitor(application: Application, monitor: dict) -> int:
+    # 非阻塞获取本监控的运行锁：获取失败说明已有实例在跑（定时轮询或手动触发），直接跳过本轮。
+    # 注意 timeout 不能为 0：Python 3.11 的 wait_for 对 timeout<=0 会立即判定超时（锁空闲也如此）
+    lock = _get_run_lock(monitor["id"])
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=0.05)
+    except asyncio.TimeoutError:
+        logger.info("网页监控 %s 已有实例在运行，跳过本轮。", monitor.get("name"))
+        return 0
+
     start = time.monotonic()
     sent_count = 0
+    notified_items = 0  # 按“条目命中数”计数（区别于 sent_count 的按管理员消息数）
     try:
         html_text = await _fetch_html(monitor["url"])
         items = _extract_items(html_text, monitor)
@@ -206,7 +233,8 @@ async def run_monitor(application: Application, monitor: dict) -> int:
 
             if reasons and monitor.get("notify_telegram"):
                 sent_count += await _send_admins(application, _build_notification(monitor, item, reasons, hits))
-                if sent_count >= 5:
+                notified_items += 1
+                if notified_items >= 5:
                     break
 
         await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
@@ -228,6 +256,8 @@ async def run_monitor(application: Application, monitor: dict) -> int:
             error=str(exc),
         )
         return 0
+    finally:
+        lock.release()
 
 
 async def check_due_monitors(context: ContextTypes.DEFAULT_TYPE) -> None:

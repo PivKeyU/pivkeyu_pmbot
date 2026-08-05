@@ -68,6 +68,35 @@ async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, th
             direction="user_to_admin",
             thread_id=thread_id,
         )
+        media_type = None
+        media_file_id = None
+        if message.photo:
+            media_type, media_file_id = "photo", message.photo[-1].file_id
+        elif message.sticker:
+            media_type, media_file_id = "sticker", message.sticker.file_id
+        elif message.animation:
+            media_type, media_file_id = "animation", message.animation.file_id
+        elif message.video:
+            media_type, media_file_id = "video", message.video.file_id
+        elif message.document:
+            media_type, media_file_id = "document", message.document.file_id
+        elif message.audio:
+            media_type, media_file_id = "audio", message.audio.file_id
+        elif message.voice:
+            media_type, media_file_id = "voice", message.voice.file_id
+        elif message.video_note:
+            media_type, media_file_id = "video_note", message.video_note.file_id
+        # 记录消息预览（含论坛侧 message_id），供 /inbox 待办聚合展示内容
+        await db.save_message(
+            user_id=update.effective_user.id,
+            message_id=message.message_id,
+            content=message.text or message.caption or "",
+            direction="user_to_admin",
+            media_type=media_type,
+            media_file_id=media_file_id,
+            dest_message_id=sent.message_id,
+            thread_id=thread_id,
+        )
     return sent
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

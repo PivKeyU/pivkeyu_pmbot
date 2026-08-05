@@ -2,10 +2,22 @@ import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.helpers import escape_markdown
 from database import models as db
+from database.db_manager import db_manager
 from services.gemini_service import gemini_service
 from config import config
 
 pending_unblocks = {}
+
+# 解封小验证允许的答错次数（与主验证一致，达到上限才升级永久拉黑）
+MAX_UNBLOCK_ATTEMPTS = config.MAX_VERIFICATION_ATTEMPTS
+
+
+def _cleanup_expired_unblocks() -> None:
+    """惰性清理过期的解封会话，防止内存 dict 无限膨胀。"""
+    now = time.time()
+    expired = [uid for uid, session in pending_unblocks.items() if now > session.get('expires_at', now)]
+    for uid in expired:
+        del pending_unblocks[uid]
 
 async def block_user(user_id: int, reason: str, admin_id: int, permanent: bool = False):
     await db.add_to_blacklist(user_id, reason, admin_id, permanent)
@@ -17,12 +29,14 @@ async def unblock_user(user_id: int):
     return f"女仆已按管理员吩咐，为用户 {user_id} 打开通道。"
 
 def is_unblock_pending(user_id: int) -> tuple[bool, bool]:
+    _cleanup_expired_unblocks()
+
     if user_id not in pending_unblocks:
         return False, True
-    
+
     session = pending_unblocks[user_id]
-    is_expired = time.time() - session['created_at'] > config.VERIFICATION_TIMEOUT
-    
+    is_expired = time.time() > session['expires_at']
+
     if is_expired:
         del pending_unblocks[user_id]
         return False, True
@@ -30,12 +44,14 @@ def is_unblock_pending(user_id: int) -> tuple[bool, bool]:
     return True, False
 
 def get_pending_unblock_message(user_id: int):
+    _cleanup_expired_unblocks()
+
     if user_id not in pending_unblocks:
         return None
-    
+
     session = pending_unblocks[user_id]
-    
-    if time.time() - session['created_at'] > config.VERIFICATION_TIMEOUT:
+
+    if time.time() > session['expires_at']:
         del pending_unblocks[user_id]
         return None
     
@@ -49,6 +65,8 @@ def get_pending_unblock_message(user_id: int):
     return question, InlineKeyboardMarkup(keyboard)
 
 async def start_unblock_process(user_id: int):
+    _cleanup_expired_unblocks()
+
     is_blocked, is_permanent = await db.is_blacklisted(user_id)
     
     if is_permanent:
@@ -75,7 +93,9 @@ async def start_unblock_process(user_id: int):
         'answer': correct_answer,
         'question': question,
         'options': options,
-        'created_at': time.time()
+        'attempts': 0,
+        'created_at': time.time(),
+        'expires_at': time.time() + config.VERIFICATION_TIMEOUT
     }
     
     keyboard = [
@@ -88,12 +108,14 @@ async def start_unblock_process(user_id: int):
     ), InlineKeyboardMarkup(keyboard)
 
 async def verify_unblock_answer(user_id: int, user_answer: str):
+    _cleanup_expired_unblocks()
+
     if user_id not in pending_unblocks:
         return "解封小会话已经过期或不见啦。", False
 
     session = pending_unblocks[user_id]
-    
-    if time.time() - session['created_at'] > config.VERIFICATION_TIMEOUT:
+
+    if time.time() > session['expires_at']:
         del pending_unblocks[user_id]
         return "解封验证超时啦，请重新发送消息领取新问题。", False
 
@@ -103,9 +125,28 @@ async def verify_unblock_answer(user_id: int, user_answer: str):
         await db.set_user_blacklist_strikes(user_id, 0)
         return "解封成功啦，主人现在可以正常发送消息。", True
     else:
-        del pending_unblocks[user_id]
-        await db.add_to_blacklist(user_id, reason="解封小验证失败", blocked_by=config.BOT_ID, permanent=True)
-        return "答案不对，解封失败啦。女仆只能按规则永久锁上通道。", False
+        # 与主验证一致：累计答错次数，答错一次不直接永久拉黑
+        session['attempts'] += 1
+        if session['attempts'] >= MAX_UNBLOCK_ATTEMPTS:
+            del pending_unblocks[user_id]
+            await _escalate_to_permanent(user_id)
+            return "答案多次不对，解封失败啦。女仆只能按规则永久锁上通道。", False
+        # 保留会话，答错次数累计；用户重新发送消息即可再次尝试
+        remaining = MAX_UNBLOCK_ATTEMPTS - session['attempts']
+        return f"答案不对哦，主人还有 {remaining} 次机会，重新发送消息可再次尝试。", False
+
+
+async def _escalate_to_permanent(user_id: int) -> None:
+    """把用户升级为永久拉黑；已有黑名单记录时保留原 reason/blocked_by，不覆盖。"""
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute(
+            'UPDATE blacklist SET permanent = 1 WHERE user_id = ?',
+            (user_id,)
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            # 无历史记录（竞态兜底），此时不存在可覆盖的旧记录
+            await db.add_to_blacklist(user_id, reason="解封小验证失败次数过多", blocked_by=config.BOT_ID, permanent=True)
 
 def _safe_text_for_markdown(text: str) -> str:
     if not text:

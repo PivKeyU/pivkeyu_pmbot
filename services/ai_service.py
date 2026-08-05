@@ -65,6 +65,21 @@ LOCAL_VERIFICATION_QUESTIONS = [
     {"question": "以下哪个不属于数字？", "correct_answer": "字母", "incorrect_answers": ["1", "2", "3"]}
 ]
 
+# 本地兜底题库：随机取一道题，用于无 API Key 或 API 调用失败时生成验证题
+def _get_local_question() -> dict:
+    question_data = random.choice(LOCAL_VERIFICATION_QUESTIONS)
+
+    correct_answer = question_data['correct_answer']
+    options = question_data['incorrect_answers'] + [correct_answer]
+    random.shuffle(options)
+
+    return {
+        "question": question_data['question'],
+        "correct_answer": correct_answer,
+        "options": options
+    }
+
+
 class AIProvider(ABC):
     @abstractmethod
     async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
@@ -149,10 +164,14 @@ class GeminiProvider(AIProvider):
             
             clean_text = re.sub(r'```json\s*|\s*```', '', response_text).strip()
             result = json.loads(clean_text)
+            # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
+            if not isinstance(result.get("is_spam"), bool):
+                raise ValueError("Gemini 返回的 is_spam 字段不是布尔值")
             return result
         except Exception as e:
             print(f"Gemini analysis failed: {e}")
-            return {"is_spam": False, "reason": "Analysis failed"}
+            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
+            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: Gemini analysis failed: {e}", "analysis_failed": True}
 
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('gemini_model_verification', 'gemini-2.5-flash-lite')
@@ -216,17 +235,8 @@ class GeminiProvider(AIProvider):
         return await self.generate_verification_challenge()
 
     def _get_local_question(self) -> dict:
-        question_data = random.choice(LOCAL_VERIFICATION_QUESTIONS)
-
-        correct_answer = question_data['correct_answer']
-        options = question_data['incorrect_answers'] + [correct_answer]
-        random.shuffle(options)
-        
-        return {
-            "question": question_data['question'],
-            "correct_answer": correct_answer,
-            "options": options
-        }
+        # 统一走模块级兜底函数，避免依赖实例（无 API Key 时无需构造 provider）
+        return _get_local_question()
 
     async def generate_autoreply(self, user_message: str, knowledge_base_content: str) -> str:
         model_name = await self._get_model_name('gemini_model_autoreply', 'gemini-2.5-flash')
@@ -295,6 +305,8 @@ class GeminiProvider(AIProvider):
 
 class OpenAIProvider(AIProvider):
     def __init__(self, api_key: str, base_url: str):
+        self.api_key = api_key
+        self.base_url = base_url or None
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     async def _get_model_name(self, setting_key: str, default: str) -> str:
@@ -340,10 +352,14 @@ class OpenAIProvider(AIProvider):
                  raise ValueError("OpenAI API returned an empty response.")
 
             result = json.loads(response_text)
+            # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
+            if not isinstance(result.get("is_spam"), bool):
+                raise ValueError("OpenAI 返回的 is_spam 字段不是布尔值")
             return result
         except Exception as e:
             print(f"OpenAI analysis failed: {e}")
-            return {"is_spam": False, "reason": "Analysis failed"}
+            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
+            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: OpenAI analysis failed: {e}", "analysis_failed": True}
 
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('openai_model_verification', 'gpt-4.1-mini')
@@ -400,16 +416,8 @@ class OpenAIProvider(AIProvider):
         return await self.generate_verification_challenge()
 
     def _get_local_question(self) -> dict:
-        question_data = random.choice(LOCAL_VERIFICATION_QUESTIONS)
-        correct_answer = question_data['correct_answer']
-        options = question_data['incorrect_answers'] + [correct_answer]
-        random.shuffle(options)
-        
-        return {
-            "question": question_data['question'],
-            "correct_answer": correct_answer,
-            "options": options
-        }
+        # 统一走模块级兜底函数，避免依赖实例（无 API Key 时无需构造 provider）
+        return _get_local_question()
 
     async def generate_autoreply(self, user_message: str, knowledge_base_content: str) -> str:
         model_name = await self._get_model_name('openai_model_autoreply', 'gpt-4.1')
@@ -469,6 +477,46 @@ class OpenAIProvider(AIProvider):
         return _unique_model_names(fetched_models)
 
 
+# 模块级 AI client 单例缓存：避免每次调用都新建 httpx 连接池（连接泄漏）
+_provider_cache = {}  # provider_type -> AIProvider 实例
+
+
+def _close_provider(provider) -> None:
+    """尽力关闭 provider 持有的底层 client（同步 close，失败仅告警）。"""
+    client = getattr(provider, 'client', None)
+    if client is None:
+        return
+    close = getattr(client, 'close', None)
+    if callable(close):
+        try:
+            close()
+        except Exception as e:
+            print(f"关闭 AI client 失败: {e}")
+
+
+def _get_cached_provider(provider_type: str, api_key: str, base_url: str = None) -> AIProvider:
+    """按 (类型, api_key, base_url) 复用 provider 单例；配置变化时关闭旧实例再新建。"""
+    cached = _provider_cache.get(provider_type)
+    if cached is not None and cached.api_key == api_key and (cached.base_url or "") == (base_url or ""):
+        return cached
+    # 配置变更或首次创建：先关闭旧实例，避免连接池泄漏
+    if cached is not None:
+        _close_provider(cached)
+    if provider_type == 'gemini':
+        cached = GeminiProvider(api_key, base_url)
+    else:
+        cached = OpenAIProvider(api_key, base_url or "")
+    _provider_cache[provider_type] = cached
+    return cached
+
+
+def close_clients() -> None:
+    """关闭所有缓存的 AI client 连接池（进程退出时调用）。"""
+    for provider in list(_provider_cache.values()):
+        _close_provider(provider)
+    _provider_cache.clear()
+
+
 class AIService:
     _instance = None
     
@@ -487,11 +535,11 @@ class AIService:
         if provider_type == 'gemini':
             if not config.GEMINI_API_KEY:
                 return None
-            return GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_BASE_URL)
+            return _get_cached_provider('gemini', config.GEMINI_API_KEY, config.GEMINI_BASE_URL)
         elif provider_type == 'openai':
             if not config.OPENAI_API_KEY:
                 return None
-            return OpenAIProvider(config.OPENAI_API_KEY, config.OPENAI_BASE_URL)
+            return _get_cached_provider('openai', config.OPENAI_API_KEY, config.OPENAI_BASE_URL)
         return None
 
     async def analyze_message(self, message, image_bytes: bytes = None) -> dict:
@@ -508,13 +556,15 @@ class AIService:
     async def generate_verification_challenge(self) -> dict:
         provider = await self.get_provider()
         if not provider:
-             return GeminiProvider(None)._get_local_question()
+            # 无 API Key 时直接走本地题库兜底，避免构造 provider 抛异常
+            return _get_local_question()
         return await provider.generate_verification_challenge()
 
     async def generate_unblock_question(self) -> dict:
         provider = await self.get_provider()
         if not provider:
-             return GeminiProvider(None)._get_local_question()
+            # 无 API Key 时直接走本地题库兜底，避免构造 provider 抛异常
+            return _get_local_question()
         return await provider.generate_unblock_question()
 
     async def generate_autoreply(self, user_message: str, knowledge_base_content: str) -> str:
@@ -526,10 +576,10 @@ class AIService:
     async def get_available_models(self, provider_type: str) -> list:
         if provider_type == 'gemini':
             if not config.GEMINI_API_KEY: return []
-            return await GeminiProvider(config.GEMINI_API_KEY, config.GEMINI_BASE_URL).get_models()
+            return await _get_cached_provider('gemini', config.GEMINI_API_KEY, config.GEMINI_BASE_URL).get_models()
         elif provider_type == 'openai':
-             if not config.OPENAI_API_KEY: return []
-             return await OpenAIProvider(config.OPENAI_API_KEY, config.OPENAI_BASE_URL).get_models()
+            if not config.OPENAI_API_KEY: return []
+            return await _get_cached_provider('openai', config.OPENAI_API_KEY, config.OPENAI_BASE_URL).get_models()
         return []
 
 ai_service = AIService()

@@ -2,7 +2,7 @@ import ipaddress
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .state import user_data
 from .tasks import do_ping_in_background, do_nexttrace_in_background
-from .utils import schedule_delete_message
+from .utils import schedule_delete_message, validate_target
 from .config import SERVERS, save_config
 import asyncio
 
@@ -150,7 +150,21 @@ async def callback_handler(update, context):
                 )
                 del user_data[user_id]
                 return True
-                
+            
+            # 核对所选服务器与选择时记录的一致，防止列表变化后误删其他服务器
+            server_info = SERVERS[server_idx]
+            if server_info['name'] != info.get('server_name') or server_info['host'] != info.get('server_host'):
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="服务器列表已发生变化，选中的服务器对不上号，请主人重新执行 /rmserver。"
+                )
+                context.application.create_task(
+                    schedule_delete_message(context, chat_id, message_id, delay=5)
+                )
+                del user_data[user_id]
+                return True
+            
             removed_server = SERVERS.pop(server_idx)
             save_config()
             
@@ -187,6 +201,8 @@ async def callback_handler(update, context):
             
             
             info["server_idx"] = server_idx
+            info["server_name"] = server_info['name']
+            info["server_host"] = server_info['host']
             
             
             keyboard = [
@@ -207,10 +223,36 @@ async def callback_handler(update, context):
         
         
         if data == "nt_rmserver_confirm":
-            info["confirm_delete"] = True
+            server_idx = info.get("server_idx", -1)
             
-            server_idx = info["server_idx"]
+            if server_idx < 0 or server_idx >= len(SERVERS):
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="服务器索引不对劲，可能列表已更新，请主人重新执行 /rmserver。"
+                )
+                
+                context.application.create_task(
+                    schedule_delete_message(context, chat_id, message_id, delay=5)
+                )
+                del user_data[user_id]
+                return True
+                
+            # 核对所选服务器与选择时记录的一致，防止列表变化后误删其他服务器
             server_info = SERVERS[server_idx]
+            if server_info['name'] != info.get('server_name') or server_info['host'] != info.get('server_host'):
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="服务器列表已发生变化，选中的服务器对不上号，请主人重新执行 /rmserver。"
+                )
+                context.application.create_task(
+                    schedule_delete_message(context, chat_id, message_id, delay=5)
+                )
+                del user_data[user_id]
+                return True
+            
+            info["confirm_delete"] = True
             
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -289,7 +331,7 @@ async def callback_handler(update, context):
                     text="女仆收到请求啦，正在后台执行 Ping，请稍候..."
                 )
                 context.application.create_task(
-                    do_ping_in_background(context, chat_id, server_info, info["target"], info["count"], user_id)
+                    do_ping_in_background(context, chat_id, server_info, info["target"], info["count"], user_id, message_id)
                 )
             elif mode == "interactive":
                 await context.bot.edit_message_text(
@@ -308,7 +350,7 @@ async def callback_handler(update, context):
                         text=f"主人选择了 {server_info['name']}。\n目标：{info['target']} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
                     )
                     context.application.create_task(
-                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, trace_mode)
+                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode)
                     )
                 except ValueError:
                     keyboard = [
@@ -332,7 +374,7 @@ async def callback_handler(update, context):
                         text=f"主人选择了 {server_info['name']}。\n目标：{info['target']} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
                     )
                     context.application.create_task(
-                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, trace_mode)
+                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode)
                     )
                 except ValueError:
                     await context.bot.edit_message_text(
@@ -357,7 +399,7 @@ async def callback_handler(update, context):
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                             text="女仆收到请求啦，正在后台执行 Ping，请稍候...")
         context.application.create_task(
-            do_ping_in_background(context, chat_id, info["server_info"], info["target"], count, user_id)
+            do_ping_in_background(context, chat_id, info["server_info"], info["target"], count, user_id, message_id)
         )
         return True
     elif data.startswith("nt_iptype_"):
@@ -373,7 +415,7 @@ async def callback_handler(update, context):
             text=f"女仆收到请求啦，正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
         )
         context.application.create_task(
-            do_nexttrace_in_background(context, chat_id, info["server_info"], info["target"], ip_type, user_id, trace_mode)
+            do_nexttrace_in_background(context, chat_id, info["server_info"], info["target"], ip_type, user_id, message_id, trace_mode)
         )
         return True
     
@@ -593,6 +635,11 @@ async def handle_message(update, context):
 
     if not info.get("target"):
         target = update.message.text.strip()
+        # 校验目标地址，防止 SSH 命令注入
+        ok, err = validate_target(target)
+        if not ok:
+            await update.message.reply_text(err)
+            return True
         info["target"] = target
 
         context.application.create_task(schedule_delete_message(context, update.message.chat_id, update.message.message_id, delay=5))
@@ -622,7 +669,7 @@ async def handle_message(update, context):
                     text=f"目标：{target} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
                 )
                 context.application.create_task(
-                    do_nexttrace_in_background(context, info["chat_id"], info["server_info"], target, "direct", user_id, trace_mode)
+                    do_nexttrace_in_background(context, info["chat_id"], info["server_info"], target, "direct", user_id, info["message_id"], trace_mode)
                 )
             except ValueError:
                 keyboard = [

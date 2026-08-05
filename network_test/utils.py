@@ -1,5 +1,7 @@
 import asyncio
 import time
+import re
+import ipaddress
 import logging
 
 def check_authorization(user_id: int, authorized_users: list, admin_users: list = None) -> bool:
@@ -10,6 +12,29 @@ def check_authorization(user_id: int, authorized_users: list, admin_users: list 
 
 def check_is_admin(user_id: int, admin_users: list) -> bool:
     return user_id in admin_users
+
+def validate_target(target: str) -> tuple:
+    """校验目标地址是否为合法的 IP 或域名（防 SSH 命令注入）。
+
+    允许：IPv4 / IPv6（不含端口）或严格格式的域名（长度 <= 253）。
+    返回: (是否合法, 错误提示)，合法时错误提示为空字符串。
+    """
+    if not target or not target.strip():
+        return False, "目标地址不能为空哦，主人。"
+    if len(target) > 253:
+        return False, "目标地址太长啦，主人，请输入不超过 253 个字符的 IP 或域名。"
+    try:
+        ipaddress.ip_address(target)
+        return True, ""
+    except ValueError:
+        pass
+    # 域名：字母数字开头结尾，每段 1~63 字符，可含连字符，点号分隔
+    domain_pattern = re.compile(
+        r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+    )
+    if domain_pattern.match(target):
+        return True, ""
+    return False, "目标地址格式不对哦，主人，请输入合法的 IP 地址或域名（如 8.8.8.8 或 google.com）。"
 
 async def schedule_delete_message(context, chat_id: int, message_id: int, delay: int = 10):
     await asyncio.sleep(delay)

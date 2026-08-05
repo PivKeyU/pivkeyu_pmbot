@@ -1,6 +1,9 @@
 import asyncio
+import html
 import logging
+import socket
 import time
+from urllib.parse import urlparse
 import feedparser
 from typing import Dict, Any, Optional
 from telegram.ext import ContextTypes
@@ -10,6 +13,36 @@ from database import models as db
 from . import data_manager, retry_utils, settings
 
 logger = logging.getLogger(__name__)
+
+# 抓取订阅源超时（秒）。feedparser 自身不支持 timeout 参数，
+# 这里通过 socket 默认超时 + asyncio.wait_for 双重兜底，防止 feed 挂起时线程被永久占用
+RSS_FETCH_TIMEOUT = 15
+# 单个周期内每个订阅源最多发送的新条目数
+MAX_SEND_PER_CYCLE = 5
+
+
+def _escape_html(text: Any) -> str:
+    """转义用户可控文本，防止破坏 Telegram HTML 消息（& < > 等需转义）。"""
+    return html.escape(str(text), quote=True)
+
+
+def _is_valid_http_url(url: str) -> bool:
+    """校验链接是否为 http(s) 协议，避免向消息中插入非法链接。"""
+    try:
+        result = urlparse(url)
+    except ValueError:
+        return False
+    return result.scheme in ("http", "https") and bool(result.netloc)
+
+
+def _parse_feed_with_timeout(feed_url: str):
+    """在线程中抓取并解析订阅源，临时设置 socket 默认超时以避免挂起。"""
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(RSS_FETCH_TIMEOUT)
+    try:
+        return feedparser.parse(feed_url)
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 async def send_telegram_message(
@@ -25,7 +58,7 @@ async def send_telegram_message(
         link_preview_enabled = user_data.get("link_preview_enabled", True)
 
         if custom_footer:
-            text += f"\n---\n{custom_footer}"
+            text += f"\n---\n{_escape_html(custom_footer)}"
 
         await retry_utils.retry_telegram_api(
             context.bot.send_message,
@@ -77,11 +110,30 @@ async def check_single_feed(
     status_name = f"rss:{chat_id}:{feed_config.get('title') or feed_url}"
 
     try:
-        if hasattr(asyncio, "to_thread"):
-            feed_content = await asyncio.to_thread(feedparser.parse, feed_url)
-        else:
-            loop = asyncio.get_event_loop()
-            feed_content = await loop.run_in_executor(None, feedparser.parse, feed_url)
+        try:
+            # feedparser 无内置超时，用 wait_for 兜底（线程内另有 socket 超时），
+            # 避免 feed 服务器挂起时 asyncio.gather 永不返回
+            if hasattr(asyncio, "to_thread"):
+                feed_content = await asyncio.wait_for(
+                    asyncio.to_thread(_parse_feed_with_timeout, feed_url),
+                    timeout=RSS_FETCH_TIMEOUT + 5,
+                )
+            else:
+                loop = asyncio.get_event_loop()
+                feed_content = await asyncio.wait_for(
+                    loop.run_in_executor(None, _parse_feed_with_timeout, feed_url),
+                    timeout=RSS_FETCH_TIMEOUT + 5,
+                )
+        except asyncio.TimeoutError:
+            logger.warning("抓取订阅源 %s 超时（超过 %s 秒），本轮跳过该订阅源。", feed_url, RSS_FETCH_TIMEOUT)
+            await db.record_runtime_status(
+                status_name,
+                "rss",
+                False,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error="fetch timeout",
+            )
+            return 0
 
         if feed_content.bozo:
             logger.warning(
@@ -147,7 +199,7 @@ async def check_single_feed(
         keywords = feed_config.get("keywords", [])
         feed_title = feed_config.get("title", feed_url)
 
-        for entry in new_entries:
+        for index, entry in enumerate(new_entries):
             if not _matches_keywords(entry, keywords):
                 title = entry.get("title", "无标题")
                 logger.debug(
@@ -161,25 +213,40 @@ async def check_single_feed(
             entry_id = _get_entry_id(entry)
             title = entry.get("title", "无标题")
             link = entry.get("link", "")
-            message = f"<b>{feed_title}</b>\n<a href='{link}'>{title}</a>"
+
+            # 标题/订阅源名等用户可控文本需转义；链接需校验 http(s) 协议后再插入
+            if _is_valid_http_url(link):
+                message = (
+                    f"<b>{_escape_html(feed_title)}</b>\n"
+                    f"<a href='{_escape_html(link)}'>{_escape_html(title)}</a>"
+                )
+            else:
+                logger.warning("订阅源 %s 的条目链接无效，仅发送标题: %s", feed_url, link)
+                message = f"<b>{_escape_html(feed_title)}</b>\n{_escape_html(title)}"
 
             await send_telegram_message(context, chat_id, message)
             sent_count += 1
             latest_sent_entry_id_this_cycle = entry_id
 
-            if sent_count >= 5 and len(new_entries) > 7:
-                remaining = len(new_entries) - sent_count
-                await send_telegram_message(
-                    context,
-                    chat_id,
-                    f"<i>...以及来自 {feed_title} 的 {remaining} 个更多新条目。</i>",
+            if sent_count >= MAX_SEND_PER_CYCLE:
+                # 剩余未处理条目数按"之后仍会实际发送"的条目计算，
+                # 剔除被关键词过滤（永远不会发送）的条目
+                remaining = sum(
+                    1 for remaining_entry in new_entries[index + 1:]
+                    if _matches_keywords(remaining_entry, keywords)
                 )
-                logger.info(
-                    "已向用户 %s 发送 %s 个来自 %s 的条目，还有更多可用。",
-                    chat_id,
-                    sent_count,
-                    feed_url,
-                )
+                if remaining > 0:
+                    await send_telegram_message(
+                        context,
+                        chat_id,
+                        f"<i>...以及来自 {_escape_html(feed_title)} 的 {remaining} 个更多新条目。</i>",
+                    )
+                    logger.info(
+                        "已向用户 %s 发送 %s 个来自 %s 的条目，还有更多可用。",
+                        chat_id,
+                        sent_count,
+                        feed_url,
+                    )
                 break
 
         if latest_sent_entry_id_this_cycle:
@@ -240,7 +307,26 @@ async def check_single_feed(
         return 0
 
 
+# 防止周期任务重叠：上一轮检查未完成时直接跳过本轮，避免两个周期
+# 同时读到旧 last_entry_id 并重复发送同一批消息
+_running_check = False
+
+
 async def check_feeds_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    global _running_check
+
+    if _running_check:
+        logger.warning("上一轮订阅源检查尚未完成，跳过本轮以避免重复发送。")
+        return
+
+    _running_check = True
+    try:
+        await _run_feeds_check(context)
+    finally:
+        _running_check = False
+
+
+async def _run_feeds_check(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not settings.is_enabled():
         logger.debug("RSS 功能已关闭，跳过本次检查任务。")
         return

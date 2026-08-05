@@ -1,6 +1,7 @@
 import re
+import shlex
 import paramiko
-from .utils import retry_operation
+from .utils import retry_operation, validate_target
 import logging
 
 def parse_ping_output(output: str) -> str:
@@ -138,6 +139,11 @@ def format_nexttrace_result(raw_output: str, server_name: str, target: str, ip_t
     return result
 
 def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
+    # 校验目标地址，防止 SSH 命令注入（非法直接返回错误，不执行）
+    ok, err = validate_target(target)
+    if not ok:
+        return err
+
     host = server_info['host']
     port = server_info['port']
     username = server_info['username']
@@ -150,7 +156,8 @@ def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
         try:
             logging.info(f"正在连接到服务器 {host}:{port}")
             ssh.connect(hostname=host, port=port, username=username, password=password, timeout=5)
-            cmd = f"ping -c {ping_count} {target}"
+            # shlex.quote 二次防御，防止目标地址被当作 shell 语法解析
+            cmd = f"ping -c {ping_count} {shlex.quote(target)}"
             logging.info(f"正在执行命令: {cmd}")
             stdin, stdout, stderr = ssh.exec_command(cmd, timeout=20)
             output = stdout.read().decode('utf-8', errors='ignore')
@@ -168,6 +175,11 @@ def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
     return retry_operation(ssh_connect_and_execute, retries=3, delay=2)
 
 def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode: str = "icmp") -> str:
+    # 校验目标地址，防止 SSH 命令注入（非法直接返回错误，不执行）
+    ok, err = validate_target(target)
+    if not ok:
+        return err
+
     host = server_info['host']
     port = server_info['port']
     username = server_info['username']
@@ -195,7 +207,8 @@ def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode
                 cmd_base += " --tcp"
             
             
-            cmd = f"{cmd_base} {target}"
+            # shlex.quote 二次防御，防止目标地址被当作 shell 语法解析
+            cmd = f"{cmd_base} {shlex.quote(target)}"
             
             logging.info(f"正在执行命令: {cmd}")
             stdin, stdout, stderr = ssh.exec_command(cmd, timeout=30)

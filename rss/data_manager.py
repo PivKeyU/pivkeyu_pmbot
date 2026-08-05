@@ -1,17 +1,28 @@
 import json
 import os
+import socket
+import time
 import logging
 from typing import Dict, Optional, Any
 import feedparser
 
 logger = logging.getLogger(__name__)
 
+# 抓取订阅源标题的超时（秒），防止 feed 服务器挂起时工作线程被永久占用
+FETCH_TITLE_TIMEOUT = 15
+
 subscriptions_data: Dict[str, Dict[str, Any]] = {}
 
 
 def get_feed_title(feed_url: str) -> Optional[str]:
     try:
-        feed = feedparser.parse(feed_url)
+        # feedparser 自身不支持 timeout 参数，临时设置 socket 默认超时兜底
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(FETCH_TITLE_TIMEOUT)
+        try:
+            feed = feedparser.parse(feed_url)
+        finally:
+            socket.setdefaulttimeout(old_timeout)
         if feed.feed and feed.feed.title:
             return feed.feed.title
         logger.warning("无法获取订阅源的标题: %s", feed_url)
@@ -60,7 +71,22 @@ def load_subscriptions(data_file: str) -> Dict[str, Dict[str, Any]]:
 
         logger.info("订阅已成功从 %s 加载", data_file)
     except json.JSONDecodeError as exc:
-        logger.error("解码 %s 出错: %s。初始化为空订阅。", data_file, exc)
+        # 解码失败时不静默清空订阅：先把损坏文件备份，便于后续排查恢复
+        backup_file = f"{data_file}.corrupt-{int(time.time())}"
+        try:
+            os.replace(data_file, backup_file)
+            logger.error(
+                "解码 %s 出错: %s。已将损坏文件备份为 %s，初始化为空订阅。",
+                data_file,
+                exc,
+                backup_file,
+            )
+        except OSError:
+            logger.error(
+                "解码 %s 出错: %s，且备份损坏文件失败。初始化为空订阅。",
+                data_file,
+                exc,
+            )
         subscriptions_data = {}
     except Exception as exc:
         logger.error("从 %s 加载订阅出错: %s。初始化为空订阅。", data_file, exc)
@@ -72,15 +98,24 @@ def load_subscriptions(data_file: str) -> Dict[str, Dict[str, Any]]:
 def save_subscriptions(data_file: str) -> None:
     global subscriptions_data
 
+    temp_file = data_file + ".tmp"
     try:
         data_dir = os.path.dirname(data_file)
         if data_dir:
             os.makedirs(data_dir, exist_ok=True)
 
-        with open(data_file, "w", encoding="utf-8") as file:
+        # 先写入临时文件，再通过 os.replace 原子替换，
+        # 避免进程中断时留下损坏的 JSON
+        with open(temp_file, "w", encoding="utf-8") as file:
             json.dump(subscriptions_data, file, indent=4, ensure_ascii=False)
+        os.replace(temp_file, data_file)
         logger.debug("订阅已成功保存到 %s", data_file)
     except Exception as exc:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        except OSError:
+            pass
         logger.error("保存订阅到 %s 时出错: %s", data_file, exc)
 
 
@@ -120,4 +155,3 @@ def remove_keyword(chat_id: str, feed_url: str, keyword: str, data_file: str) ->
             save_subscriptions(data_file)
             return True
     return False
-

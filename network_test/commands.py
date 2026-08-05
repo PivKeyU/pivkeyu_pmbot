@@ -2,9 +2,9 @@ import time
 import ipaddress
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .config import SERVERS, ADMIN_USERS, AUTHORIZED_USERS, save_config
-from .state import user_data, last_ping_command_time
+from .state import user_data, last_ping_command_time, last_nexttrace_command_time, cleanup_cooldown
 from .tasks import do_ping_in_background, do_nexttrace_in_background
-from .utils import schedule_delete_message, check_authorization, check_is_admin
+from .utils import schedule_delete_message, check_authorization, check_is_admin, validate_target
 
 async def start_command(update, context):
     user_id = update.effective_user.id
@@ -37,6 +37,7 @@ async def ping_command(update, context):
         return
 
     now_ts = time.time()
+    cleanup_cooldown(last_ping_command_time)
     if user_id in last_ping_command_time:
         elapsed = now_ts - last_ping_command_time[user_id]
         if elapsed < 15:
@@ -54,13 +55,19 @@ async def ping_command(update, context):
     args = context.args
     if len(args) >= 1:
         ip_or_domain = args[0]
+        # 校验目标地址，防止 SSH 命令注入
+        ok, err = validate_target(ip_or_domain)
+        if not ok:
+            await update.message.reply_text(err)
+            return
         try:
             ping_count = int(args[1]) if len(args) >= 2 else 4
         except ValueError:
             await update.message.reply_text("Ping 次数要写成数字哦，主人。")
             return
-        if ping_count > 50:
-            ping_count = 50
+        if ping_count < 1 or ping_count > 50:
+            await update.message.reply_text("Ping 次数要在 1 到 50 之间哦，主人。")
+            return
 
         keyboard = []
         for idx, server_info in enumerate(SERVERS):
@@ -108,12 +115,13 @@ async def nexttrace_command(update, context):
         return
 
     now_ts = time.time()
-    if user_id in last_ping_command_time:
-        elapsed = now_ts - last_ping_command_time[user_id]
+    cleanup_cooldown(last_nexttrace_command_time)
+    if user_id in last_nexttrace_command_time:
+        elapsed = now_ts - last_nexttrace_command_time[user_id]
         if elapsed < 10:
             await update.message.reply_text(f"主人还需要等 {10 - int(elapsed)} 秒才能再次使用命令（每 10 秒一次）。")
             return
-    last_ping_command_time[user_id] = now_ts
+    last_nexttrace_command_time[user_id] = now_ts
 
     if not SERVERS:
         await update.message.reply_text("当前还没有可用服务器，请联系管理员女仆长。")
@@ -125,6 +133,11 @@ async def nexttrace_command(update, context):
     args = context.args
     if len(args) >= 1:
         target = args[0]
+        # 校验目标地址，防止 SSH 命令注入
+        ok, err = validate_target(target)
+        if not ok:
+            await update.message.reply_text(err)
+            return
         
         keyboard = [
             [

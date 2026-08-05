@@ -14,22 +14,20 @@ DEFAULT_BACKOFF_FACTOR = 2.0
 
 
 def is_retryable_error(exception: Exception) -> bool:
-    if isinstance(exception, (tg_error.NetworkError, tg_error.TimedOut)):
-        return True
-
-    if isinstance(exception, tg_error.TelegramServerError):
-        return True
-
+    # 白名单化：仅网络/限流类异常可重试，其余（含 TypeError、KeyError 等
+    # 编程错误）直接抛出，避免被指数退避掩盖并拖慢任务队列。
+    # 注意：PTB 22.x 已移除 TelegramServerError，5xx 统一由 NetworkError 表示；
+    # 而 BadRequest(400) 虽是 NetworkError 的子类，但属于永久性错误，不可重试。
     if isinstance(exception, tg_error.RetryAfter):
         return True
 
-    if isinstance(exception, (ConnectionError, OSError)):
+    if isinstance(exception, tg_error.NetworkError) and not isinstance(exception, tg_error.BadRequest):
         return True
 
-    if isinstance(exception, tg_error.TelegramError):
-        return False
+    if isinstance(exception, (ConnectionError, OSError, TimeoutError)):
+        return True
 
-    return True
+    return False
 
 
 async def retry_telegram_api(
@@ -63,7 +61,8 @@ async def retry_telegram_api(
                 raise
 
             if isinstance(exc, tg_error.RetryAfter):
-                delay = float(exc.retry_after)
+                # 限流等待时间同样受 max_delay 封顶，避免单次睡眠远超配置上限
+                delay = min(float(exc.retry_after), max_delay)
                 logger.warning(
                     "遇到限流错误，等待 %s 秒后重试 (尝试 %s/%s)",
                     delay,
@@ -85,4 +84,3 @@ async def retry_telegram_api(
 
     if last_exception:
         raise last_exception
-

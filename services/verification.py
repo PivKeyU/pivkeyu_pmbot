@@ -6,7 +6,17 @@ from services.gemini_service import gemini_service
 
 pending_verifications = {}
 
+
+def _cleanup_expired_verifications() -> None:
+    """惰性清理过期的小验证会话，防止内存 dict 无限膨胀。"""
+    now = time.time()
+    expired = [uid for uid, session in pending_verifications.items() if now > session.get('expires_at', now)]
+    for uid in expired:
+        del pending_verifications[uid]
+
 async def create_verification(user_id: int):
+    _cleanup_expired_verifications()
+
     challenge = await gemini_service.generate_verification_challenge()
     question = challenge['question']
     correct_answer = challenge['correct_answer']
@@ -19,7 +29,8 @@ async def create_verification(user_id: int):
         'question': question,
         'options': options,
         'attempts': existing_attempts,
-        'created_at': time.time()
+        'created_at': time.time(),
+        'expires_at': time.time() + config.VERIFICATION_TIMEOUT
     }
     
     keyboard = [
@@ -29,12 +40,14 @@ async def create_verification(user_id: int):
     return f"请完成女仆小验证: \n\n{question}", InlineKeyboardMarkup(keyboard)
 
 async def verify_answer(user_id: int, answer: str):
+    _cleanup_expired_verifications()
+
     if user_id not in pending_verifications:
         return False, "小验证已经过期或不见啦，请主人重新来一次。", False, None
-    
+
     verification = pending_verifications[user_id]
-    
-    if time.time() - verification['created_at'] > config.VERIFICATION_TIMEOUT:
+
+    if time.time() > verification['expires_at']:
         del pending_verifications[user_id]
         return False, "小验证超时啦，请主人重新发送消息。", False, None
     
@@ -65,7 +78,8 @@ async def verify_answer(user_id: int, answer: str):
         'question': new_question,
         'options': new_options,
         'attempts': verification['attempts'],
-        'created_at': time.time()
+        'created_at': time.time(),
+        'expires_at': time.time() + config.VERIFICATION_TIMEOUT
     }
     
     keyboard = [
@@ -76,12 +90,14 @@ async def verify_answer(user_id: int, answer: str):
     return False, f"答案不对哦，主人还有 {config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']} 次机会。", False, (new_question_text, InlineKeyboardMarkup(keyboard))
 
 def is_verification_pending(user_id: int) -> tuple[bool, bool]:
+    _cleanup_expired_verifications()
+
     if user_id not in pending_verifications:
         return False, True
-    
+
     verification = pending_verifications[user_id]
-    is_expired = time.time() - verification['created_at'] > config.VERIFICATION_TIMEOUT
-    
+    is_expired = time.time() > verification['expires_at']
+
     if is_expired:
         del pending_verifications[user_id]
         return False, True
@@ -89,12 +105,14 @@ def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     return True, False
 
 def get_pending_verification_message(user_id: int):
+    _cleanup_expired_verifications()
+
     if user_id not in pending_verifications:
         return None
-    
+
     verification = pending_verifications[user_id]
-    
-    if time.time() - verification['created_at'] > config.VERIFICATION_TIMEOUT:
+
+    if time.time() > verification['expires_at']:
         del pending_verifications[user_id]
         return None
     

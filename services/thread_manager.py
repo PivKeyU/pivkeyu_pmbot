@@ -27,7 +27,7 @@ def build_user_info_markdown(user) -> str:
     escaped_first_contact = escape_markdown(first_contact, version=2)
 
     return (
-        "*来访主人档案*\n\n"
+        "*来访客人档案*\n\n"
         f"*称呼:* {escaped_display_name}\n"
         f"*TG ID:* `{user.id}`\n"
         f"*用户名:* {escaped_username}\n"

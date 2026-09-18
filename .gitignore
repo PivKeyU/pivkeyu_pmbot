@@ -34,6 +34,8 @@ rss_settings.json
 # 数据库
 data/*.db
 data/*.db-journal
+data/*.db-wal
+data/*.db-shm
 
 # 日志
 logs/*.log

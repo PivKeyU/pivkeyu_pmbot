@@ -2,6 +2,7 @@ import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from database import models as db
 from config import config
+from utils import copy as copy_text
 from services.gemini_service import gemini_service
 
 pending_verifications = {}
@@ -37,34 +38,35 @@ async def create_verification(user_id: int):
         [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in options]
     ]
     
-    return f"请完成女仆小验证: \n\n{question}", InlineKeyboardMarkup(keyboard)
+    return f"{copy_text.VERIFY_INVITE}\n\n{question}", InlineKeyboardMarkup(keyboard)
 
 async def verify_answer(user_id: int, answer: str):
     _cleanup_expired_verifications()
 
     if user_id not in pending_verifications:
-        return False, "小验证已经过期或不见啦，请主人重新来一次。", False, None
+        return False, copy_text.with_deco("小验证已经过期或不见啦，请客人重新来一次。", 'ERROR'), False, None
 
     verification = pending_verifications[user_id]
 
     if time.time() > verification['expires_at']:
         del pending_verifications[user_id]
-        return False, "小验证超时啦，请主人重新发送消息。", False, None
+        return False, copy_text.with_deco("小验证超时啦，请客人重新发送消息。", 'ERROR'), False, None
     
     verification['attempts'] += 1
     
     if answer == verification['answer']:
         del pending_verifications[user_id]
         await db.update_user_verification(user_id, is_verified=True)
-        return True, "验证通过啦，女仆为主人开门。", False, None
+        return True, copy_text.with_deco("验证通过啦，女仆为客人开门。", 'OK'), False, None
     
     if verification['attempts'] >= config.MAX_VERIFICATION_ATTEMPTS:
         del pending_verifications[user_id]
         
         await db.add_to_blacklist(user_id, reason="女仆小验证失败次数过多", blocked_by=config.BOT_ID)
-        message = (
-            "小验证失败次数太多，女仆暂时把通道关上啦。\n\n"
-            "如果主人认为这是误会，请重新发送消息并完成解封验证。"
+        message = copy_text.with_deco_head(
+            "哼，才不是女仆要为难客人呢……失败次数太多，女仆只能先把通道关上。\n\n"
+            "如果客人觉得是误会，重新发消息走一遍解封验证就好啦。",
+            'BLOCK'
         )
         return False, message, True, None
     
@@ -86,8 +88,11 @@ async def verify_answer(user_id: int, answer: str):
         [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in new_options]
     ]
     
-    new_question_text = f"请完成女仆小验证: \n\n{new_question}"
-    return False, f"答案不对哦，主人还有 {config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']} 次机会。", False, (new_question_text, InlineKeyboardMarkup(keyboard))
+    new_question_text = f"{copy_text.VERIFY_INVITE}\n\n{new_question}"
+    remaining = config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']
+    # 首次答错保持温柔，第 2 次起升级为傲娇；{remaining} 次机会的真实信息不变
+    new_message = copy_text.verify_wrong(remaining, verification['attempts'])
+    return False, new_message, False, (new_question_text, InlineKeyboardMarkup(keyboard))
 
 def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     _cleanup_expired_verifications()

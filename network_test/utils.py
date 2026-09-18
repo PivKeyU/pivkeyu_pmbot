@@ -13,16 +13,21 @@ def check_authorization(user_id: int, authorized_users: list, admin_users: list 
 def check_is_admin(user_id: int, admin_users: list) -> bool:
     return user_id in admin_users
 
-def validate_target(target: str) -> tuple:
+def validate_target(target: str, display_name: str = None) -> tuple:
     """校验目标地址是否为合法的 IP 或域名（防 SSH 命令注入）。
 
     允许：IPv4 / IPv6（不含端口）或严格格式的域名（长度 <= 253）。
     返回: (是否合法, 错误提示)，合法时错误提示为空字符串。
+
+    ``display_name`` 是称呼词（管理员「主人」/ 普通用户「客人」）。
+    ping / nexttrace 这类流程授权用户也能用，读者不一定是管理员，所以由调用方
+    用 :func:`utils.copy.address` 算好传进来；不传时退回中性说法，避免误称。
     """
+    who = display_name or '这一位'
     if not target or not target.strip():
-        return False, "目标地址不能为空哦，主人。"
+        return False, "目标地址不能为空哦，{who}。".format(who=who)
     if len(target) > 253:
-        return False, "目标地址太长啦，主人，请输入不超过 253 个字符的 IP 或域名。"
+        return False, "目标地址太长啦，{who}，请输入不超过 253 个字符的 IP 或域名。".format(who=who)
     try:
         ipaddress.ip_address(target)
         return True, ""
@@ -34,7 +39,7 @@ def validate_target(target: str) -> tuple:
     )
     if domain_pattern.match(target):
         return True, ""
-    return False, "目标地址格式不对哦，主人，请输入合法的 IP 地址或域名（如 8.8.8.8 或 google.com）。"
+    return False, "目标地址格式不对哦，{who}，请输入合法的 IP 地址或域名（如 8.8.8.8 或 google.com）。".format(who=who)
 
 async def schedule_delete_message(context, chat_id: int, message_id: int, delay: int = 10):
     await asyncio.sleep(delay)

@@ -4,7 +4,7 @@ from .utils import progress_spinner
 from .state import user_data
 import logging
 
-async def do_ping_in_background(context, chat_id: int, server_info: dict, target: str, ping_count: int, user_id: int, message_id: int):
+async def do_ping_in_background(context, chat_id: int, server_info: dict, target: str, ping_count: int, user_id: int, message_id: int, display_name: str = None):
     done_event = asyncio.Event()
     base_text = (
         "<b>【女仆 Ping 测试结果】</b>\n\n"
@@ -16,7 +16,7 @@ async def do_ping_in_background(context, chat_id: int, server_info: dict, target
     
     # 无论执行是否抛异常，都要结束 spinner，避免协程泄漏
     try:
-        ping_raw_result = await asyncio.to_thread(ping_on_server, server_info, target, ping_count)
+        ping_raw_result = await asyncio.to_thread(ping_on_server, server_info, target, ping_count, display_name)
     finally:
         done_event.set()
         await spinner_task
@@ -47,7 +47,7 @@ async def do_ping_in_background(context, chat_id: int, server_info: dict, target
     if current is not None and current.get("message_id") == message_id:
         del user_data[user_id]
 
-async def do_nexttrace_in_background(context, chat_id: int, server_info: dict, target: str, ip_type: str, user_id: int, message_id: int, trace_mode: str = "icmp"):
+async def do_nexttrace_in_background(context, chat_id: int, server_info: dict, target: str, ip_type: str, user_id: int, message_id: int, trace_mode: str = "icmp", display_name: str = None):
     done_event = asyncio.Event()
     trace_mode_text = "TCP 模式" if trace_mode == "tcp" else "ICMP 模式"
     base_text = (
@@ -60,7 +60,7 @@ async def do_nexttrace_in_background(context, chat_id: int, server_info: dict, t
     
     # 无论执行是否抛异常，都要结束 spinner，避免协程泄漏
     try:
-        result = await asyncio.to_thread(nexttrace_on_server, server_info, target, ip_type, trace_mode)
+        result = await asyncio.to_thread(nexttrace_on_server, server_info, target, ip_type, trace_mode, display_name)
     finally:
         done_event.set()
         await spinner_task

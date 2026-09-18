@@ -9,6 +9,7 @@ from telegram.ext import ContextTypes
 from config import config
 from database import models as db
 from utils.message_sender import send_message_by_type
+from utils import copy as copy_text
 
 
 @dataclass
@@ -80,7 +81,7 @@ def build_broadcast_panel_text(groups: list[dict]) -> str:
 def build_broadcast_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("查看分组", callback_data="broadcast_groups")],
-        [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
     ])
 
 
@@ -93,8 +94,8 @@ def build_groups_keyboard(groups: list[dict]) -> InlineKeyboardMarkup:
                 callback_data=f"broadcast_group_view_{group['id']}",
             )
         ])
-    keyboard.append([InlineKeyboardButton("回广播与分组", callback_data="panel_broadcast")])
-    keyboard.append([InlineKeyboardButton("回女仆长面板", callback_data="panel_back")])
+    keyboard.append([InlineKeyboardButton(copy_text.BTN_BACK_BROADCAST, callback_data="panel_broadcast")])
+    keyboard.append([InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -103,7 +104,7 @@ async def build_user_group_keyboard(user_id: int) -> tuple[str, InlineKeyboardMa
     user_groups = await db.get_groups_for_user(user_id)
     user_group_ids = {group['id'] for group in user_groups}
 
-    lines = [f"用户 {user_id} 的分组", ""]
+    lines = [copy_text.usercard_group_header(user_id), ""]
     if user_groups:
         lines.append("已加入：" + "、".join(group['name'] for group in user_groups))
     else:
@@ -116,7 +117,7 @@ async def build_user_group_keyboard(user_id: int) -> tuple[str, InlineKeyboardMa
             "/group create <分组名>",
         ])
         return "\n".join(lines), InlineKeyboardMarkup([
-            [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")]
+            [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]
         ])
 
     keyboard = []
@@ -128,7 +129,7 @@ async def build_user_group_keyboard(user_id: int) -> tuple[str, InlineKeyboardMa
                 callback_data=f"usergroup_toggle_{user_id}_{group['id']}",
             )
         ])
-    keyboard.append([InlineKeyboardButton("刷新", callback_data=f"usercard_groups_{user_id}")])
+    keyboard.append([InlineKeyboardButton(copy_text.BTN_REFRESH, callback_data=f"usercard_groups_{user_id}")])
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
 

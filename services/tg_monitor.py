@@ -17,6 +17,7 @@ from telegram.ext import Application, ContextTypes
 
 from config import config
 from database import models as db
+from utils import copy as copy_text
 
 try:
     from telethon import TelegramClient, events
@@ -412,8 +413,8 @@ def build_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("查看监听列表", callback_data="panel_tg_monitor_list")],
         [InlineKeyboardButton("发现的群/频道", callback_data="panel_tg_monitor_discovered")],
-        [InlineKeyboardButton("运行状态", callback_data="panel_monitor_status")],
-        [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        [InlineKeyboardButton(copy_text.BTN_PANEL_STATUS, callback_data="panel_monitor_status")],
+        [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
     ])
 
 

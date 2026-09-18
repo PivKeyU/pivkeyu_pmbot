@@ -134,13 +134,13 @@ def format_nexttrace_result(raw_output: str, server_name: str, target: str, ip_t
     if map_url_line:
         result += f"<b>{map_url_line}</b>\n"
     else:
-        result += "女仆没有发现 MapTrace URL\n"
+        result += "女仆没有发现 MapTrace URL。\n"
 
     return result
 
-def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
+def ping_on_server(server_info: dict, target: str, ping_count: int = 4, display_name: str = None) -> str:
     # 校验目标地址，防止 SSH 命令注入（非法直接返回错误，不执行）
-    ok, err = validate_target(target)
+    ok, err = validate_target(target, display_name)
     if not ok:
         return err
 
@@ -174,9 +174,9 @@ def ping_on_server(server_info: dict, target: str, ping_count: int = 4) -> str:
     
     return retry_operation(ssh_connect_and_execute, retries=3, delay=2)
 
-def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode: str = "icmp") -> str:
+def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode: str = "icmp", display_name: str = None) -> str:
     # 校验目标地址，防止 SSH 命令注入（非法直接返回错误，不执行）
-    ok, err = validate_target(target)
+    ok, err = validate_target(target, display_name)
     if not ok:
         return err
 
@@ -218,7 +218,7 @@ def nexttrace_on_server(server_info: dict, target: str, ip_type: str, trace_mode
 
             if error.strip():
                 if "RetToken failed" in error:
-                    return "路由追踪服务暂时不可用，请主人稍后重试。"
+                    return "路由追踪服务暂时不可用，请{who}稍后重试。".format(who=display_name or "这一位")
                 return f"命令执行出错：\n{error}"
             return output
         except Exception as e:

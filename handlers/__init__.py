@@ -13,36 +13,61 @@ from network_test.commands import (
     add_server_command, rm_server_command, install_nexttrace_command
 )
 
+def _command_filters(extra=None):
+    """命令处理器统一使用的 filters。
+
+    CommandHandler 的默认 filters 是 filters.UpdateType.MESSAGES，它的实现是::
+
+        update.message is not None or update.edited_message is not None
+
+    也就是说【把一条已存在的消息编辑成命令】时同样会进入命令处理器；但那种 Update 里
+    update.message 是 None（消息在 update.edited_message 上），而命令体里大量直接写
+    update.message.reply_text(...)，会抛::
+
+        AttributeError: 'NoneType' object has no attribute 'reply_text'
+
+    并且这个异常会中断该 update 的后续处理器（PTB 在同一个 try 里遍历所有 handler）。
+
+    这里统一用 UpdateType.MESSAGE 把编辑路径挡在命令处理器之外。编辑消息不会因此丢失：
+    它由下方专门的 EDITED_MESSAGE 处理器接管（handle_edited_admin_message 同步论坛侧、
+    handle_edited_private_message 同步私聊侧），那两个处理器都不依赖命令处理器。
+    """
+
+    if extra is None:
+        return filters.UpdateType.MESSAGE
+    return extra & filters.UpdateType.MESSAGE
+
+
 def register_handlers(app: Application):
-    app.add_handler(CommandHandler("getid", getid))
-    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("getid", getid, filters=_command_filters()))
+    app.add_handler(CommandHandler("start", start, filters=_command_filters(filters.ChatType.PRIVATE)))
     
-    app.add_handler(CommandHandler("ping", ping_command))
-    app.add_handler(CommandHandler("nexttrace", nexttrace_command))
-    app.add_handler(CommandHandler("adduser", add_user_command))
-    app.add_handler(CommandHandler("rmuser", rm_user_command))
-    app.add_handler(CommandHandler("addserver", add_server_command))
-    app.add_handler(CommandHandler("rmserver", rm_server_command))
-    app.add_handler(CommandHandler("install_nexttrace", install_nexttrace_command))
+    app.add_handler(CommandHandler("ping", ping_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("nexttrace", nexttrace_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("adduser", add_user_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("rmuser", rm_user_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("addserver", add_server_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("rmserver", rm_server_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("install_nexttrace", install_nexttrace_command, filters=_command_filters()))
 
     if config.FORUM_GROUP_ID and config.ADMIN_IDS:
-        app.add_handler(CommandHandler("help", help_command, filters=filters.ChatType.PRIVATE))
-        app.add_handler(CommandHandler("block", block))
-        app.add_handler(CommandHandler("unblock", unblock))
-        app.add_handler(CommandHandler("panel", panel))
-        app.add_handler(CommandHandler("blacklist", blacklist))
-        app.add_handler(CommandHandler("stats", stats))
-        app.add_handler(CommandHandler("inbox", inbox))
-        app.add_handler(CommandHandler("view_filtered", view_filtered))
-        app.add_handler(CommandHandler("autoreply", autoreply))
-        app.add_handler(CommandHandler("exempt", exempt))
-        app.add_handler(CommandHandler("group", group))
-        app.add_handler(CommandHandler("broadcast", broadcast))
-        app.add_handler(CommandHandler("spamrules", spamrules))
-        app.add_handler(CommandHandler("tgmon", tgmon))
-        app.add_handler(CommandHandler("webmon", webmon))
-        app.add_handler(CommandHandler("monitor_status", monitor_status))
-        app.add_handler(CommandHandler("updatebot", updatebot))
+        app.add_handler(CommandHandler("help", help_command, filters=_command_filters(filters.ChatType.PRIVATE)))
+        app.add_handler(CommandHandler("block", block, filters=_command_filters()))
+        app.add_handler(CommandHandler("unblock", unblock, filters=_command_filters()))
+        app.add_handler(CommandHandler("panel", panel, filters=_command_filters()))
+        app.add_handler(CommandHandler("blacklist", blacklist, filters=_command_filters()))
+        app.add_handler(CommandHandler("stats", stats, filters=_command_filters()))
+        app.add_handler(CommandHandler("inbox", inbox, filters=_command_filters()))
+        app.add_handler(CommandHandler("view_filtered", view_filtered, filters=_command_filters()))
+        app.add_handler(CommandHandler("autoreply", autoreply, filters=_command_filters()))
+        app.add_handler(CommandHandler("exempt", exempt, filters=_command_filters()))
+        app.add_handler(CommandHandler("group", group, filters=_command_filters()))
+        app.add_handler(CommandHandler("broadcast", broadcast, filters=_command_filters()))
+        app.add_handler(CommandHandler("spamrules", spamrules, filters=_command_filters()))
+        app.add_handler(CommandHandler("tgmon", tgmon, filters=_command_filters()))
+        app.add_handler(CommandHandler("webmon", webmon, filters=_command_filters()))
+        app.add_handler(CommandHandler("monitor_status", monitor_status, filters=_command_filters()))
+        app.add_handler(CommandHandler("updatebot", updatebot, filters=_command_filters()))
         
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & filters.Chat(chat_id=config.FORUM_GROUP_ID) & filters.REPLY & ~filters.COMMAND,

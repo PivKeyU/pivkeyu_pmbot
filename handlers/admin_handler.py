@@ -3,6 +3,7 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from database import models as db
 from utils.message_sender import edit_message_by_type, send_message_by_type
+from utils import copy as copy_text
 
 async def _send_reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
     reply_to_message_id = None
@@ -102,7 +103,7 @@ async def _format_filtered_messages(messages, page: int, total_pages: int):
         
         response += (
             f"【{idx}】\n"
-            f"主人: {first_name} (@{username})\n"
+            f"发送者: {first_name} (@{username})\n"
             f"拦截理由: {reason}\n"
             f"消息内容: {content}\n"
             f"拦截时间: {filtered_at}\n\n"
@@ -119,10 +120,10 @@ async def _get_filtered_messages_keyboard(page: int, total_pages: int, callback_
     buttons = []
     
     if page > 1:
-        buttons.append(InlineKeyboardButton("上一页", callback_data=f"{callback_prefix}{page - 1}"))
+        buttons.append(InlineKeyboardButton(copy_text.BTN_PREV_PAGE, callback_data=f"{callback_prefix}{page - 1}"))
     
     if page < total_pages:
-        buttons.append(InlineKeyboardButton("下一页", callback_data=f"{callback_prefix}{page + 1}"))
+        buttons.append(InlineKeyboardButton(copy_text.BTN_NEXT_PAGE, callback_data=f"{callback_prefix}{page + 1}"))
     
     if buttons:
         keyboard.append(buttons)
@@ -131,7 +132,7 @@ async def _get_filtered_messages_keyboard(page: int, total_pages: int, callback_
 
 async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await db.is_admin(update.effective_user.id):
-        await update.message.reply_text("主人没有权限吩咐这项工作哦。")
+        await update.message.reply_text(copy_text.perm_denied())
         return
 
     MESSAGES_PER_PAGE = 5
@@ -140,7 +141,7 @@ async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_count = await db.get_filtered_messages_count()
     
     if total_count == 0:
-        await update.message.reply_text("没有找到女仆拦截篮。")
+        await update.message.reply_text(copy_text.filtered_not_found())
         return
     
     total_pages = (total_count + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE
@@ -150,7 +151,7 @@ async def view_filtered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     messages = await db.get_filtered_messages(MESSAGES_PER_PAGE, offset)
     
     if not messages:
-        await update.message.reply_text("没有找到女仆拦截篮。")
+        await update.message.reply_text(copy_text.filtered_not_found())
         return
 
     response = await _format_filtered_messages(messages, page, total_pages)

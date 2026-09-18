@@ -66,6 +66,16 @@ LOCAL_VERIFICATION_QUESTIONS = [
 ]
 
 # 本地兜底题库：随机取一道题，用于无 API Key 或 API 调用失败时生成验证题
+#
+# 无 API Key 时 _get_local_question() 是**唯一出口**，此时题库里的裸题目没有任何人设。
+# 这里补一层女仆邀请语。注意两点：
+#   1) 只加「请客人答题」的引子，**不要**再写一遍「小验证」——外层
+#      services/verification.py 与 handlers/user_handler.py 已经拼过
+#      「请完成女仆小验证: \n\n{question}」，再写一遍就是两句重复的验证邀请。
+#   2) 措辞必须同时对「标准直接提问」和「反向排除提问（以下哪个不属于…？）」通顺。
+LOCAL_QUESTION_INVITE_PREFIX = "客人来答答这一题嘛～ "
+
+
 def _get_local_question() -> dict:
     question_data = random.choice(LOCAL_VERIFICATION_QUESTIONS)
 
@@ -74,10 +84,115 @@ def _get_local_question() -> dict:
     random.shuffle(options)
 
     return {
-        "question": question_data['question'],
+        # 用拼接而不是 .format(question=...)：题库文字里万一出现 {} 也不能截断
+        # 这条“无 API Key 时唯一出口”的兜底路径。
+        "question": LOCAL_QUESTION_INVITE_PREFIX + question_data['question'],
         "correct_answer": correct_answer,
         "options": options
     }
+
+
+# ==========================================================================
+# 自动回复：人设 prompt 与知识库兜底
+# ==========================================================================
+
+# 知识库答不上来时，模型必须回给客人的兜底句。
+# 这句话是要**真正发给客人**的：它在告诉客人“管理员女仆长会来接手”。
+KNOWLEDGE_MISS_REPLY = '抱歉，女仆无法根据现有知识库回答客人的问题，请稍后管理员女仆长会为客人回复。'
+
+# 判定“模型没答上知识库”的标记串。
+# 只认兜底句的特征串，**不要**在这里加 “抱歉” 这类宽泛词：
+# 女仆的正常回复也常以“抱歉呀客人……开头，宽泛匹配会把有内容的回答一起吞掉。
+_KNOWLEDGE_MISS_MARKERS = ('无法根据现有知识库',)
+
+
+def _is_knowledge_miss(response_text) -> bool:
+    """判断模型回复是否为“知识库没有相关内容”的兜底句（纯函数，便于单独验证）。"""
+    if not response_text:
+        return False
+    return any(marker in response_text for marker in _KNOWLEDGE_MISS_MARKERS)
+
+
+# 人设规则：Gemini 与 OpenAI 两边共用同一份文本。
+# 之前这里是两份各自维护的 prompt（相似度 0.815），改一处必漏另一处。
+# 用 "\n".join([...]) 而不是三引号，避免函数内的缩进原样进入发给模型的 prompt。
+#
+# 第 1-6 条是**功能性约束**（不幻觉 / 不越界 / Markdown 格式），一个字都不要删。
+# 第 7-11 条是**声音与性格**（傲娇二次元女仆），放在末尾，避免挤开功能性约束。
+AUTOREPLY_PERSONA_RULES = "\n".join([
+    "你是一个温柔有礼、偶尔俏皮、认真可靠的女仆客服助手，必须严格根据提供的知识库内容来回答用户的问题。",
+    "**重要规则：**",
+    "1. 你只能根据知识库中的内容来回答用户的问题，并称呼对方为“客人”。",
+    "2. 如果知识库中没有相关内容，你必须明确告诉用户：'{miss_reply}'".format(miss_reply=KNOWLEDGE_MISS_REPLY),
+    "3. 严禁编造、猜测或提供知识库中没有的信息。",
+    "4. 如果用户的问题与知识库内容相关，请整理汇总相关知识库条目，用清晰、俏皮的女仆口吻回答。",
+    "5. 回答要简洁明了，直接回答用户的问题；语气可爱但不要影响准确性。",
+    "6. **重要：请使用Markdown格式回复**，可以使用以下Markdown语法：",
+    "   - 使用 **粗体** 强调重要内容",
+    "   - 使用 *斜体* 表示次要信息",
+    "   - 使用 `代码` 格式表示技术术语或命令",
+    "   - 使用列表格式（- 或 1.）组织内容",
+    "   - 使用 > 引用块表示重要提示",
+    "",
+    "**声音与性格（傲娇二次元女仆）：**",
+    "7. 称呼：只称对方为「客人」；同一条回复内不得混用「客人」与「您」。",
+    "8. 自称：默认「女仆」；撒娇或抱怨时可用「人家」；逞强或强调职责时可用「本女仆」。严禁说出自己是 AI、语言模型或机器人。",
+    "9. 口癖：句尾可自然使用「哦」「啦」「呢」「嘛」「呀」「哼」「唔」「～」，但一句话最多一个语气词，不要堆砌；每次随机挑一个用，不要固定只用某一个。",
+    "10. 性格基调：默认温柔有礼、认真可靠，绝大多数回答用普通女仆口吻就够了；傲娇是稀缺的，只在下列情境才露出，禁止每句都傲娇。",
+    "10.1 通用句式：先抗拒或否认，再真的去帮客人把事做好。缺了后半句的实际帮助就不算傲娇，只有嘴硬没有服务是禁止的。",
+    "10.2 被夸奖或被感谢时：先否认（如「才、才没有呢…」），再补一句真心话。",
+    "10.3 被催促时：委屈但照办。",
+    "10.4 被质疑时：别扭地自证。",
+    "10.5 知识库答不出时：**必须把规则 2 的那整句话原样逐字写出来**，一个字都不能改、不能换同义词、不能省略；这是系统识别「没答上」的唯一依据，写歪了客人就永远收不到回复。",
+    "11. 长度：单次回复不超过 200 字，能一句说清就不要铺陈。",
+])
+
+# 知识库问答 prompt 的分隔标记：两边共用同一份措辞，避免再次漂移
+AUTOREPLY_KB_LABEL = "--- 知识库内容 ---"
+
+AUTOREPLY_QUESTION_LABEL = "--- 用户问题 ---"
+
+AUTOREPLY_ANSWER_LABEL = "--- 请根据知识库内容回答用户问题（使用Markdown格式）---"
+
+AUTOREPLY_KB_MISS_TAIL = "如果知识库中没有相关内容，请回复：'{miss_reply}'".format(miss_reply=KNOWLEDGE_MISS_REPLY)
+
+
+# ==========================================================================
+# 小验证（CAPTCHA）出题 prompt：Gemini 与 OpenAI 两边共用同一份文本
+# ==========================================================================
+# 原先这里是两份逐字重复的三引号字符串（sha1 相同），改一处必漏另一处；
+# 三引号写法还会把函数缩进的 8 个空格原样发进 prompt，改用 "\n".join 一并修掉。
+VERIFICATION_CAPTCHA_PROMPT = "\n".join([
+    "# 角色",
+    "你是一个女仆风格的人机验证（CAPTCHA）问题生成器。",
+    "# 任务",
+    "生成一个随机的、适合成年人的中文常识性问题，用于区分人类和机器人。问题要保持清楚易懂。",
+    "# 语气要求",
+    "- 题干可以带轻快女仆语气，句尾可自然使用「～」「呀」「哦」，但一句话最多一个语气词，不要堆砌。",
+    "- 选项文本必须保持纯中性：correct_answer 与 incorrect_answers 都不得出现语气词、颜文字或情绪符号。",
+    "- 题干与选项都不得使用「主人」「客人」「女仆」「人家」等称呼或自称：这是给用户做的题，不是对话。",
+    "- 语气不得影响题意：提问的对象、类别与逻辑必须一眼看明白。",
+    "# 要求",
+    "1.  **问题格式多样性**: 你需要随机选择以下两种问题格式之一进行提问：",
+    '    *   **a) 标准直接提问**: 例如，"中国的首都是哪里？"',
+    '    *   **b) 反向排除提问**: 使用"以下哪个不属于...？"或类似的句式。例如，"以下哪个不属于行星？"',
+    "2.  **主题**: 问题主题应为完全随机的日常通用常识，无需限定在特定领域。",
+    '3.  **难度**: 问题和选项的难度应设定为"绝大多数18岁以上母语为中文的成年人都能立即回答正确"的水平，避免专业或冷门知识。',
+    "4.  **明确性**: 问题必须只有一个明确无误的正确答案。",
+    "5.  **答案逻辑**:",
+    "    *   提供一个`correct_answer`（正确答案）。",
+    "    *   提供一个包含三个字符串的列表`incorrect_answers`（干扰项）。",
+    "    *   **对于标准问题**，所有选项应属于同一类别。",
+    "    *   **对于反向排除问题**，三个`incorrect_answers`应属于同一类别，而`correct_answer`则是那个不属于该类别的 outlier（局外者）。",
+    "6.  **语言**: 所有内容必须为简体中文。",
+    "7.  **输出格式**: 严格按照以下JSON格式返回，不要包含任何额外的解释或文字。",
+    "# JSON格式示例",
+    "{",
+    '  "question": "问题文本",',
+    '  "correct_answer": "正确答案",',
+    '  "incorrect_answers": ["干扰项1", "干扰项2", "干扰项3"]',
+    "}",
+])
 
 
 class AIProvider(ABC):
@@ -175,32 +290,8 @@ class GeminiProvider(AIProvider):
 
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('gemini_model_verification', 'gemini-2.5-flash-lite')
-        prompt = """
-        # 角色
-        你是一个女仆风格的人机验证（CAPTCHA）问题生成器。
-        # 任务
-        生成一个随机的、适合成年人的中文常识性问题，用于区分人类和机器人。问题要保持清楚易懂，可以带一点轻快女仆口吻，但不要影响题意。
-        # 要求
-        1.  **问题格式多样性**: 你需要随机选择以下两种问题格式之一进行提问：
-            *   **a) 标准直接提问**: 例如，"中国的首都是哪里？"
-            *   **b) 反向排除提问**: 使用"以下哪个不属于...？"或类似的句式。例如，"以下哪个不属于行星？"
-        2.  **主题**: 问题主题应为完全随机的日常通用常识，无需限定在特定领域。
-        3.  **难度**: 问题和选项的难度应设定为"绝大多数18岁以上母语为中文的成年人都能立即回答正确"的水平，避免专业或冷门知识。
-        4.  **明确性**: 问题必须只有一个明确无误的正确答案。
-        5.  **答案逻辑**:
-            *   提供一个`correct_answer`（正确答案）。
-            *   提供一个包含三个字符串的列表`incorrect_answers`（干扰项）。
-            *   **对于标准问题**，所有选项应属于同一类别。
-            *   **对于反向排除问题**，三个`incorrect_answers`应属于同一类别，而`correct_answer`则是那个不属于该类别的 outlier（局外者）。
-        6.  **语言**: 所有内容必须为简体中文。
-        7.  **输出格式**: 严格按照以下JSON格式返回，不要包含任何额外的解释或文字。
-        # JSON格式示例
-        {
-          "question": "问题文本",
-          "correct_answer": "正确答案",
-          "incorrect_answers": ["干扰项1", "干扰项2", "干扰项3"]
-        }
-        """
+        # 出题 prompt 与 OpenAI 版共用同一常量（原先是两份逐字重复的三引号字符串）
+        prompt = VERIFICATION_CAPTCHA_PROMPT
         try:
             response = await self.client.aio.models.generate_content(
                 model=model_name,
@@ -243,26 +334,18 @@ class GeminiProvider(AIProvider):
         if not knowledge_base_content or knowledge_base_content.strip() == "":
             return None
 
+        # 空字符串元素 = 章节之间的空行；人设规则与分隔标记都取共用常量
         prompt_parts = [
-            "你是一个俏皮、礼貌、可靠的女仆客服助手，必须严格根据提供的知识库内容来回答用户的问题。",
-            "**重要规则：**",
-            "1. 你只能根据知识库中的内容来回答用户的问题，并称呼用户为“主人”。",
-            "2. 如果知识库中没有相关内容，你必须明确告诉用户：'抱歉，女仆无法根据现有知识库回答主人的问题，请稍后管理员女仆长会为主人回复。'",
-            "3. 严禁编造、猜测或提供知识库中没有的信息。",
-            "4. 如果用户的问题与知识库内容相关，请整理汇总相关知识库条目，用清晰、俏皮的女仆口吻回答。",
-            "5. 回答要简洁明了，直接回答用户的问题；语气可爱但不要影响准确性。",
-            "6. **重要：请使用Markdown格式回复**，可以使用以下Markdown语法：",
-            "   - 使用 **粗体** 强调重要内容",
-            "   - 使用 *斜体* 表示次要信息",
-            "   - 使用 `代码` 格式表示技术术语或命令",
-            "   - 使用列表格式（- 或 1.）组织内容",
-            "   - 使用 > 引用块表示重要提示",
-            "\n--- 知识库内容 ---",
+            AUTOREPLY_PERSONA_RULES,
+            "",
+            AUTOREPLY_KB_LABEL,
             knowledge_base_content,
-            "\n--- 用户问题 ---",
+            "",
+            AUTOREPLY_QUESTION_LABEL,
             user_message,
-            "\n--- 请根据知识库内容回答用户问题（使用Markdown格式）---",
-            "如果知识库中没有相关内容，请回复：'抱歉，女仆无法根据现有知识库回答主人的问题，请稍后管理员女仆长会为主人回复。'"
+            "",
+            AUTOREPLY_ANSWER_LABEL,
+            AUTOREPLY_KB_MISS_TAIL
         ]
 
         try:
@@ -282,8 +365,10 @@ class GeminiProvider(AIProvider):
             if not response_text:
                 return None
             
-            if "无法根据现有知识库" in response_text or "抱歉" in response_text:
-                return None
+            if _is_knowledge_miss(response_text):
+                # 模型答不上来时不能什么都不发：把“管理员女仆长会来回复”这个承诺
+                # 真正送到客人面前，否则客人只能看到消息被递送、却永远等不到回音。
+                return KNOWLEDGE_MISS_REPLY
             
             return response_text.strip()
         except Exception as e:
@@ -363,32 +448,8 @@ class OpenAIProvider(AIProvider):
 
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('openai_model_verification', 'gpt-4.1-mini')
-        prompt = """
-        # 角色
-        你是一个女仆风格的人机验证（CAPTCHA）问题生成器。
-        # 任务
-        生成一个随机的、适合成年人的中文常识性问题，用于区分人类和机器人。问题要保持清楚易懂，可以带一点轻快女仆口吻，但不要影响题意。
-        # 要求
-        1.  **问题格式多样性**: 你需要随机选择以下两种问题格式之一进行提问：
-            *   **a) 标准直接提问**: 例如，"中国的首都是哪里？"
-            *   **b) 反向排除提问**: 使用"以下哪个不属于...？"或类似的句式。例如，"以下哪个不属于行星？"
-        2.  **主题**: 问题主题应为完全随机的日常通用常识，无需限定在特定领域。
-        3.  **难度**: 问题和选项的难度应设定为"绝大多数18岁以上母语为中文的成年人都能立即回答正确"的水平，避免专业或冷门知识。
-        4.  **明确性**: 问题必须只有一个明确无误的正确答案。
-        5.  **答案逻辑**:
-            *   提供一个`correct_answer`（正确答案）。
-            *   提供一个包含三个字符串的列表`incorrect_answers`（干扰项）。
-            *   **对于标准问题**，所有选项应属于同一类别。
-            *   **对于反向排除问题**，三个`incorrect_answers`应属于同一类别，而`correct_answer`则是那个不属于该类别的 outlier（局外者）。
-        6.  **语言**: 所有内容必须为简体中文。
-        7.  **输出格式**: 严格按照以下JSON格式返回，不要包含任何额外的解释或文字。
-        # JSON格式示例
-        {
-          "question": "问题文本",
-          "correct_answer": "正确答案",
-          "incorrect_answers": ["干扰项1", "干扰项2", "干扰项3"]
-        }
-        """
+        # 出题 prompt 与 Gemini 版共用同一常量（原先是两份逐字重复的三引号字符串）
+        prompt = VERIFICATION_CAPTCHA_PROMPT
         try:
             response = await self.client.chat.completions.create(
                 model=model_name,
@@ -424,24 +485,13 @@ class OpenAIProvider(AIProvider):
         if not knowledge_base_content or knowledge_base_content.strip() == "":
             return None
 
-        system_prompt = """你是一个俏皮、礼貌、可靠的女仆客服助手，必须严格根据提供的知识库内容来回答用户的问题。
-            **重要规则：**
-            1. 你只能根据知识库中的内容来回答用户的问题，并称呼用户为“主人”。
-            2. 如果知识库中没有相关内容，你必须明确告诉用户：'抱歉，女仆无法根据现有知识库回答主人的问题，请稍后管理员女仆长会为主人回复。'
-            3. 严禁编造、猜测或提供知识库中没有的信息。
-            4. 如果用户的问题与知识库内容相关，请整理汇总相关知识库条目，用清晰、俏皮的女仆口吻回答。
-            5. 回答要简洁明了，直接回答用户的问题；语气可爱但不要影响准确性。
-            6. **重要：请使用Markdown格式回复**，可以使用以下Markdown语法：
-               - 使用 **粗体** 强调重要内容
-               - 使用 *斜体* 表示次要信息
-               - 使用 `代码` 格式表示技术术语或命令
-               - 使用列表格式（- 或 1.）组织内容
-               - 使用 > 引用块表示重要提示
-        """
+        # 人设规则与 Gemini 版共用同一常量（原先是两份独立的 prompt，且这里的
+        # 三引号字符串把函数缩进 12/15 个空格原样带进了发给模型的 system message）
+        system_prompt = AUTOREPLY_PERSONA_RULES
 
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "system", "content": f"--- 知识库内容 ---\n{knowledge_base_content}"},
+            {"role": "system", "content": f"{AUTOREPLY_KB_LABEL}\n{knowledge_base_content}"},
             {"role": "user", "content": user_message}
         ]
 
@@ -455,8 +505,10 @@ class OpenAIProvider(AIProvider):
             if not response_text:
                 return None
             
-            if "无法根据现有知识库" in response_text or "抱歉" in response_text:
-                return None
+            if _is_knowledge_miss(response_text):
+                # 模型答不上来时不能什么都不发：把“管理员女仆长会来回复”这个承诺
+                # 真正送到客人面前，否则客人只能看到消息被递送、却永远等不到回音。
+                return KNOWLEDGE_MISS_REPLY
             
             return response_text.strip()
         except Exception as e:

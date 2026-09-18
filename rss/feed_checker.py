@@ -10,6 +10,7 @@ from telegram.ext import ContextTypes
 from telegram import constants
 from config import config
 from database import models as db
+from utils import copy as copy_text
 from . import data_manager, retry_utils, settings
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,18 @@ MAX_SEND_PER_CYCLE = 5
 def _escape_html(text: Any) -> str:
     """转义用户可控文本，防止破坏 Telegram HTML 消息（& < > 等需转义）。"""
     return html.escape(str(text), quote=True)
+
+
+def _is_admin_chat(chat_id) -> bool:
+    """判断这个订阅 chat_id 是否属于管理员。
+
+    ``chat_id`` 在本模块是**字符串**（订阅表以字符串为键），而 ``config.ADMIN_IDS``
+    存的是 int；直接 ``chat_id in config.ADMIN_IDS`` 会恒为 False，必须转换后比较。
+    """
+    try:
+        return int(chat_id) in config.ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
 
 
 def _is_valid_http_url(url: str) -> bool:
@@ -239,7 +252,11 @@ async def check_single_feed(
                     await send_telegram_message(
                         context,
                         chat_id,
-                        f"<i>...以及来自 {_escape_html(feed_title)} 的 {remaining} 个更多新条目。</i>",
+                        copy_text.rss_more_entries(
+                            copy_text.address(_is_admin_chat(chat_id)),
+                            _escape_html(feed_title),
+                            remaining,
+                        ),
                     )
                     logger.info(
                         "已向用户 %s 发送 %s 个来自 %s 的条目，还有更多可用。",

@@ -2,9 +2,18 @@ import ipaddress
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from .state import user_data
 from .tasks import do_ping_in_background, do_nexttrace_in_background
-from .utils import schedule_delete_message, validate_target
-from .config import SERVERS, save_config
+from .utils import schedule_delete_message, validate_target, check_is_admin
+from .config import SERVERS, save_config, ADMIN_USERS
 import asyncio
+from utils import copy as copy_text
+
+
+def _who(user_id) -> str:
+    """按称呼规则算这一位读者该被叫作什么（管理员 -> 主人，普通用户 -> 客人）。
+
+    ping / nexttrace 这类流程授权用户也能用，所以读者可能是客人。
+    """
+    return copy_text.address(check_is_admin(user_id, ADMIN_USERS))
 
 async def callback_handler(update, context):
     query = update.callback_query
@@ -30,7 +39,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="当前操作不能安装 NextTrace 哦。"
+                text=copy_text.nt_op_not_allowed(_who(user_id))
             )
             return True
             
@@ -44,7 +53,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="NextTrace 安装已取消。"
+                    text=copy_text.nt_install_cancelled()
                 )
                 
                 context.application.create_task(
@@ -60,7 +69,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="服务器索引不对劲，可能列表已更新，请主人重新执行 /install_nexttrace。"
+                text=copy_text.with_deco("服务器索引不对劲，可能列表已更新，请主人重新执行 /install_nexttrace。", 'ERROR')
             )
             
             context.application.create_task(
@@ -75,7 +84,7 @@ async def callback_handler(update, context):
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
-            text=f"女仆正在服务器 {server_info['name']} 上安装 NextTrace...\n请主人稍等，可能需要一点时间。"
+            text=copy_text.nt_install_running(server_info['name'])
         )
         
         
@@ -87,13 +96,14 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"服务器 {server_info['name']} 的 NextTrace 安装结果：\n\n{result}"
+                text=copy_text.nt_install_result(server_info['name'], result)
             )
         except Exception as e:
+            # 安装失败原因属于 SSH 原始输出透传，照原样带给主人，便于自查
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"服务器 {server_info['name']} 安装 NextTrace 时出错：\n\n{str(e)}"
+                text=copy_text.nt_install_error(server_info['name'], str(e))
             )
         
         
@@ -109,7 +119,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="当前操作不能撤下服务器哦。"
+                text=copy_text.nt_op_not_allowed(_who(user_id))
             )
             return True
             
@@ -124,7 +134,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="撤下服务器操作已取消。"
+                    text=copy_text.nt_remove_cancelled()
                 )
                 
                 context.application.create_task(
@@ -142,7 +152,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="服务器索引不对劲，可能列表已更新，请主人重新执行 /rmserver。"
+                    text=copy_text.nt_server_index_stale()
                 )
                 
                 context.application.create_task(
@@ -157,7 +167,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="服务器列表已发生变化，选中的服务器对不上号，请主人重新执行 /rmserver。"
+                    text=copy_text.nt_server_list_stale()
                 )
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
@@ -171,7 +181,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"服务器已撤下：{removed_server['name']} (host={removed_server['host']})"
+                text=copy_text.nt_server_removed(removed_server['name'], removed_server['host'])
             )
             
             context.application.create_task(
@@ -188,7 +198,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="服务器索引不对劲，可能列表已更新，请主人重新执行 /rmserver。"
+                    text=copy_text.nt_server_index_stale()
                 )
                 
                 context.application.create_task(
@@ -208,7 +218,7 @@ async def callback_handler(update, context):
             keyboard = [
                 [
                     InlineKeyboardButton("确认撤下", callback_data="nt_rmserver_confirm"),
-                    InlineKeyboardButton("取消", callback_data="nt_rmserver_abort")
+                    InlineKeyboardButton(copy_text.BTN_CANCEL, callback_data="nt_rmserver_abort")
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -216,7 +226,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"主人确定要撤下这台服务器吗？\n\n名称: {server_info['name']}\nHost: {server_info['host']}:{server_info['port']}\n\n这个操作不可撤销哦！",
+                text=copy_text.nt_server_remove_confirm(server_info['name'], server_info['host'], server_info['port']),
                 reply_markup=reply_markup
             )
             return True
@@ -229,7 +239,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="服务器索引不对劲，可能列表已更新，请主人重新执行 /rmserver。"
+                    text=copy_text.nt_server_index_stale()
                 )
                 
                 context.application.create_task(
@@ -244,7 +254,7 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="服务器列表已发生变化，选中的服务器对不上号，请主人重新执行 /rmserver。"
+                    text=copy_text.nt_server_list_stale()
                 )
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
@@ -257,7 +267,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"女仆正在撤下服务器：{server_info['name']}..."
+                text=copy_text.with_deco(f"女仆正在替主人撤下服务器：{server_info['name']}... 稍等一下哦。", 'WAIT')
             )
             
             
@@ -267,7 +277,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=f"服务器已撤下：{removed_server['name']} (host={removed_server['host']})"
+                text=copy_text.nt_server_removed(removed_server['name'], removed_server['host'])
             )
             
             context.application.create_task(
@@ -280,7 +290,7 @@ async def callback_handler(update, context):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text="撤下服务器操作已取消。"
+                text=copy_text.nt_remove_cancelled()
             )
             
             context.application.create_task(
@@ -293,7 +303,7 @@ async def callback_handler(update, context):
     if data.startswith("nt_trace_mode_"):
         if info.get("operation") != "nexttrace":
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                              text="当前操作不能选择追踪模式哦。")
+                                              text=copy_text.nt_op_not_allowed(_who(user_id)))
             return True
         
         trace_mode = "icmp" if data == "nt_trace_mode_icmp" else "tcp"
@@ -309,7 +319,8 @@ async def callback_handler(update, context):
         await context.bot.edit_message_text(
             chat_id=chat_id, 
             message_id=message_id,
-            text=f"主人选择了{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式追踪，请选择服务器：",
+            text=copy_text.with_deco(
+                f"{_who(user_id)}选了{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式追踪呢，接下来要挑哪台服务器？", 'ASK'),
             reply_markup=reply_markup
         )
         return True
@@ -317,7 +328,9 @@ async def callback_handler(update, context):
     if data.startswith("nt_server_"):
         idx = int(data.split("_")[2])
         if idx < 0 or idx >= len(SERVERS):
-            await context.bot.edit_message_text("服务器下标不对劲，主人。", chat_id=chat_id, message_id=message_id)
+            await context.bot.edit_message_text(
+                copy_text.with_deco(f"这个服务器编号不对劲哦，{_who(user_id)}。", 'ERROR'),
+                chat_id=chat_id, message_id=message_id)
             return True
 
         server_info = SERVERS[idx]
@@ -328,16 +341,17 @@ async def callback_handler(update, context):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="女仆收到请求啦，正在后台执行 Ping，请稍候..."
+                    text=copy_text.nt_ping_running()
                 )
                 context.application.create_task(
-                    do_ping_in_background(context, chat_id, server_info, info["target"], info["count"], user_id, message_id)
+                    do_ping_in_background(context, chat_id, server_info, info["target"], info["count"], user_id, message_id, _who(user_id))
                 )
             elif mode == "interactive":
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=f"主人选择了 {server_info['name']}。\n请发送目标 IP 或域名（例如：8.8.8.8 或 google.com）。"
+                    text=copy_text.with_deco(
+                        f"{_who(user_id)}选了 {server_info['name']} 呢。接下来把目标 IP 或域名发给女仆吧（例如：8.8.8.8 或 google.com）。", 'ASK')
                 )
         elif info.get("operation") == "nexttrace":
             mode = info["mode"]
@@ -347,22 +361,23 @@ async def callback_handler(update, context):
                     trace_mode = info.get("trace_mode", "icmp")  
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
-                        text=f"主人选择了 {server_info['name']}。\n目标：{info['target']} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
+                        text=copy_text.nt_trace_running(_who(user_id), server_info['name'], info['target'], trace_mode)
                     )
                     context.application.create_task(
-                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode)
+                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode, _who(user_id))
                     )
                 except ValueError:
                     keyboard = [
                         [
-                            InlineKeyboardButton("IPv4", callback_data="nt_iptype_ipv4"),
-                            InlineKeyboardButton("IPv6", callback_data="nt_iptype_ipv6")
+                            InlineKeyboardButton(copy_text.BTN_NT_IPV4, callback_data="nt_iptype_ipv4"),
+                            InlineKeyboardButton(copy_text.BTN_NT_IPV6, callback_data="nt_iptype_ipv6")
                         ]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
-                        text=f"主人选择了 {server_info['name']}。\n目标： {info['target']}\n主人，请选择 IP 协议类型：",
+                        text=copy_text.with_deco_head(
+                            f"{_who(user_id)}选了 {server_info['name']} 呢。\n目标： {info['target']}\n这次要用哪一套 IP 协议呢？", 'ASK'),
                         reply_markup=reply_markup
                     )
             elif mode == "interactive":
@@ -371,51 +386,53 @@ async def callback_handler(update, context):
                     trace_mode = info.get("trace_mode", "icmp")  
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
-                        text=f"主人选择了 {server_info['name']}。\n目标：{info['target']} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
+                        text=copy_text.nt_trace_running(_who(user_id), server_info['name'], info['target'], trace_mode)
                     )
                     context.application.create_task(
-                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode)
+                        do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode, _who(user_id))
                     )
                 except ValueError:
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=message_id,
-                        text=f"主人选择了 {server_info['name']}。\n请发送目标 IP 或域名。"
+                        text=copy_text.with_deco(
+                            f"{_who(user_id)}选了 {server_info['name']} 呢。接下来把目标 IP 或域名发给女仆吧。", 'ASK')
                     )
         return True
     elif data.startswith("nt_count_"):
         if info.get("operation") != "ping":
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                                  text="当前操作不能选择 Ping 次数哦。")
+                                                  text=copy_text.nt_op_not_allowed(_who(user_id)))
             return True
 
         count = int(data.split("_")[2])
         info["count"] = count
         if not info.get("server_info") or not info.get("target"):
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                                  text="服务器或目标 IP 信息不完整，请主人重新开始 /ping 流程。")
+                                                  text=copy_text.nt_ping_target_missing(_who(user_id)))
             return True
 
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                            text="女仆收到请求啦，正在后台执行 Ping，请稍候...")
+                                            text=copy_text.nt_ping_running())
         context.application.create_task(
-            do_ping_in_background(context, chat_id, info["server_info"], info["target"], count, user_id, message_id)
+            do_ping_in_background(context, chat_id, info["server_info"], info["target"], count, user_id, message_id, _who(user_id))
         )
         return True
     elif data.startswith("nt_iptype_"):
         if info.get("operation") != "nexttrace":
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
-                                                  text="当前操作不能选择 IP 协议类型哦。")
+                                                  text=copy_text.nt_op_not_allowed(_who(user_id)))
             return True
         ip_type = "IPv4" if data == "nt_iptype_ipv4" else "IPv6"
         info["ip_type"] = ip_type
         trace_mode = info.get("trace_mode", "icmp")  
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
-            text=f"女仆收到请求啦，正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
+            text=copy_text.with_deco(
+                f"女仆收到请求啦，正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候...", 'WAIT')
         )
         context.application.create_task(
-            do_nexttrace_in_background(context, chat_id, info["server_info"], info["target"], ip_type, user_id, message_id, trace_mode)
+            do_nexttrace_in_background(context, chat_id, info["server_info"], info["target"], ip_type, user_id, message_id, trace_mode, _who(user_id))
         )
         return True
     
@@ -450,17 +467,17 @@ async def handle_message(update, context):
             if from_panel:
                 
                 keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                    [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                 ])
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="服务器登记已取消。",
+                    text=copy_text.nt_server_reg_cancelled(),
                     reply_markup=keyboard
                 )
             else:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="服务器登记已取消。"
+                    text=copy_text.nt_server_reg_cancelled()
                 )
             return True
             
@@ -486,11 +503,12 @@ async def handle_message(update, context):
             reply_markup = None
             if from_panel:
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                    [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                 ])
             msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"步骤 2/5: 服务器名称已登记为 \"{text}\"。\n\n请告诉女仆服务器 IP 地址：\n\n输入 /cancel 可随时取消",
+                text=copy_text.with_deco_head(
+                    f"步骤 2/5: 服务器名称已经记下啦（\"{text}\"）。\n\n请把服务器 IP 地址告诉女仆哦：\n\n输入 /cancel 可随时取消", 'OK'),
                 reply_markup=reply_markup
             )
             info["step"] = 2
@@ -503,11 +521,12 @@ async def handle_message(update, context):
             reply_markup = None
             if from_panel:
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                    [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                 ])
             msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"步骤 3/5: 服务器 IP 已登记为 \"{text}\"。\n\n请告诉女仆 SSH 端口号（通常为 22）：\n\n输入 /cancel 可随时取消",
+                text=copy_text.with_deco_head(
+                    f"步骤 3/5: 服务器 IP 已经记下啦（\"{text}\"）。\n\n请把 SSH 端口号告诉女仆哦（通常为 22）：\n\n输入 /cancel 可随时取消", 'OK'),
                 reply_markup=reply_markup
             )
             info["step"] = 3
@@ -522,11 +541,12 @@ async def handle_message(update, context):
                 reply_markup = None
                 if from_panel:
                     reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                        [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                     ])
                 msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"步骤 4/5: 端口号已登记为 {port}。\n\n请告诉女仆 SSH 用户名：\n\n输入 /cancel 可随时取消",
+                    text=copy_text.with_deco_head(
+                        f"步骤 4/5: 端口号已经记下啦（{port}）。\n\n请把 SSH 用户名告诉女仆哦：\n\n输入 /cancel 可随时取消", 'OK'),
                     reply_markup=reply_markup
                 )
                 info["step"] = 4
@@ -537,11 +557,12 @@ async def handle_message(update, context):
                 reply_markup = None
                 if from_panel:
                     reply_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                        [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                     ])
                 msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="端口号必须是数字，请主人重新输入端口号：\n\n输入 /cancel 可随时取消",
+                    text=copy_text.with_deco_head(
+                        "端口号得写成数字哦，主人重新输入一个：\n\n输入 /cancel 可随时取消", 'ERROR'),
                     reply_markup=reply_markup
                 )
                 info["prompt_message_id"] = msg.message_id  
@@ -552,11 +573,12 @@ async def handle_message(update, context):
             reply_markup = None
             if from_panel:
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                    [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                 ])
             msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=f"步骤 5/5: 用户名已登记为 \"{text}\"。\n\n请告诉女仆 SSH 密码：\n\n输入 /cancel 可随时取消",
+                text=copy_text.with_deco_head(
+                    f"步骤 5/5: 用户名已经记下啦（\"{text}\"）。\n\n请把 SSH 密码告诉女仆哦：\n\n输入 /cancel 可随时取消", 'OK'),
                 reply_markup=reply_markup
             )
             info["step"] = 5
@@ -581,7 +603,7 @@ async def handle_message(update, context):
             reply_markup = None
             if from_panel:
                 reply_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("回网络测试茶具", callback_data="panel_network_test")]
+                    [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
                 ])
             
             msg = await context.bot.send_message(
@@ -612,12 +634,12 @@ async def handle_message(update, context):
                 
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=f"服务器登记成功！服务器 \"{server_data['name']}\" 已收进系统。"
+                    text=copy_text.with_deco(f"服务器登记成功啦！\"{server_data['name']}\" 已经收进女仆的系统。", 'OK')
                 )
             else:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text="服务器登记已取消。"
+                    text=copy_text.nt_server_reg_cancelled()
                 )
             
             
@@ -628,9 +650,11 @@ async def handle_message(update, context):
     
     if info["mode"] != "interactive":
         if info.get("operation") == "ping":
-            await update.message.reply_text("命令式模式不需要再输入 IP，如需重新测试，请主人使用 /ping。")
+            await update.message.reply_text(
+                copy_text.with_deco("命令式模式不用再输入 IP 啦，想重新测试就用 /ping 吩咐女仆。", 'ASK'))
         elif info.get("operation") == "nexttrace":
-            await update.message.reply_text("命令式模式不需要再输入 IP，如需重新测试，请主人使用 /nexttrace。")
+            await update.message.reply_text(
+                copy_text.with_deco("命令式模式不用再输入 IP 啦，想重新测试就用 /nexttrace 吩咐女仆。", 'ASK'))
         return True
 
     if not info.get("target"):
@@ -656,7 +680,7 @@ async def handle_message(update, context):
             await context.bot.edit_message_text(
                 chat_id=info["chat_id"],
                 message_id=info["message_id"],
-                text="主人，请选择要 Ping 的次数：",
+                text=copy_text.with_deco(f"{_who(user_id)}，这次要 Ping 几次呢？", 'ASK'),
                 reply_markup=reply_markup
             )
         elif info.get("operation") == "nexttrace":
@@ -666,26 +690,27 @@ async def handle_message(update, context):
                 await context.bot.edit_message_text(
                     chat_id=info["chat_id"],
                     message_id=info["message_id"],
-                    text=f"目标：{target} 是 IP 地址，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候..."
+                    text=copy_text.with_deco(
+                        f"目标：{target} 是 IP 地址哦，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候...", 'WAIT')
                 )
                 context.application.create_task(
-                    do_nexttrace_in_background(context, info["chat_id"], info["server_info"], target, "direct", user_id, info["message_id"], trace_mode)
+                    do_nexttrace_in_background(context, info["chat_id"], info["server_info"], target, "direct", user_id, info["message_id"], trace_mode, _who(user_id))
                 )
             except ValueError:
                 keyboard = [
                     [
-                        InlineKeyboardButton("IPv4", callback_data="nt_iptype_ipv4"),
-                        InlineKeyboardButton("IPv6", callback_data="nt_iptype_ipv6")
+                        InlineKeyboardButton(copy_text.BTN_NT_IPV4, callback_data="nt_iptype_ipv4"),
+                        InlineKeyboardButton(copy_text.BTN_NT_IPV6, callback_data="nt_iptype_ipv6")
                     ]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await context.bot.edit_message_text(
                     chat_id=info["chat_id"],
                     message_id=info["message_id"],
-                    text="主人，请选择 IP 协议类型：",
+                    text=copy_text.with_deco(f"{_who(user_id)}，这次要用哪一套 IP 协议呢？", 'ASK'),
                     reply_markup=reply_markup
                 )
     else:
-        await update.message.reply_text("主人已经输入过目标 IP，如需重新测试，请使用对应命令。")
+        await update.message.reply_text(copy_text.nt_ip_already_input(_who(user_id)))
     
     return True

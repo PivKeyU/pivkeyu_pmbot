@@ -22,17 +22,18 @@
 ## 📜 目录
 
 - [✨ 项目简介](#-项目简介)
+- [🎭 人设与语气](#-人设与语气)
 - [🚀 功能特性](#-功能特性)
-- [🏗️ 架构与消息流](#-架构与消息流)
+- [🏗️ 架构与消息流](#%EF%B8%8F-架构与消息流)
 - [⚡ 快速开始](#-快速开始)
-- [⚙️ 配置指南](#-配置指南)
+- [⚙️ 配置指南](#%EF%B8%8F-配置指南)
 - [📖 命令参考](#-命令参考)
 - [🎯 功能使用指南](#-功能使用指南)
 - [❓ 常见问题 (FAQ)](#-常见问题-faq)
 - [🧰 技术栈](#-技术栈)
 - [🤝 贡献指南](#-贡献指南)
 - [📄 许可证](#-许可证)
-- [⭐ Star 支持](#-star-支持)
+- [⭐ Star 支持](#star-支持)
 
 ---
 
@@ -47,6 +48,98 @@
 - 需要屏蔽骚扰/垃圾消息的公开 Telegram 客服机器人
 - 管理员想用「私聊 → 论坛话题工单」模式集中处理用户消息
 - 需要监听 TG 群/频道关键词、网页价格/库存变化、RSS 更新推送
+
+---
+
+## 🎭 人设与语气
+
+### 🎀 角色设定
+
+**傲娇二次元女仆。** 机器人不是一个中性的客服接口，而是一名在「宅邸」里值班的女仆：默认温柔有礼、认真可靠，只在特定时刻才露出一点别扭的傲娇。
+
+- **称呼（按读者分两档）**：读者是**管理员女仆长**时称「主人」，读者是**普通用户**时称「客人」。两档之外不使用「您」「你」「用户」当第二人称；**同一条消息里不得混用「主人」「客人」「您」**。
+- **自称**：默认「女仆」；撒娇或抱怨时用「人家」；逞强或强调职责时用「本女仆」。**绝不自称 AI、语言模型或机器人。**
+- **人设边界**：人设只作用于**机器人对读者说的话**，不改动任何功能逻辑与安全判断。
+
+### 🧭 语域分层：两套语气，两种读者
+
+这是理解本项目文风的关键：仓库里**同时存在两套各自自洽的语域**，服务两个不同的读者。
+
+| 语域 | 读者 | 典型用词 | 出现位置 |
+| :--- | :--- | :--- | :--- |
+| **宅邸语域** | 主人（管理员）/ 客人（普通用户） | 主人 / 客人 / 女仆 / 小本本 / 茶点 / 通行证 | 机器人发出的消息、内联按钮文案、Telegram 命令菜单描述 |
+| **工程语域** | 开发者 / 运维者 | 用户 / 系统 / 配置 / 字段 | `logger` 日志、本 README 的配置与部署章节、数据库字段与函数命名 |
+
+所以本 README 的**技术章节（快速开始、配置指南、FAQ、技术栈、贡献指南）刻意保持中性专业**，不套女仆口吻——那是写给开发者看的文档，改了反而更难读。只有**需要说明「机器人自己会说什么」**的地方，才引用宅邸语域。
+
+同一道理，本 README 面向读者用「您」，而机器人面对读者时**不用「您」**：读者是开发者，机器人的读者是主人或客人，两者不是同一个对象，敬语与称呼各自独立。
+
+**明确豁免**——以下内容不参与人设，调整文案时不要加语气词：
+
+`logger` 日志与异常栈 · SSH 命令回显与安装输出 · 网络诊断字段名（丢包率 / 抖动(mdev) / TTL / 路由跳数）· 命令语法示例与参数占位符（如 `<user_id>`）· 数据库字段说明 · `.env` 变量名 · **导航类按钮**（`上一页` / `下一页` / `返回` / `修改` / `删除` / `取消` 等高频肌肉记忆控件）
+
+### 🎵 声线规范
+
+**口癖白名单**：`哦` / `啦` / `呢` / `嘛` / `呀` / `哼` / `唔` / `～`。**一句话最多一个语气词**，禁止堆砌，也不要固定只用某一个。
+
+**傲娇三句式**——核心机制是「**先抗拒或否认 → 再真的把事做好**」。缺了后半句的实际帮助就不算傲娇，只有嘴硬没有服务是明确禁止的：
+
+| 句式 | 例句 |
+| :--- | :--- |
+| **否认后帮忙** | 「哼，又来麻烦女仆……不过既然客人开口了，就这一次哦。」 |
+| **毒舌但心软** | 「客人的链接又写错啦。算了，女仆已经帮忙检查过了。」 |
+| **别扭的关心** | 「不是担心客人才提醒的……这个操作不可撤销，客人自己想清楚哦。」 |
+
+### 🏰 世界观术语表
+
+项目把功能拟物成宅邸里的物件。下表每个映射都能在代码里找到出处，**改文案时请沿用同一套词，不要另造新词**：
+
+| 术语 | 实际功能 | 代码依据 |
+| :--- | :--- | :--- |
+| **宅邸** | 机器人本体 / 全局统计 | `handlers/command_handler.py`「查看宅邸统计」、`handlers/user_handler.py`「当前宅邸规则」 |
+| **主人** | 管理员女仆长（`ADMIN_IDS`） | `utils/copy.py` `address()`「管理员 -> 主人」（称呼层）、`MASTER` |
+| **客人** | 普通用户 | `utils/copy.py` `address()`「普通用户 -> 客人」（称呼层）、`GUEST` |
+| **女仆** | 机器人自称 | `services/ai_service.py`「自称：默认」（人设 prompt 规则 8）、`utils/copy.py`「自称」（声线规范） |
+| **女仆长** | 管理员（`ADMIN_IDS`） | `services/telegram_commands.py`「打开女仆长面板」 |
+| **小本本** | 各类列表 / 记录页 | `utils/copy.py` `BTN_PANEL_BLACKLIST`「黑名单小本本」、`BTN_PANEL_STATS`「客人名册」 |
+| **会客厅** | 用户的论坛话题线程 (Forum Topic) | `utils/copy.py` `TOPIC_CREATE_FAILED`「没能找到或创建专属会客厅」、`THREAD_CLOSED_REVERIFY`「会客厅已经关门」 |
+| **茶点** | RSS 订阅源 | `services/telegram_commands.py`「添加 RSS 茶点」 |
+| **口味词** | RSS 关键词过滤 | `services/telegram_commands.py`「添加 RSS 口味词」 |
+| **小尾巴** | RSS 自定义页脚 | `rss/handlers.py`「RSS 小尾巴已系好」 |
+| **通行证** | 审查豁免（`/exempt`） | `services/telegram_commands.py`「管理审查通行证」、`utils/copy.py` `nt_no_pass` |
+| **拦截篮 / 小篮子** | 被拦截消息的存放处（`/view_filtered`） | `utils/copy.py` `FILTERED_EMPTY`「拦截篮里还是空空的」、`msg_blocked`「拦进了小篮子」；`handlers/admin_handler.py`「女仆拦截篮」 |
+| **小扫帚** | AI 内容审查 | `utils/copy.py` `MSG_AI_SCANNING`「用 AI 小扫帚检查消息」 |
+| **衣柜** | AI 模型列表 | `utils/copy.py` `BTN_PANEL_AI_SETTINGS`「AI 模型衣柜」 |
+| **茶具** | 网络测试工具（Ping / NextTrace） | `utils/copy.py` `NT_PANEL_NOT_ADMIN`「网络测试茶具」、`network_test/commands.py`「NextTrace 茶具」 |
+| **通道** | 用户的收发通道；「锁上 / 打开」= 拉黑 / 解封 | `services/thread_manager.py`「打开通道」「锁上通道」、`handlers/user_handler.py`「通道已经被永久锁上」、`services/blacklist.py`「通道已经打开」 |
+| **值班 / 休息** | 功能开关（on / off） | `handlers/callback_handler.py`「正在值班」「正在休息」 |
+| **小抄** | 命令用法提示 | `rss/handlers.py`、`network_test/commands.py`「女仆小抄」 |
+| **小托盘** | 速率限制（每用户每分钟消息数） | `handlers/user_handler.py`「女仆的小托盘快端不稳了」 |
+| **小验证** | AI 人机验证 (CAPTCHA) | `utils/copy.py` `VERIFY_INVITE`「来做个人家的小验证嘛」、`VERIFY_INVITE_PENDING`；`services/verification.py` |
+| **捣乱者** | 被拉黑的用户 | `handlers/command_handler.py`「把捣乱者请进黑名单小本本」 |
+
+### 🌸 傲娇触发点
+
+傲娇是**稀缺资源，用滥了就廉价**。绝大多数回答用普通女仆口吻就够了，只在下列情境才允许露出：
+
+- **被夸奖或被感谢时**：先否认（如「才、才没有呢…」），再补一句真心话；
+- **被催促时**：委屈但照办；
+- **被质疑时**：别扭地自证；
+- **读者写错参数 / 连续出错时**：无奈吐槽一句，然后照样帮忙；
+- **破坏性操作前**（不可撤销、会丢数据的）：别扭地劝阻。
+
+> **用量预算**：全项目约 590 条用户可见文案里，傲娇要素只应出现在 **15~25 条**。一旦觉得「这句也能加」，默认结论就是不傲娇。
+
+> 例外：**人机验证的题干**可以带轻快语气，但**选项文本必须纯中性**，且题干与选项都不得出现「主人」「客人」「女仆」等称呼——那里是答题界面，不是对话。
+
+### 📝 给维护者的约定
+
+1. **新增用户可见文案一律加到 `utils/copy.py`**，不要在 handler / service 里硬编码。该集中文案层已存在，改语气只改一处（历史上同一句话最多重复了 54 遍）。
+2. **技术日志与诊断输出不加语气**，见上方豁免清单。
+3. **改语气不要动业务逻辑**。`utils/copy.py` 的命名约定是：固定文案用 `UPPER_SNAKE_CASE` 常量，带参数的文案用 `snake_case` 函数。
+4. **语气靠状态自动升级，不做全量分身，也不需要配置项**。本项目**不采用**「每种语气各来一份平行文案表」的方案；只在少数语义位提供两个常量（温柔档 + 傲娇档），由**状态升级函数**按真实业务状态选档并渲染，调用方只调函数、不自己写 `if`，也不需要「配音色」。当前的状态升级函数是 `verify_wrong`（小验证答错）与 `unblock_question`（解封验证重问），均为**第 2 次错误起**才升级为傲娇。
+5. **傲娇档不允许吞掉真实信息**：剩余次数 `{n}`、服务器名、错误原因必须原样保留；异常详情一类内部细节转 `logger`，只给读者简短原因。
+6. **AI 人设 prompt 只有一份**：自动回复的人设规则定义在 `services/ai_service.py` 的 `AUTOREPLY_PERSONA_RULES`，Gemini 与 OpenAI 两条链路共用同一常量，不要各自复制一份。
 
 ---
 
@@ -94,10 +187,11 @@
 
 | 特性 | 说明 |
 | :--- | :--- |
-| 🎛️ **女仆长面板 `/panel`** | 统计、黑名单、拦截篮、豁免名单、自动回复、广播分组、监控、模型等一站式管理 |
+| 🎛️ **女仆长面板 `/panel`** | 统计、黑名单、拦截篮、通行证名单、自动回复、广播分组、监控、模型等一站式管理 |
 | 📢 **分组与广播** | 管理用户分组，向全部用户或指定分组广播文本/媒体消息，回复源消息可后续编辑同步 |
 | 🌐 **网络测试** | 通过 SSH 远程服务器执行 Ping 与 NextTrace 路由追踪（ICMP/TCP），授权用户可用，目标地址防注入校验 |
 | 🔧 **安全更新** | `/updatebot` 仅执行 `ff-only` 更新并支持回滚，本地有未提交改动时拒绝更新 |
+| 🐳 **镜像更新** | Docker 部署下由 `/panel` 触发 Watchtower HTTP API 拉镜像并重建容器，适合不方便登录服务器的场景 |
 | 🗄️ **aiosqlite 连接池** | 8 连接池 + 事务安全包装（出错自动回滚），高并发下数据库读写稳定 |
 
 ---
@@ -191,10 +285,12 @@ docker compose up -d
 docker compose down && docker compose pull && docker compose up -d
 ```
 
+> **也可以在机器人面板里远程触发**：配好 `WATCHTOWER_HTTP_API_URL` / `WATCHTOWER_HTTP_API_TOKEN` 后（见 `.env.example`），私聊机器人点「检查镜像更新」查询有没有新镜像，再点「确认更新」，由 Watchtower 拉镜像并重建容器。详见 [watchtower/README.md](watchtower/README.md)。
+
 > [!NOTE]
 > 仓库根目录提供两份等效的 Compose 文件（`docker-compose.yml` 与 `dockercompose.yaml`），均使用镜像 `pivkeyu/pivkeyu_pmbot:latest`，任选其一即可。
 
-> 使用 [Watchtower 自动更新本项目](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 shoutrrr 通知配置示例）。
+> 使用 [Watchtower 自动更新本项目](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 HTTP API 远程更新与 shoutrrr 通知配置示例）。
 
 ### 3. 使用 Docker Run
 
@@ -310,6 +406,20 @@ python bot.py
 | `WATCHTOWER_NOTIFICATIONS` | ❌ | 空 | 使用 shoutrrr 作为统一通知系统，启用需去除 `#` 注释并设为 `shoutrrr` |
 | `WATCHTOWER_NOTIFICATION_URL` | ❌ | 空 | 通知渠道钩子，如 `telegram://token@telegram?chats=channel-1[,chat-id-1,...]` |
 
+### 🐳 镜像更新（HTTP API 远程更新，可选）
+
+仅在 Docker 部署 + [watchtower/docker-compose.yml](watchtower/docker-compose.yml) 下使用，让机器人面板能远程触发拉镜像与重建容器。
+
+| 变量 | 必填 | 默认值 | 说明 |
+| :--- | :---: | :--- | :--- |
+| `WATCHTOWER_HTTP_API_URL` | ❌ | `http://watchtower:8080` | Watchtower HTTP API 地址；用仓库的 compose 时按服务名访问，不用改 |
+| `WATCHTOWER_HTTP_API_TOKEN` | ❌（使用 watchtower compose 时**必填**） | 空 | 与 compose 里 `WATCHTOWER_HTTP_API_TOKEN` 同值；用 `openssl rand -hex 32` 生成。**它等于容器重建权限，不要泄露、不要用弱口令** |
+| `UPDATE_IMAGE_REPO` | ❌ | `pivkeyu/pivkeyu_pmbot` | 覆盖要检查的镜像仓库名 |
+| `UPDATE_IMAGE_TAG` | ❌ | `latest` | 覆盖要检查的镜像 tag |
+| `RUNNING_IN_DOCKER` | ❌ | 自动检测 | 非容器部署时设为 `1`，让面板显示「镜像更新」而非「Git 更新」 |
+
+> 配置文件里这三项默认是注释状态；不配 token 时面板的「检查镜像更新」仍可查看状态，但「确认更新」会提示没配口令。
+
 ### 🔑 获取必要信息
 
 1. **Bot Token**：与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 创建机器人即可获得。
@@ -334,6 +444,7 @@ python bot.py
 | 网页监控 | 无需额外配置 | `/webmon add <名称> <url> [关键词]` |
 | RSS 推送 | `RSS_ENABLED=true`（或面板开启） | `/rss_add <url>` |
 | 安全更新 | git 方式部署 | `/updatebot status` → `/updatebot apply` |
+| 镜像更新（Docker） | `WATCHTOWER_HTTP_API_TOKEN` + watchtower 容器 | `/panel` → 安全更新/运行状态 → 检查镜像更新 → 确认更新 |
 | Watchtower 自动更新 | 见 [watchtower/README.md](watchtower/README.md) | `docker compose up -d` |
 
 ---
@@ -349,11 +460,11 @@ python bot.py
 | 命令 | 描述 |
 | :--- | :--- |
 | `/start` | 唤醒女仆（仅私聊） |
-| `/getid` | 查看主人 ID / 查看群组 ID |
+| `/getid` | 查看客人 ID / 查看群组 ID |
 | `/ping` | 端来 Ping 测试（需授权，每 15 秒一次） |
 | `/nexttrace` | 端来路由追踪（需授权，每 10 秒一次） |
-| `/adduser` | 登记授权主人（管理员） |
-| `/rmuser` | 移除授权主人（管理员） |
+| `/adduser` | 登记授权客人（管理员） |
+| `/rmuser` | 移除授权客人（管理员） |
 | `/addserver` | 登记测试服务器（管理员，支持 5 步向导或一次性参数） |
 | `/rmserver` | 撤下测试服务器（管理员） |
 | `/install_nexttrace` | 安装追踪工具（管理员） |
@@ -378,7 +489,7 @@ python bot.py
 | `/tgmon` | 管理 TG 监听 |
 | `/webmon` | 管理网页监控 |
 | `/monitor_status` | 查看监听状态 |
-| `/updatebot` | 安全更新机器人 |
+| `/updatebot` | 安全更新机器人（git 部署）；面板中还提供「检查镜像更新 / 确认更新」（Docker 部署，经 Watchtower HTTP API 触发） |
 
 ### 📰 RSS 命令（仅限私聊）
 
@@ -387,8 +498,8 @@ python bot.py
 | `/rss_add <url>` | 添加 RSS 茶点 |
 | `/rss_remove <url\|ID>` | 撤下 RSS 茶点 |
 | `/rss_list` | 查看 RSS 茶点 |
-| `/rss_addkeyword <id> <关键词>` | 添加 RSS 口味词 |
-| `/rss_removekeyword <id> <关键词>` | 删除 RSS 口味词 |
+| `/rss_addkeyword <id> <口味词>` | 添加 RSS 口味词 |
+| `/rss_removekeyword <id> <口味词>` | 删除 RSS 口味词 |
 | `/rss_listkeywords <id>` | 查看 RSS 口味词 |
 | `/rss_removeallkeywords <id>` | 清空 RSS 口味词 |
 | `/rss_setfooter [文本]` | 设置 RSS 小尾巴 |
@@ -459,7 +570,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 ```bash
 /rss_add https://example.com/feed.xml
 /rss_list
-/rss_addkeyword 1 关键词          # 只推送命中关键词的条目
+/rss_addkeyword 1 口味词          # 只推送命中口味词的条目
 /rss_setfooter 来自女仆的问候       # 自定义页脚
 /rss_togglepreview                # 切换链接预览
 ```
@@ -507,10 +618,12 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 ```
 
 > `/updatebot apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新；更新完成后需按部署方式重启 Bot。
+>
+> **Docker 部署还有一条路**：面板（安全更新 / 运行状态）里的「检查镜像更新」→「确认更新」会请求 Watchtower 的 HTTP API 拉镜像并重建容器，无需登录服务器。需要先配好 `WATCHTOWER_HTTP_API_URL` 与 `WATCHTOWER_HTTP_API_TOKEN`（见 `.env.example` 与 [watchtower/README.md](watchtower/README.md)）。
 
 ### 🎛️ 女仆长面板 `/panel`
 
-面板一站式管理：黑名单、主人名册、拦截消息篮、自动回复女仆、审查通行证、网络测试茶具、广播与分组、RSS 订阅、TG 监听、网页监控、关键词拦截、运行状态、安全更新、**AI 模型衣柜**（分别配置 Gemini / OpenAI 的内容审查、验证题生成、自动回复模型）。
+面板一站式管理：黑名单、客人名册、拦截消息篮、自动回复女仆、审查通行证、网络测试茶具、广播与分组、RSS 订阅、TG 监听、网页监控、关键词拦截、运行状态、安全更新、**AI 模型衣柜**（分别配置 Gemini / OpenAI 的内容审查、验证题生成、自动回复模型）。
 
 ---
 
@@ -528,7 +641,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 **Q2：如何获取群组 ID？**
 
-把机器人加为群组管理员，在群里发送 `/getid`，机器人会回复「群组 ID」和「您的用户 ID」。
+把机器人加为群组管理员，在群里发送 `/getid`，机器人会回复群组 ID 和用户 ID。
 
 **Q3：`user_session` 监听需要什么？**
 
@@ -537,6 +650,8 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 **Q4：`/updatebot apply` 失败怎么办？**
 
 失败是保护机制生效：本地有未提交改动、本地分支领先远端、或没有可用的回滚点。先提交/清理本地改动再重试；`/updatebot rollback` 可回滚到上一次更新前。
+
+> 如果机器人跑在 Docker 里、服务器上没有 git 仓库（例如镜像是 CI 构建后直接拉取的），`/updatebot` 会没有可用更新点。这种情况改用面板里的**「检查镜像更新」→「确认更新」**，由 Watchtower 拉新镜像并重建容器，详见 [watchtower/README.md](watchtower/README.md)。
 
 **Q5：验证失败被拉黑，还能解封吗？**
 
@@ -606,8 +721,10 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 
 ---
 
+<a id="star-支持"></a>
+
 <p align="center">
-  如果这个项目对你有帮助，请给个 Star ⭐️
+  如果这个项目对您有帮助，请给个 Star ⭐️
 </p>
 <p align="center">
   <a href="https://www.star-history.com/#PivKeyU/pivkeyu_pmbot&type=date">

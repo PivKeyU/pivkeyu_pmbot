@@ -1,8 +1,23 @@
 import json
+import logging
 import aiosqlite
 from datetime import datetime, timezone, timedelta
 from .db_manager import db_manager
 from config import config
+
+logger = logging.getLogger(__name__)
+
+# 拦截消息篮（filtered_messages）的保留策略。两条并用：
+#   * 按时间：超过 RETENTION_DAYS 天的记录会被清理
+#   * 按行数：总量超过 MAX_ROWS 时只保留最新的 MAX_ROWS 条
+# 两者结合，避免「某天被灌爆」或「长期冷清留一堆无用旧数据」两种失控。
+FILTERED_RETENTION_DAYS = 90
+FILTERED_MAX_ROWS = 20000
+
+# 机会性清理的写计数器：每 _FILTERED_PRUNE_EVERY 次插入才做一次清理，
+# 把 O(n) 的 DELETE 摊薄成可忽略的均摊成本。只要持续有写入，清理一定会发生。
+_FILTERED_PRUNE_EVERY = 100
+_filtered_writes_since_prune = 0
 
 
 def _row_to_dict(cursor, row):
@@ -128,13 +143,84 @@ async def save_message(user_id: int, message_id: int, content: str, direction: s
         ''', (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id))
         await db.commit()
 
+async def _prune_filtered_messages(db) -> int:
+    """清理拦截消息篮：既按时间也按行数上限。返回删除条数。
+
+    复用调用方已 checkout 的连接与事务，避免额外占用池资源。
+    """
+    deleted = 0
+
+    # 先取一次总行数。COUNT(*) 走表扫描，实测 2 万行表约 0.3 ms，而策略 B 的
+    # NOT IN 子查询即使无事可做也要付约 15 ms，所以用一个廉价的「有没有活要干」
+    # 判据把它跳过，稳赚不赔。不需要额外索引。
+    async with db.execute('SELECT COUNT(*) FROM filtered_messages') as cursor:
+        total_rows = (await cursor.fetchone())[0]
+
+    # 策略 A —— 按时间。SQLite 的 CURRENT_TIMESTAMP 生成 'YYYY-MM-DD HH:MM:SS'，
+    # 定长格式下字典序等价于时间序，直接字符串比较即可。
+    # 这里不加前置判断：MIN(filtered_at) 实测约 5.5 ms（2 万行）/ 50 ms（20 万行），
+    # 比它想替代的 DELETE（约 5.5 ms，且随表增大但不随行数恶化）还贵。
+    if FILTERED_RETENTION_DAYS > 0:
+        cursor = await db.execute(
+            "DELETE FROM filtered_messages WHERE filtered_at < datetime('now', ?)",
+            ('-%d days' % FILTERED_RETENTION_DAYS,),
+        )
+        if cursor.rowcount > 0:
+            deleted += cursor.rowcount
+
+    # 策略 B —— 按行数上限，只保留最新的 FILTERED_MAX_ROWS 条。
+    # 必须用单调递增的 id 排序：filtered_at 只有秒级精度，同一秒内的记录时间
+    # 完全相同，排序不稳定，会出现「删掉新的、留下旧的」。
+    if FILTERED_MAX_ROWS > 0 and total_rows > FILTERED_MAX_ROWS:
+        cursor = await db.execute(
+            '''
+            DELETE FROM filtered_messages
+            WHERE id NOT IN (
+                SELECT id FROM filtered_messages ORDER BY id DESC LIMIT ?
+            )
+            ''',
+            (FILTERED_MAX_ROWS,),
+        )
+        if cursor.rowcount > 0:
+            deleted += cursor.rowcount
+
+    return deleted
+
+
+async def prune_filtered_messages() -> int:
+    """显式清理拦截消息篮，返回删除条数。
+
+    正常运行时不需要主动调用 —— save_filtered_message 会机会性自动清理。
+    保留这个入口是为了测试与将来的定期任务。
+    """
+    async with db_manager.get_connection() as db:
+        deleted = await _prune_filtered_messages(db)
+        await db.commit()
+    if deleted:
+        logger.info("拦截消息篮清理：删除 %d 条超期/超量记录", deleted)
+    return deleted
+
+
 async def save_filtered_message(user_id: int, message_id: int, content: str, reason: str, media_type: str = None, media_file_id: str = None):
+    global _filtered_writes_since_prune
     async with db_manager.get_connection() as db:
         await db.execute('''
             INSERT INTO filtered_messages
             (user_id, message_id, content, reason, media_type, media_file_id)
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (user_id, message_id, content, reason, media_type, media_file_id))
+        # 机会性清理：每 _FILTERED_PRUNE_EVERY 次插入顺手清理一次，防止拦截
+        # 消息篮单调增长。清理与插入共用同一个事务与连接（不多占池连接）。
+        # 清理只是家务活，不能让它连累业务：调用方（handlers/user_handler.py）
+        # 在这之后还有拉黑与回复逻辑，这里抛异常会连带跳过它们，所以单独兜住
+        # 并记日志；本条记录照常提交，清理下次再试。
+        _filtered_writes_since_prune += 1
+        if _filtered_writes_since_prune >= _FILTERED_PRUNE_EVERY:
+            _filtered_writes_since_prune = 0
+            try:
+                await _prune_filtered_messages(db)
+            except Exception:
+                logger.exception("拦截消息篮机会性清理失败，本条记录仍会保存")
         await db.commit()
 
 async def get_filtered_messages(limit: int = 20, offset: int = 0):
@@ -143,7 +229,11 @@ async def get_filtered_messages(limit: int = 20, offset: int = 0):
             SELECT fm.*, u.first_name, u.username
             FROM filtered_messages fm
             JOIN users u ON fm.user_id = u.user_id
-            ORDER BY fm.filtered_at DESC
+            -- filtered_at 只有秒级精度（CURRENT_TIMESTAMP），而拦截往往是同一秒内
+            -- 连着好几条。此时只按 filtered_at 排序结果不确定，SQLite 实测会把
+            -- 【最早】插入的排到最前，管理员看到的「最新拦截」反而是旧的。
+            -- 加上单调递增的 id 作为决定性 tie-breaker 才可靠。
+            ORDER BY fm.filtered_at DESC, fm.id DESC
             LIMIT ? OFFSET ?
         ''', (limit, offset)) as cursor:
             rows = await cursor.fetchall()

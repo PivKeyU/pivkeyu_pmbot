@@ -18,6 +18,7 @@ from telegram.ext import Application, ContextTypes
 
 from config import config
 from database import models as db
+from utils import copy as copy_text
 
 try:
     from bs4 import BeautifulSoup
@@ -299,8 +300,8 @@ async def build_panel_text() -> str:
 def build_panel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("查看网页监控", callback_data="panel_web_monitor_list")],
-        [InlineKeyboardButton("运行状态", callback_data="panel_monitor_status_web")],
-        [InlineKeyboardButton("回女仆长面板", callback_data="panel_back")],
+        [InlineKeyboardButton(copy_text.BTN_PANEL_STATUS, callback_data="panel_monitor_status_web")],
+        [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
     ])
 
 

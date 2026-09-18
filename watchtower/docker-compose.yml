@@ -7,6 +7,8 @@ services:
      - .env
     volumes:
      - ./data:/app/data
+    depends_on:
+      - watchtower
      
   watchtower:
     image: containrrr/watchtower
@@ -16,7 +18,17 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     env_file:
       - .env
-    command: --cleanup --interval 3600 pivkeyu-pmbot
+    environment:
+      # 与 .env 里的 WATCHTOWER_HTTP_API_TOKEN 保持同一个值。
+      # 用 ${VAR:?msg} 是故意的：没配 token 时 docker compose up 会直接报错退出，
+      # 而不是静默启动一个没有鉴权的更新接口。注意 env_file 不会喂给 compose 的 ${} 插值。
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:?需要在 .env 里设置 WATCHTOWER_HTTP_API_TOKEN}
+    # expose 只对同一 compose 网络内的服务可见，不会暴露到宿主机网卡。
+    expose:
+      - "8080"
+    # --http-api-periodic-polls 不能省：启用 --http-api-update 会默认关闭周期性轮询，
+    # 少了它就等于 --interval 3600 静默失效（定时更新没了）。
+    command: --cleanup --interval 3600 --http-api-update --http-api-periodic-polls pivkeyu-pmbot
     logging:
       driver: "json-file"
       options:

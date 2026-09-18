@@ -63,7 +63,13 @@ def setup(app: Application) -> None:
     app.bot_data["rss_data_file"] = data_file
 
     for command, handler in rss_handlers.COMMAND_MAP.items():
-        app.add_handler(CommandHandler(command, handler, filters=filters.ChatType.PRIVATE))
+        # 与 handlers/__init__.py 同样的理由：CommandHandler 默认 filters 是 UpdateType.MESSAGES，
+        # 会把「编辑成命令」的 Update 也放进来，而那种 Update 的 update.message 是 None。
+        app.add_handler(CommandHandler(
+            command,
+            handler,
+            filters=filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE,
+        ))
 
     # 注册间隔变化回调，面板修改检查间隔后按新间隔重建任务
     settings.set_check_interval_callback(_on_check_interval_changed)

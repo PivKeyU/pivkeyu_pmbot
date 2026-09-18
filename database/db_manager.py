@@ -130,6 +130,15 @@ class DatabaseManager:
                 raw = self._pool.popleft()
             else:
                 raw = await aiosqlite.connect(self.db_path)
+                # WAL：读写互不阻塞。默认的 rollback-journal 模式下写会阻塞读，
+                # 而本项目的连接池有 8 条连接并发读写，WAL 能显著降低锁竞争。
+                # journal_mode 是数据库级持久设置：首次执行后库文件永久切到 WAL，
+                # 后续连接再执行是幂等的空操作。
+                await raw.execute("PRAGMA journal_mode = WAL")
+                # NORMAL：WAL 下每个事务不再强制 fsync，由 WAL 的 checkpoint 保证持久性。
+                # 掉电最多丢最后一个事务，对聊天机器人可接受，换来明显更少的磁盘同步。
+                # 注意顺序：journal_mode = WAL 必须在本行之前。
+                await raw.execute("PRAGMA synchronous = NORMAL")
                 await raw.execute("PRAGMA foreign_keys = ON")
                 await raw.execute("PRAGMA busy_timeout = 5000")
                 self._live += 1
@@ -627,7 +636,10 @@ class DatabaseManager:
     async def get_filtered_messages_by_user(self, user_id, limit=5):
         async with self.get_connection() as db:
             cursor = await db.execute(
-                'SELECT content, reason FROM filtered_messages WHERE user_id = ? ORDER BY filtered_at DESC LIMIT ?',
+                # filtered_at 只有秒级精度，同一秒内的多条记录排序不确定（实测
+                # SQLite 会把最早插入的排到最前）。加 id 作 tie-breaker 才可靠。
+                'SELECT content, reason FROM filtered_messages '
+                'WHERE user_id = ? ORDER BY filtered_at DESC, id DESC LIMIT ?',
                 (user_id, limit)
             )
             rows = await cursor.fetchall()

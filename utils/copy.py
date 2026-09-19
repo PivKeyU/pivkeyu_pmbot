@@ -1201,7 +1201,8 @@ def image_update_up_to_date(local_version: str, image: str) -> str:
 #
 # .. danger::
 #   下面每个颜文字都**不能含** ``*`` ``_`` ``` ` `` ``[`` ``]``。
-#   本项目的 12 个发送点带 ``parse_mode='Markdown'``，Telegram 的 legacy
+#   本项目有 17 处 legacy-Markdown 发送调用点会送出这里的文案（全项目共 59
+#   行 legacy-Markdown 调用）；Telegram 的 legacy
 #   Markdown 遇到**未成对**的实体字符会直接拒收整条消息
 #   （``BadRequest: Can't parse entities``），也就是主人什么都收不到。
 #   候选清单里原本有 22 个含这些字符（如 ``(T_T)`` ``>ω<`` ``>ᯅ<`` ``(｡•ᴗ-)_⁺``），

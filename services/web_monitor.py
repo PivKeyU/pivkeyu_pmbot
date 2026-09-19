@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urljoin
 
 import aiohttp
@@ -35,7 +35,7 @@ DEFAULT_UA = (
 
 
 def _now_sql() -> str:
-    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
 @dataclass

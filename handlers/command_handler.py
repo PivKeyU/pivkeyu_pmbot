@@ -69,7 +69,7 @@ async def blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     
-    if message.is_topic_message and message.reply_to_message:
+    if message.is_topic_message:
         thread_id = message.message_thread_id
         user_to_block = await db.get_user_by_thread_id(thread_id)
         

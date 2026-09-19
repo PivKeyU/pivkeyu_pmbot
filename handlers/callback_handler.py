@@ -412,13 +412,40 @@ def _build_ai_model_selection_view(application, provider_type: str, feature_type
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    if not query:
+        return
+
+    answered = False
+    orig_answer = query.answer
+
+    async def safe_answer(*args, **kwargs):
+        nonlocal answered
+        if answered:
+            return
+        answered = True
+        try:
+            return await orig_answer(*args, **kwargs)
+        except Exception:
+            pass
+
+    query.answer = safe_answer
+    try:
+        await _handle_callback_impl(update, context)
+    finally:
+        if not answered:
+            try:
+                await orig_answer()
+            except Exception:
+                pass
+
+
+async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
     data = query.data
     user_id = query.from_user.id
     
     if data.startswith("nt_"):
-        # nt_* 回调由 network_test 内部的 callback_handler 自行 answer，
-        # 外层再 answer 一次会对已应答的 query 触发 Telegram 400 错误
-        # （并产生错误日志噪音，掩盖真实异常），因此这里跳过外层应答。
+        # nt_* 回调由 network_test 内部的 callback_handler 自行 answer
         from network_test.handlers import callback_handler as network_callback_handler
         handled = await network_callback_handler(update, context)
         if not handled:
@@ -429,8 +456,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     data = "panel_network_test"
         else:
             return
-    else:
-        await query.answer()
 
     if data.startswith("verify_"):
         answer = data.split("_", 1)[1]

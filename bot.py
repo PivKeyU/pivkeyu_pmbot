@@ -15,12 +15,20 @@ async def post_init(app: Application):
     print(f"Bot Username: {config.BOT_USERNAME} 已设置")
     await register_bot_commands(app)
     await tg_monitor.start_user_session_listener(app)
+async def post_shutdown(app: Application):
+    from services.ai_service import close_clients
+    close_clients()
+    await tg_monitor.stop_user_session_listener(app)
+    await DatabaseManager().close_all()
+    logging.info("所有连接与资源已成功释放。")
 
 def main():
     logging.basicConfig(
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         level=logging.INFO
     )
+
+    config.validate()
 
     # Python 3.14 不再为主线程隐式创建事件循环，显式设置可兼容 PTB 的 run_polling。
     loop = asyncio.new_event_loop()
@@ -29,13 +37,17 @@ def main():
     db_manager = DatabaseManager(config.DATABASE_PATH)
     loop.run_until_complete(db_manager.initialize())
 
-    app = Application.builder().token(config.BOT_TOKEN).post_init(post_init).build()
+    app = (
+        Application.builder()
+        .token(config.BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
 
     register_handlers(app)
     setup_rss(app)
     web_monitor.setup(app)
-
-    config.validate()
 
     logging.info("Bot启动中...")
     app.run_polling()

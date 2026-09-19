@@ -1,5 +1,9 @@
-# 使用官方 Python 镜像作为基础镜像
 FROM python:3.11-slim
+
+# 安装系统依赖（如 git，供 /updatebot 自动更新与代码检查使用）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app

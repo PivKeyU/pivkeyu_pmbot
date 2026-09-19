@@ -1,10 +1,13 @@
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.error import BadRequest, Forbidden, TelegramError, RetryAfter
 from telegram.ext import ContextTypes
+
+logger = logging.getLogger(__name__)
 
 from config import config
 from database import models as db
@@ -153,25 +156,36 @@ async def send_text_broadcast(
     failed = 0
     for recipient in recipients:
         user_id = recipient['user_id']
-        try:
-            sent = await context.bot.send_message(chat_id=user_id, text=text)
-            await db.save_broadcast_delivery(broadcast_id, user_id, "success", sent.message_id)
-            mirror = await _send_text_mirror(context, recipient, text)
-            if mirror:
-                await db.save_message_mapping(
-                    user_id=user_id,
-                    source_chat_id=config.FORUM_GROUP_ID,
-                    source_message_id=mirror.message_id,
-                    dest_chat_id=user_id,
-                    dest_message_id=sent.message_id,
-                    direction="broadcast_to_user",
-                    thread_id=mirror.message_thread_id,
-                    broadcast_id=broadcast_id,
-                )
-            success += 1
-        except (Forbidden, BadRequest, TelegramError) as exc:
-            await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
-            failed += 1
+        retries = 3
+        while retries >= 0:
+            try:
+                sent = await context.bot.send_message(chat_id=user_id, text=text)
+                await db.save_broadcast_delivery(broadcast_id, user_id, "success", sent.message_id)
+                mirror = await _send_text_mirror(context, recipient, text)
+                if mirror:
+                    await db.save_message_mapping(
+                        user_id=user_id,
+                        source_chat_id=config.FORUM_GROUP_ID,
+                        source_message_id=mirror.message_id,
+                        dest_chat_id=user_id,
+                        dest_message_id=sent.message_id,
+                        direction="broadcast_to_user",
+                        thread_id=mirror.message_thread_id,
+                        broadcast_id=broadcast_id,
+                    )
+                success += 1
+                break
+            except RetryAfter as exc:
+                retries -= 1
+                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
+                await asyncio.sleep(exc.retry_after + 1)
+                if retries < 0:
+                    await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=f"Flood control: {exc}")
+                    failed += 1
+            except (Forbidden, BadRequest, TelegramError) as exc:
+                await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
+                failed += 1
+                break
         await asyncio.sleep(0.05)
 
     await db.update_broadcast_counts(broadcast_id, success, failed)
@@ -212,6 +226,9 @@ async def _send_text_mirror(context: ContextTypes.DEFAULT_TYPE, recipient: dict,
             message_thread_id=thread_id,
             disable_web_page_preview=True,
         )
+    except RetryAfter as exc:
+        logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
+        return None
     except TelegramError as exc:
         print(f"发送广播话题镜像失败: {exc}")
         return None
@@ -229,6 +246,9 @@ async def _send_message_mirror(context: ContextTypes.DEFAULT_TYPE, recipient: di
             thread_id=thread_id,
             disable_web_page_preview=True,
         )
+    except RetryAfter as exc:
+        logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
+        return None
     except TelegramError as exc:
         print(f"发送广播话题镜像失败: {exc}")
         return None
@@ -256,53 +276,64 @@ async def send_message_broadcast(
     failed = 0
     for recipient in recipients:
         user_id = recipient['user_id']
-        try:
-            sent = await send_message_by_type(
-                context.bot,
-                source_message,
-                user_id,
-                disable_web_page_preview=True,
-            )
-            if sent:
-                await db.save_broadcast_delivery(broadcast_id, user_id, "success", sent.message_id)
-                await db.save_message_mapping(
-                    user_id=user_id,
-                    source_chat_id=source_message.chat_id,
-                    source_message_id=source_message.message_id,
-                    dest_chat_id=user_id,
-                    dest_message_id=sent.message_id,
-                    direction="broadcast_to_user",
-                    broadcast_id=broadcast_id,
+        retries = 3
+        while retries >= 0:
+            try:
+                sent = await send_message_by_type(
+                    context.bot,
+                    source_message,
+                    user_id,
+                    disable_web_page_preview=True,
                 )
-                mirror = await _send_message_mirror(context, recipient, source_message)
-                if mirror:
+                if sent:
+                    await db.save_broadcast_delivery(broadcast_id, user_id, "success", sent.message_id)
                     await db.save_message_mapping(
                         user_id=user_id,
                         source_chat_id=source_message.chat_id,
                         source_message_id=source_message.message_id,
-                        dest_chat_id=config.FORUM_GROUP_ID,
-                        dest_message_id=mirror.message_id,
-                        direction="broadcast_to_thread",
-                        thread_id=mirror.message_thread_id,
-                        broadcast_id=broadcast_id,
-                    )
-                    await db.save_message_mapping(
-                        user_id=user_id,
-                        source_chat_id=config.FORUM_GROUP_ID,
-                        source_message_id=mirror.message_id,
                         dest_chat_id=user_id,
                         dest_message_id=sent.message_id,
                         direction="broadcast_to_user",
-                        thread_id=mirror.message_thread_id,
                         broadcast_id=broadcast_id,
                     )
-                success += 1
-            else:
-                await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error="unsupported message type")
+                    mirror = await _send_message_mirror(context, recipient, source_message)
+                    if mirror:
+                        await db.save_message_mapping(
+                            user_id=user_id,
+                            source_chat_id=source_message.chat_id,
+                            source_message_id=source_message.message_id,
+                            dest_chat_id=config.FORUM_GROUP_ID,
+                            dest_message_id=mirror.message_id,
+                            direction="broadcast_to_thread",
+                            thread_id=mirror.message_thread_id,
+                            broadcast_id=broadcast_id,
+                        )
+                        await db.save_message_mapping(
+                            user_id=user_id,
+                            source_chat_id=config.FORUM_GROUP_ID,
+                            source_message_id=mirror.message_id,
+                            dest_chat_id=user_id,
+                            dest_message_id=sent.message_id,
+                            direction="broadcast_to_user",
+                            thread_id=mirror.message_thread_id,
+                            broadcast_id=broadcast_id,
+                        )
+                    success += 1
+                else:
+                    await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error="unsupported message type")
+                    failed += 1
+                break
+            except RetryAfter as exc:
+                retries -= 1
+                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
+                await asyncio.sleep(exc.retry_after + 1)
+                if retries < 0:
+                    await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=f"Flood control: {exc}")
+                    failed += 1
+            except (Forbidden, BadRequest, TelegramError) as exc:
+                await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
                 failed += 1
-        except (Forbidden, BadRequest, TelegramError) as exc:
-            await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
-            failed += 1
+                break
         await asyncio.sleep(0.05)
 
     await db.update_broadcast_counts(broadcast_id, success, failed)

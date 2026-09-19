@@ -193,6 +193,8 @@ class DatabaseManager:
 
     async def initialize(self):
         async with self.get_connection() as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA synchronous = NORMAL")
             await self.create_users_table(db)
             await self.create_messages_table(db)
             await self.create_blacklist_table(db)

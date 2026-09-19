@@ -290,47 +290,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     forwarded_message_id = None
-    if is_new:
-        return
-    
-    try:
-        probe_msg = await context.bot.forward_message(
-            chat_id=config.FORUM_GROUP_ID,
-            from_chat_id=config.FORUM_GROUP_ID,
-            message_id=thread_id,
-            message_thread_id=thread_id,
-            disable_notification=True
-        )
-        await context.bot.delete_message(
-            chat_id=config.FORUM_GROUP_ID,
-            message_id=probe_msg.message_id
-        )
-    except BadRequest as e:
-        error_text = e.message.lower()
-        if "message to forward not found" in error_text or \
-           "message not found" in error_text or \
-           "thread not found" in error_text or \
-           "topic not found" in error_text:
-            await handle_invalid_thread(update, context, user.id)
-            return
-        print(f"Topic probe failed with unexpected error: {e}")
-    
-    try:
-        sent_msg = await _resend_message(update, context, thread_id)
-        if sent_msg:
+    if not is_new:
+        try:
+            sent_msg = await _resend_message(update, context, thread_id)
+            if not sent_msg:
+                await update.message.reply_text(
+                    copy_text.with_deco("女仆看不懂这种格式呢，客人换一种交给女仆吧。", 'ERROR'))
+                return
             forwarded_message_id = sent_msg.message_id
-        else:
-            await update.message.reply_text(
-                copy_text.with_deco("女仆看不懂这种格式呢，客人换一种交给女仆吧。", 'ERROR'))
-            return
-    except BadRequest as e:
-        if "thread not found" in e.message.lower() or "topic not found" in e.message.lower():
-            await handle_invalid_thread(update, context, user.id)
-            return
-        else:
-            print(f"发送消息时发生未知错误: {e}")
-            await update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user.id))))
-            return
+        except BadRequest as e:
+            if "thread not found" in e.message.lower() or "topic not found" in e.message.lower():
+                await handle_invalid_thread(update, context, user.id)
+                return
+            else:
+                print(f"发送消息时发生未知错误: {e}")
+                await update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user.id))))
+                return
 
     # Mark previous admin messages as read
     unread = await db.mark_receipts_read(user.id)

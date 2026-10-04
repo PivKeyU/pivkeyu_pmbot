@@ -1,0 +1,402 @@
+from telegram import Update, constants
+from telegram.error import BadRequest, TelegramError
+from telegram.ext import ContextTypes
+from database import models as db
+from services.verification import create_verification, is_verification_pending, get_pending_verification_message
+from services.thread_manager import get_or_create_thread
+from services.gemini_service import gemini_service
+from utils.media_converter import sticker_to_image
+from utils.message_sender import edit_message_by_type, send_message_by_type
+from services.rate_limiter import rate_limiter
+from services import spam_filter
+from config import config
+from utils import copy as copy_text
+from web_panel import events as panel_events
+
+async def handle_invalid_thread(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    await db.update_user_thread_id(user_id, None)
+    await db.update_user_verification(user_id, False)
+    context.user_data['pending_update'] = update
+    question, keyboard = await create_verification(user_id)
+    full_message = copy_text.with_deco_head(
+        f"{copy_text.THREAD_CLOSED_REVERIFY}{question}", 'ASK')
+    await update.message.reply_text(
+        text=full_message,
+        reply_markup=keyboard
+    )
+
+async def _get_private_reply_target(message, user_id: int, thread_id: int):
+    if not message.reply_to_message:
+        return None
+
+    mapping = await db.get_message_mapping(message.chat_id, message.reply_to_message.message_id)
+    if not mapping or mapping.get('user_id') != user_id:
+        return None
+
+    if mapping['source_chat_id'] == config.FORUM_GROUP_ID or mapping['dest_chat_id'] == config.FORUM_GROUP_ID:
+        if not mapping.get('thread_id') or mapping['thread_id'] != thread_id:
+            return None
+
+    if mapping.get('thread_id') and mapping['thread_id'] != thread_id:
+        return None
+
+    if mapping['source_chat_id'] == config.FORUM_GROUP_ID:
+        return mapping['source_message_id']
+    if mapping['dest_chat_id'] == config.FORUM_GROUP_ID:
+        return mapping['dest_message_id']
+    return None
+
+
+async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, thread_id: int):
+    message = update.message
+    reply_to_message_id = await _get_private_reply_target(message, update.effective_user.id, thread_id)
+    sent = await send_message_by_type(
+        context.bot,
+        message,
+        config.FORUM_GROUP_ID,
+        thread_id,
+        True,
+        reply_to_message_id=reply_to_message_id,
+    )
+    if sent:
+        await db.save_message_mapping(
+            user_id=update.effective_user.id,
+            source_chat_id=message.chat_id,
+            source_message_id=message.message_id,
+            dest_chat_id=config.FORUM_GROUP_ID,
+            dest_message_id=sent.message_id,
+            direction="user_to_admin",
+            thread_id=thread_id,
+        )
+        media_type = None
+        media_file_id = None
+        if message.photo:
+            media_type, media_file_id = "photo", message.photo[-1].file_id
+        elif message.sticker:
+            media_type, media_file_id = "sticker", message.sticker.file_id
+        elif message.animation:
+            media_type, media_file_id = "animation", message.animation.file_id
+        elif message.video:
+            media_type, media_file_id = "video", message.video.file_id
+        elif message.document:
+            media_type, media_file_id = "document", message.document.file_id
+        elif message.audio:
+            media_type, media_file_id = "audio", message.audio.file_id
+        elif message.voice:
+            media_type, media_file_id = "voice", message.voice.file_id
+        elif message.video_note:
+            media_type, media_file_id = "video_note", message.video_note.file_id
+        # 记录消息预览（含论坛侧 message_id），供 /inbox 待办聚合展示内容
+        await db.save_message(
+            user_id=update.effective_user.id,
+            message_id=message.message_id,
+            content=message.text or message.caption or "",
+            direction="user_to_admin",
+            media_type=media_type,
+            media_file_id=media_file_id,
+            dest_message_id=sent.message_id,
+            thread_id=thread_id,
+        )
+        # 推送给 Web 面板（没有面板订阅者时是空操作）
+        panel_events.publish(
+            'message',
+            user_id=update.effective_user.id,
+            direction='user_to_admin',
+            preview=(message.text or message.caption or '')[:120] or f'[{media_type or "媒体"}]',
+            message_id=message.message_id,
+            media_type=media_type,
+        )
+    return sent
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from network_test.handlers import handle_message as network_handle_message
+    handled = await network_handle_message(update, context)
+    if handled:
+        return
+    
+    user = update.effective_user
+    
+    is_over_limit, was_warned = await rate_limiter.check_user_rate_limit(user.id)
+    
+    if is_over_limit:
+        if was_warned:
+            await db.add_to_blacklist(
+                user.id,
+                reason="忽略速率限制警告，多次超出限制",
+                blocked_by=config.BOT_ID,
+                permanent=True
+            )
+            await db.set_user_blacklist_strikes(user.id, 99)
+            await update.message.reply_text(
+                copy_text.with_deco_head(
+                    "不是女仆想锁客人的门……提醒过之后消息还是这么密集，女仆只能把通道永久锁上。\n\n"
+                    "有疑问就找管理员女仆长吧。",
+                    'BLOCK',
+                )
+            )
+            return
+        else:
+            await rate_limiter.mark_user_warned(user.id)
+            await update.message.reply_text(
+                copy_text.with_deco_head(
+                    f"提醒客人：消息发送得太快啦，女仆的小托盘快端不稳了。\n\n"
+                    f"当前宅邸规则：每分钟最多 {config.MAX_MESSAGES_PER_MINUTE} 条消息。\n\n"
+                    f"请稍等片刻再试；如果继续超速，女仆会永久锁上通道哦。",
+                    'BLOCK',
+                )
+            )
+            return
+    
+    if 'pending_update' in context.user_data:
+        if context.user_data['pending_update'].update_id == update.update_id:
+            context.user_data.pop('pending_update')
+    
+    is_blocked, is_permanent = await db.is_blacklisted(user.id)
+    if is_blocked:
+        if is_permanent:
+            await update.message.reply_text(
+                copy_text.with_deco(
+                    "客人的通道已经被永久锁上啦，有事就请找管理员女仆长申诉吧。", 'BLOCK')
+            )
+            return
+        
+        if not config.AUTO_UNBLOCK_ENABLED:
+            await update.message.reply_text(
+                copy_text.with_deco("自动解封女仆现在在休息，客人直接找管理员女仆长申诉嘛。", 'BLOCK'))
+            return
+
+        from services.blacklist import start_unblock_process
+        message, keyboard = await start_unblock_process(user.id)
+        if message and keyboard:
+            await update.message.reply_text(message, reply_markup=keyboard, parse_mode='Markdown')
+        elif message:
+            await update.message.reply_text(message)
+        return
+
+    user_data = await db.get_user(user.id)
+    is_new_user = False
+
+    if not user_data:
+        await db.add_user(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            language_code=user.language_code
+        )
+        user_data = await db.get_user(user.id)
+        is_new_user = True
+    else:
+        await db.update_user_profile(
+            user_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            language_code=user.language_code
+        )
+
+    message = update.message
+    spam_text = message.text or message.caption or ""
+    spam_result = await spam_filter.check_message_text(spam_text)
+    if spam_result.matched:
+        reason = "关键词广告拦截命中: " + ", ".join(spam_result.hits)
+        await db.save_filtered_message(
+            user_id=user.id,
+            message_id=message.message_id,
+            content=spam_text,
+            reason=reason,
+            media_type=message.photo and "photo" or message.sticker and "sticker",
+            media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
+        )
+        if spam_result.auto_block:
+            await db.add_to_blacklist(
+                user.id,
+                reason=reason,
+                blocked_by=config.BOT_ID,
+                permanent=True,
+            )
+            await db.set_user_blacklist_strikes(user.id, 99)
+            await update.message.reply_text(
+                copy_text.with_deco("这条消息女仆拦下啦，通道也按规则锁上。", 'CAT'))
+        else:
+            await update.message.reply_text(
+                copy_text.with_deco("这条消息女仆拦下啦，没有继续递送。", 'CAT'))
+        return
+
+    if is_new_user:
+        welcome_message = (
+            f"客人好呀，{user.first_name}！\n\n"
+            "这里是随时待命的双向聊天女仆。\n"
+            "客人可以直接把消息交给女仆，女仆会乖乖送到管理员那边。\n\n"
+            "不过递送第一条消息前，请先完成一个小验证哦。"
+        )
+        await update.message.reply_text(copy_text.with_deco_head(welcome_message, 'GREET'))
+
+    if not user_data.get('is_verified'):
+        if not config.VERIFICATION_ENABLED:
+            await db.update_user_verification(user.id, is_verified=True)
+        else:
+            has_pending, is_expired = is_verification_pending(user.id)
+            
+            if has_pending and not is_expired:
+                verification_data = get_pending_verification_message(user.id)
+                if verification_data:
+                    question, keyboard = verification_data
+                    context.user_data['pending_update'] = update
+                    await update.message.reply_text(
+                        copy_text.with_deco_head(
+                            f"{copy_text.VERIFY_INVITE_PENDING}\n\n{question}", 'ASK'),
+                        reply_markup=keyboard
+                    )
+                    return
+            else:
+                context.user_data['pending_update'] = update
+                question, keyboard = await create_verification(user.id)
+                await update.message.reply_text(
+                    copy_text.with_deco_head(question, 'ASK'), reply_markup=keyboard)
+                return
+    
+    image_bytes = None
+
+    if message.photo:
+        photo_file = await message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+    elif message.sticker and not message.sticker.is_animated and not message.sticker.is_video:
+        sticker_file = await message.sticker.get_file()
+        sticker_bytes = await sticker_file.download_as_bytearray()
+        image_bytes = await sticker_to_image(sticker_bytes)
+
+    if message.video or message.animation:
+        pass
+    else:
+        is_exempted = await db.is_exempted(user.id)
+        
+        if not is_exempted:
+            analyzing_message = await context.bot.send_message(
+                chat_id=message.chat_id,
+                text=copy_text.scan_message(copy_text.address(await db.is_admin(user.id))),
+                reply_to_message_id=message.message_id
+            )
+
+            analysis_result = await gemini_service.analyze_message(message, image_bytes)
+            if analysis_result.get("is_spam"):
+                await db.save_filtered_message(
+                    user_id=user.id,
+                    message_id=message.message_id,
+                    content=message.text or message.caption,
+                    reason=analysis_result.get("reason"),
+                    media_type=message.photo and "photo" or message.sticker and "sticker",
+                    media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
+                )
+                reason = analysis_result.get("reason", "暂时没有写明理由")
+                await analyzing_message.edit_text(copy_text.msg_blocked(reason))
+                return
+            else:
+                await analyzing_message.delete()
+
+    thread_id, is_new = await get_or_create_thread(update, context)
+    if not thread_id:
+        await update.message.reply_text(copy_text.topic_create_failed(copy_text.address(await db.is_admin(user.id))))
+        return
+    
+    forwarded_message_id = None
+    if not is_new:
+        try:
+            sent_msg = await _resend_message(update, context, thread_id)
+            if not sent_msg:
+                await update.message.reply_text(
+                    copy_text.with_deco("女仆看不懂这种格式呢，客人换一种交给女仆吧。", 'ERROR'))
+                return
+            forwarded_message_id = sent_msg.message_id
+        except BadRequest as e:
+            if "thread not found" in e.message.lower() or "topic not found" in e.message.lower():
+                await handle_invalid_thread(update, context, user.id)
+                return
+            else:
+                print(f"发送消息时发生未知错误: {e}")
+                await update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user.id))))
+                return
+
+    # Mark previous admin messages as read
+    unread = await db.mark_receipts_read(user.id)
+    for entry in unread:
+        try:
+            await context.bot.set_message_reaction(
+                chat_id=config.FORUM_GROUP_ID,
+                message_id=entry['forum_message_id'],
+                reaction=[{"type": "emoji", "emoji": "✅"}],
+            )
+        except (BadRequest, TelegramError):
+            pass
+    
+    if message.text and await db.get_autoreply_enabled():
+        knowledge_base_content = await db.get_all_knowledge_content()
+        if knowledge_base_content:
+            autoreply_text = await gemini_service.generate_autoreply(
+                message.text,
+                knowledge_base_content
+            )
+            
+            if autoreply_text:
+                try:
+                    await update.message.reply_text(
+                        autoreply_text,
+                        parse_mode='Markdown'
+                    )
+                except Exception as e:
+                    print(f"Markdown解析失败，使用纯文本: {e}")
+                    await update.message.reply_text(autoreply_text)
+                
+                if forwarded_message_id:
+                    admin_notification = (
+                        f"自动回复女仆内容:\n\n"
+                        f"{autoreply_text}"
+                    )
+                    try:
+                        await context.bot.send_message(
+                            chat_id=config.FORUM_GROUP_ID,
+                            text=admin_notification,
+                            message_thread_id=thread_id,
+                            reply_to_message_id=forwarded_message_id,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        print(f"发送自动回复通知给管理员失败（Markdown），尝试纯文本: {e}")
+                        try:
+                            admin_notification_plain = (
+                                f"自动回复女仆内容:\n\n"
+                                f"{autoreply_text}"
+                            )
+                            await context.bot.send_message(
+                                chat_id=config.FORUM_GROUP_ID,
+                                text=admin_notification_plain,
+                                message_thread_id=thread_id,
+                                reply_to_message_id=forwarded_message_id
+                            )
+                        except Exception as e2:
+                            print(f"发送自动回复通知给管理员失败: {e2}")
+
+
+async def handle_edited_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.edited_message
+    if not message:
+        return
+
+    mappings = await db.get_message_mappings_by_source(message.chat_id, message.message_id)
+    if not mappings:
+        return
+
+    for mapping in mappings:
+        try:
+            await edit_message_by_type(
+                context.bot,
+                message,
+                mapping['dest_chat_id'],
+                mapping['dest_message_id'],
+                disable_web_page_preview=True,
+            )
+        except BadRequest as exc:
+            if "message is not modified" not in exc.message.lower():
+                print(f"同步用户编辑失败: {exc}")
+        except TelegramError as exc:
+            print(f"同步用户编辑失败: {exc}")

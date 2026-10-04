@@ -1,0 +1,19 @@
+services:
+  pivkeyu-pmbot:
+    container_name: pivkeyu-pmbot
+    image: pivkeyu/pivkeyu_pmbot:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Web 面板在容器内必须监听 0.0.0.0 才能通过端口映射访问。
+      # 密码不用改这里：部署后 15 分钟内打开面板即可设置密码（只存摘要）；
+      # 超时未设置面板会锁定，届时重启容器可重新进入初始化，
+      # 或在 .env 里设置 WEB_PANEL_PASSWORD 后重启。
+      - WEB_PANEL_HOST=0.0.0.0
+    ports:
+      # Web 管理面板：宿主机 18080 -> 容器 18080（默认端口，改了 .env 的
+      # WEB_PANEL_PORT 就同步改这里，例如 "9090:9090"）
+      - "127.0.0.1:18080:18080"
+    volumes:
+      - ./data:/app/data

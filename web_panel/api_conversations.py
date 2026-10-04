@@ -43,6 +43,8 @@ async def list_conversations(request):
 async def conversation_detail(request):
     user_id = int(request.match_info['user_id'])
     user = await _get_user_or_404(user_id)
+    if not user.get('is_verified'):
+        raise web.HTTPNotFound(text='用户不存在')
     page, per_page, offset = http_utils.pagination(request, default_per=HISTORY_PAGE_SIZE, max_per=200)
 
     messages = await db.get_conversation_history(user_id, limit=per_page, offset=offset)

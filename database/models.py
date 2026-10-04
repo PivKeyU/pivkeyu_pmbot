@@ -382,13 +382,16 @@ async def get_message_stats() -> dict:
     return {'total': total, 'today': today}
 
 async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: str = None):
-    """会话列表：每个用户 + 最后一条消息预览 + 黑名单/验证状态。"""
-    where_sql = ''
+    """会话列表：仅展示已通过验证的用户及其最后一条消息预览。"""
+    where_clauses = ['u.is_verified = 1']
     params = []
     if query:
-        where_sql = 'WHERE CAST(u.user_id AS TEXT) LIKE ? OR u.username LIKE ? OR u.first_name LIKE ?'
+        where_clauses.append(
+            '(CAST(u.user_id AS TEXT) LIKE ? OR u.username LIKE ? OR u.first_name LIKE ?)'
+        )
         like = f'%{query}%'
         params = [like, like, like]
+    where_sql = 'WHERE ' + ' AND '.join(where_clauses)
 
     async with db_manager.get_connection() as db:
         async with db.execute(f'''
@@ -421,12 +424,15 @@ async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: st
             return [dict(zip(cols, row)) for row in rows]
 
 async def get_conversation_summaries_count(query: str = None) -> int:
-    where_sql = ''
+    where_clauses = ['is_verified = 1']
     params = []
     if query:
-        where_sql = 'WHERE CAST(user_id AS TEXT) LIKE ? OR username LIKE ? OR first_name LIKE ?'
+        where_clauses.append(
+            '(CAST(user_id AS TEXT) LIKE ? OR username LIKE ? OR first_name LIKE ?)'
+        )
         like = f'%{query}%'
         params = [like, like, like]
+    where_sql = 'WHERE ' + ' AND '.join(where_clauses)
     async with db_manager.get_connection() as db:
         async with db.execute(f'SELECT COUNT(*) FROM users {where_sql}', params) as cursor:
             row = await cursor.fetchone()

@@ -294,13 +294,14 @@ async def reset_config(request):
 
 @routes.get('/api/conversations')
 async def conversations(request):
-    return _ok(_page(STORE['users']))
+    verified_users = [user for user in STORE['users'] if user.get('is_verified')]
+    return _ok(_page(verified_users))
 
 
 @routes.get('/api/conversations/{user_id}')
 async def conversation_detail(request):
     user = _user_by_id(request.match_info['user_id'])
-    if not user:
+    if not user or not user.get('is_verified'):
         return web.json_response({'ok': False, 'error': '用户不存在'}, status=404)
     messages = STORE['messages'].get(user['user_id'], [])
     return _ok({

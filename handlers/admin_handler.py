@@ -3,6 +3,7 @@ from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from database import models as db
 from utils.message_sender import edit_message_by_type, get_message_media_info, send_message_by_type
+from utils.reactions import seen_reaction
 from utils import copy as copy_text
 from web_panel import events as panel_events
 
@@ -70,10 +71,11 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await context.bot.set_message_reaction(
                 chat_id=update.message.chat_id,
                 message_id=update.message.message_id,
-                reaction=[{"type": "emoji", "emoji": "👁"}],
+                reaction=seen_reaction(),
             )
-        except (BadRequest, TelegramError):
-            pass
+        except Exception as exc:
+            # 已读表情只是尽力而为，失败不能影响回复链路
+            print(f"设置已读表情失败: {exc}")
         await db.add_read_receipt(user_id, update.message.message_id, thread_id)
         # 推送给 Web 面板（没有面板订阅者时是空操作）
         panel_events.publish(

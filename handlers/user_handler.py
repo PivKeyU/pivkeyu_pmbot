@@ -7,6 +7,7 @@ from services.thread_manager import get_or_create_thread
 from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
 from utils.message_sender import edit_message_by_type, send_message_by_type
+from utils.reactions import read_reaction
 from services.rate_limiter import rate_limiter
 from services import spam_filter
 from config import config
@@ -324,10 +325,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.set_message_reaction(
                 chat_id=config.FORUM_GROUP_ID,
                 message_id=entry['forum_message_id'],
-                reaction=[{"type": "emoji", "emoji": "✅"}],
+                reaction=read_reaction(),
             )
-        except (BadRequest, TelegramError):
-            pass
+        except Exception as exc:
+            # 已读回执失败不能中断后面的自动回复
+            print(f"设置已读表情失败: {exc}")
     
     if message.text and await db.get_autoreply_enabled():
         knowledge_base_content = await db.get_all_knowledge_content()

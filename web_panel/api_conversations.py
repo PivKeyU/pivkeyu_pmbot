@@ -9,6 +9,7 @@ from telegram.error import TelegramError
 from config import config
 from database import models as db
 from services import blacklist as blacklist_service
+from utils.reactions import seen_reaction
 from . import events, http_utils, keys
 
 logger = logging.getLogger(__name__)
@@ -115,10 +116,13 @@ async def reply_to_user(request):
             await bot.set_message_reaction(
                 chat_id=config.FORUM_GROUP_ID,
                 message_id=mirror.message_id,
-                reaction=[{'type': 'emoji', 'emoji': '👁'}],
+                reaction=seen_reaction(),
             )
-        except TelegramError:
-            pass
+        except Exception as exc:
+            # 表情只是尽力而为的已读标记。此刻消息已经发给用户和论坛了，
+            # 这里再抛异常会让面板收到 500，并让下面的落库/推送全部跳过，
+            # 所以任何失败都只记日志。
+            logger.warning('Web 面板回复设置已读表情失败: %s', exc)
         await db.add_read_receipt(user_id, mirror.message_id, thread_id)
 
     await db.save_message(

@@ -208,6 +208,7 @@ function renderSetup(me) {
     }
   };
   const countdown = setInterval(() => { remaining -= 1; refreshCountdown(); }, 1000);
+  state.cleanup = () => clearInterval(countdown);
   refreshCountdown();
 
   const passwordInput = textInput({ type: 'password', placeholder: '设置门锁密码（至少 8 位）', onEnter: () => submit() });

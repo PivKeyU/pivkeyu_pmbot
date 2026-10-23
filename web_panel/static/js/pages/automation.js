@@ -39,6 +39,7 @@ function knowledgeDialog(entry, onDone) {
     ),
   ));
   mask.addEventListener('click', (event) => { if (event.target === mask) close(); });
+  document.body.appendChild(mask);
   titleInput.focus();
 }
 

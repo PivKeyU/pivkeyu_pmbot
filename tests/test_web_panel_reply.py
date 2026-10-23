@@ -114,6 +114,26 @@ async def _reply_flow(tmp_path):
         assert response.status == 200
         detail = (await response.json())['data']
         assert [item['content'] for item in detail['messages']['items']] == ['你好']
+
+        # 即使镜像失败（或用户尚无 thread_id 且无法建话题），回复也应写入 message_mappings，消除待回复状态
+        await db.add_user(556, 'bob', 'Bob', None)
+        await db.update_user_verification(556, True)
+        await db.save_message_mapping(
+            user_id=556,
+            source_chat_id=556,
+            source_message_id=10,
+            dest_chat_id=config.FORUM_GROUP_ID,
+            dest_message_id=20,
+            direction='user_to_admin',
+            thread_id=None,
+        )
+        assert await db.count_pending_reply_topics() == 1
+
+        response = await client.post(
+            '/api/conversations/556/reply', json={'text': '收到啦'}, headers=PANEL_HEADERS,
+        )
+        assert response.status == 200
+        assert await db.count_pending_reply_topics() == 0
     finally:
         await client.close()
         await http_session.close()

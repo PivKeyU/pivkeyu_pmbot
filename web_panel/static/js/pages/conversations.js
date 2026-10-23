@@ -112,8 +112,11 @@ export default {
         const preview = item.last_content
           ? item.last_content.slice(0, 40)
           : (item.last_media_type ? `[${item.last_media_type}]` : '（还没有消息）');
+        const isUnread = item.last_direction === 'user_to_admin';
+        const badges = userBadges({ ...item, exempted: false, is_verified: !!item.is_verified });
+        if (isUnread) badges.unshift(badge('待回复', 'accent'));
         const node = el('div', {
-          class: `conv-item ${item.user_id === state.selectedUserId ? 'active' : ''}`.trim(),
+          class: `conv-item ${item.user_id === state.selectedUserId ? 'active' : ''} ${isUnread ? 'unread' : ''}`.trim(),
           dataset: { userId: String(item.user_id) },
           onClick: () => selectUser(item.user_id),
         },
@@ -122,7 +125,7 @@ export default {
             el('span', { class: 'when' }, fmtRelative(item.last_message_at || item.last_active)),
           ),
           el('div', { class: 'preview' }, preview),
-          el('div', {}, userBadges({ ...item, exempted: false, is_verified: !!item.is_verified })),
+          el('div', { class: 'conv-badges' }, badges),
         );
         listNode.appendChild(node);
       }
@@ -141,12 +144,13 @@ export default {
 
     /* ---------------- 会话详情 ---------------- */
 
-    async function loadDetail({ keepScroll = false } = {}) {
+    async function loadDetail({ keepScroll = false, prependOlder = false } = {}) {
       if (!state.selectedUserId) return;
-      if (!keepScroll) chatBody.appendChild(spinner());
+      if (!keepScroll && !prependOlder) chatBody.appendChild(spinner());
+      const requestPage = prependOlder ? state.history.page : 1;
       let data;
       try {
-        data = await api.get(`/api/conversations/${state.selectedUserId}?page=${state.history.page}&per_page=${HISTORY_SIZE}`);
+        data = await api.get(`/api/conversations/${state.selectedUserId}?page=${requestPage}&per_page=${HISTORY_SIZE}`);
       } catch (err) {
         clear(chatBody);
         chatBody.appendChild(el('div', { class: 'muted' }, err.message));
@@ -155,12 +159,35 @@ export default {
 
       const user = data.user;
       state.history.totalPages = data.messages.total_pages;
-      state.history.page = data.messages.page;
-      state.history.loaded = data.messages.items;
+      if (prependOlder) {
+        state.history.page = data.messages.page;
+        const existingIds = new Set(state.history.loaded.map((m) => m.id || `${m.direction}_${m.message_id}`));
+        const older = (data.messages.items || []).filter(
+          (m) => !existingIds.has(m.id || `${m.direction}_${m.message_id}`),
+        );
+        state.history.loaded = [...older, ...state.history.loaded];
+      } else if (keepScroll && state.history.page > 1 && state.history.loaded.length > 0) {
+        // 已加载多页历史时收到新消息：把最新一页里新增的消息合并到末尾，不丢弃已展开的更早消息
+        const incoming = data.messages.items || [];
+        const existingMap = new Map(
+          state.history.loaded.map((m) => [m.id || `${m.direction}_${m.message_id}`, m]),
+        );
+        for (const item of incoming) {
+          existingMap.set(item.id || `${item.direction}_${item.message_id}`, item);
+        }
+        state.history.loaded = Array.from(existingMap.values());
+      } else {
+        state.history.page = 1;
+        state.history.loaded = data.messages.items || [];
+      }
 
+      const firstMount = !chatInputArea.hasChildNodes() || chatInputArea.dataset.userId !== String(user.user_id);
       renderChatHead(user);
-      renderChatBody();
-      renderChatInput(user);
+      renderChatBody({ forceBottom: !keepScroll && !prependOlder, preservePrepend: prependOlder });
+      if (firstMount) {
+        chatInputArea.dataset.userId = String(user.user_id);
+        renderChatInput(user);
+      }
     }
 
     function renderChatHead(user) {
@@ -191,17 +218,22 @@ export default {
       ));
     }
 
-    function renderChatBody() {
-      const atBottom = chatBody.scrollHeight - chatBody.scrollTop - chatBody.clientHeight < 80;
+    function renderChatBody({ forceBottom = false, preservePrepend = false } = {}) {
+      const prevScrollHeight = chatBody.scrollHeight;
+      const prevScrollTop = chatBody.scrollTop;
+      const atBottom = forceBottom || (prevScrollHeight - prevScrollTop - chatBody.clientHeight < 80);
       clear(chatBody);
 
       if (state.history.page < state.history.totalPages) {
         chatBody.appendChild(el('div', { style: { textAlign: 'center', marginBottom: '10px' } },
           el('button', {
             class: 'btn sm',
-            onClick: async () => {
+            onClick: async (event) => {
+              const btn = event.currentTarget;
+              btn.disabled = true;
+              btn.textContent = '加载中……';
               state.history.page += 1;
-              await loadDetail({ keepScroll: true });
+              await loadDetail({ keepScroll: true, prependOlder: true });
             },
           }, '加载更早的消息'),
         ));
@@ -212,7 +244,11 @@ export default {
       for (const message of state.history.loaded) {
         chatBody.appendChild(messageNode(message));
       }
-      if (atBottom) chatBody.scrollTop = chatBody.scrollHeight;
+      if (preservePrepend) {
+        chatBody.scrollTop = Math.max(0, chatBody.scrollHeight - prevScrollHeight + prevScrollTop);
+      } else if (atBottom) {
+        chatBody.scrollTop = chatBody.scrollHeight;
+      }
     }
 
     function renderChatInput(user) {

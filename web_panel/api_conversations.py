@@ -4,7 +4,7 @@ import logging
 import mimetypes
 
 from aiohttp import web
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
 from config import config
 from database import models as db
@@ -71,6 +71,30 @@ async def conversation_detail(request):
     })
 
 
+async def _ensure_user_thread(bot, user: dict) -> int | None:
+    """确保用户在论坛群中有对应的话题 thread_id；若尚未创建则尝试新建。"""
+    thread_id = user.get('thread_id')
+    if thread_id:
+        return thread_id
+    if not config.FORUM_GROUP_ID or not hasattr(bot, 'create_forum_topic'):
+        return None
+    user_id = user['user_id']
+    first_name = user.get('first_name') or str(user_id)
+    topic_name = f'{first_name} (ID: {user_id})'
+    try:
+        topic = await bot.create_forum_topic(
+            chat_id=config.FORUM_GROUP_ID,
+            name=topic_name,
+        )
+        thread_id = topic.message_thread_id
+        await db.update_user_thread_id(user_id, thread_id)
+        user['thread_id'] = thread_id
+        return thread_id
+    except Exception as exc:
+        logger.warning('Web 面板为用户 %s 创建论坛话题失败: %s', user_id, exc)
+        return None
+
+
 @routes.post('/api/conversations/{user_id}/reply')
 async def reply_to_user(request):
     user_id = int(request.match_info['user_id'])
@@ -89,29 +113,56 @@ async def reply_to_user(request):
         logger.warning('Web 面板回复用户 %s 失败: %s', user_id, exc)
         return http_utils.fail(f'发送失败: {exc}')
 
-    thread_id = user.get('thread_id')
+    thread_id = await _ensure_user_thread(bot, user)
     mirror = None
+    mirror_prefix = '（Web 面板回复）\n'
+    mirror_text = f'{mirror_prefix}{text}'
+    if len(mirror_text) > 4096:
+        mirror_text = f'{mirror_prefix}{text[:4096 - len(mirror_prefix) - 1]}…'
+
     if thread_id and config.FORUM_GROUP_ID:
         try:
             mirror = await bot.send_message(
                 chat_id=config.FORUM_GROUP_ID,
-                text=f'（Web 面板回复）\n{text}',
+                text=mirror_text,
                 message_thread_id=thread_id,
                 disable_web_page_preview=True,
             )
+        except BadRequest as exc:
+            err_lower = str(exc).lower()
+            if 'thread not found' in err_lower or 'topic not found' in err_lower:
+                logger.info('用户 %s 原话题 %s 已失效，尝试重建话题', user_id, thread_id)
+                await db.update_user_thread_id(user_id, None)
+                user['thread_id'] = None
+                thread_id = await _ensure_user_thread(bot, user)
+                if thread_id:
+                    try:
+                        mirror = await bot.send_message(
+                            chat_id=config.FORUM_GROUP_ID,
+                            text=mirror_text,
+                            message_thread_id=thread_id,
+                            disable_web_page_preview=True,
+                        )
+                    except TelegramError as retry_exc:
+                        logger.warning('Web 面板回复重建话题 %s 后镜像仍失败: %s', thread_id, retry_exc)
+            else:
+                logger.warning('Web 面板回复镜像到话题 %s 失败: %s', thread_id, exc)
         except TelegramError as exc:
             logger.warning('Web 面板回复镜像到话题 %s 失败: %s', thread_id, exc)
 
+    # 始终写入 message_mappings：即使论坛镜像失败，也要记录本次 admin_to_user 回复，
+    # 否则 get_pending_reply_topics 会认为该用户一直处于「待回复」状态。
+    await db.save_message_mapping(
+        user_id=user_id,
+        source_chat_id=config.FORUM_GROUP_ID if mirror else user_id,
+        source_message_id=mirror.message_id if mirror else sent.message_id,
+        dest_chat_id=user_id,
+        dest_message_id=sent.message_id,
+        direction='admin_to_user',
+        thread_id=thread_id,
+    )
+
     if mirror:
-        await db.save_message_mapping(
-            user_id=user_id,
-            source_chat_id=config.FORUM_GROUP_ID,
-            source_message_id=mirror.message_id,
-            dest_chat_id=user_id,
-            dest_message_id=sent.message_id,
-            direction='admin_to_user',
-            thread_id=thread_id,
-        )
         try:
             await bot.set_message_reaction(
                 chat_id=config.FORUM_GROUP_ID,

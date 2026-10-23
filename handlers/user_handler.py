@@ -340,22 +340,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             if autoreply_text:
+                sent_autoreply = None
                 try:
-                    await update.message.reply_text(
+                    sent_autoreply = await update.message.reply_text(
                         autoreply_text,
                         parse_mode='Markdown'
                     )
                 except Exception as e:
                     print(f"Markdown解析失败，使用纯文本: {e}")
-                    await update.message.reply_text(autoreply_text)
+                    sent_autoreply = await update.message.reply_text(autoreply_text)
                 
+                mirror_autoreply = None
                 if forwarded_message_id:
                     admin_notification = (
                         f"自动回复女仆内容:\n\n"
                         f"{autoreply_text}"
                     )
                     try:
-                        await context.bot.send_message(
+                        mirror_autoreply = await context.bot.send_message(
                             chat_id=config.FORUM_GROUP_ID,
                             text=admin_notification,
                             message_thread_id=thread_id,
@@ -369,7 +371,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 f"自动回复女仆内容:\n\n"
                                 f"{autoreply_text}"
                             )
-                            await context.bot.send_message(
+                            mirror_autoreply = await context.bot.send_message(
                                 chat_id=config.FORUM_GROUP_ID,
                                 text=admin_notification_plain,
                                 message_thread_id=thread_id,
@@ -377,6 +379,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             )
                         except Exception as e2:
                             print(f"发送自动回复通知给管理员失败: {e2}")
+
+                if sent_autoreply:
+                    await db.save_message(
+                        user_id=user.id,
+                        message_id=sent_autoreply.message_id,
+                        content=f"（AI 自动回复）\n{autoreply_text}",
+                        direction="admin_to_user",
+                        dest_message_id=mirror_autoreply.message_id if mirror_autoreply else None,
+                        thread_id=thread_id,
+                    )
+                    panel_events.publish(
+                        'message',
+                        user_id=user.id,
+                        direction='admin_to_user',
+                        preview=f"（AI 自动回复）{autoreply_text}"[:120],
+                        message_id=sent_autoreply.message_id,
+                    )
 
 
 async def handle_edited_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

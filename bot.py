@@ -8,6 +8,7 @@ from database.db_manager import DatabaseManager
 from services.telegram_commands import register_bot_commands
 from services import tg_monitor, web_monitor
 import web_panel
+from utils import about
 
 async def post_init(app: Application):
     config.BOT_ID = app.bot.id
@@ -55,6 +56,7 @@ def main():
     web_monitor.setup(app)
     web_panel.setup(app)
 
+    logging.info(about.startup_banner())
     logging.info("Bot启动中...")
     app.run_polling()
 

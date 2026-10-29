@@ -126,6 +126,14 @@ input, select, textarea { font: inherit; color: inherit; }
 }
 .sidebar-foot button:hover { background: rgba(255, 240, 220, 0.1); }
 
+/* 作者署名 */
+.credit { margin-top: 14px; font-size: 12px; color: var(--text-dim); text-align: center; }
+.credit a { color: var(--accent-strong); text-decoration: none; font-weight: 600; }
+.credit a:hover { text-decoration: underline; }
+.credit.on-dark { margin-top: 10px; color: rgba(233, 217, 200, 0.6); }
+.credit.on-dark a { color: #f6c1cb; }
+.credit.main-credit { display: none; margin: 0 0 20px; }
+
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .topbar {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
@@ -343,25 +351,57 @@ pre.result {
     transparent 10px 20px
   );
 }
-.msg { display: flex; margin-bottom: 10px; }
+.msg { display: flex; justify-content: flex-start; margin-bottom: 12px; }
+/* 气泡和时间戳放在同一列里，按消息方向统一贴左或贴右，保证两者边缘对齐 */
+.msg .msg-col {
+  display: flex; flex-direction: column; align-items: flex-start;
+  max-width: 72%; min-width: 0;
+}
 .msg .bubble {
-  max-width: 72%; padding: 8px 12px; border-radius: 14px;
+  max-width: 100%; padding: 8px 12px; border-radius: 14px;
   white-space: pre-wrap; word-break: break-word;
   background: #fff; border: 1.5px solid var(--border); font-size: 13.5px;
   box-shadow: 0 1px 3px rgba(122, 84, 60, 0.08);
 }
-.msg .meta { font-size: 11px; color: var(--text-dim); margin-top: 3px; }
+.msg .meta { font-size: 11px; color: var(--text-dim); margin-top: 3px; padding: 0 4px; white-space: nowrap; }
 .msg.out { justify-content: flex-end; }
+.msg.out .msg-col { align-items: flex-end; }
 .msg.out .bubble {
   background: linear-gradient(135deg, #ef8ea1, #e57a8d);
   border-color: transparent; color: #fff;
 }
-.msg.out .meta { text-align: right; }
 .msg img, .msg video { max-width: 100%; border-radius: 10px; display: block; }
 .msg audio { width: 240px; }
 .chat-input { border-top: 1.5px dashed var(--border); padding: 10px; display: flex; gap: 8px; align-items: flex-end; background: var(--surface); }
-.chat-input textarea { min-height: 40px; max-height: 140px; }
+.chat-input textarea { flex: 1; min-width: 0; min-height: 40px; max-height: 140px; }
+/* 发送按钮不参与收缩，避免「发送」两个字被挤成竖排 */
+.chat-input .btn { flex: none; white-space: nowrap; height: 40px; padding: 0 18px; }
 .chat-empty { display: grid; place-items: center; height: 100%; color: var(--text-dim); }
+
+/* ---------- AI 设置 ---------- */
+.provider-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.provider-tile {
+  border: 1.5px solid var(--border); border-radius: 14px; padding: 12px 14px;
+  background: #fffdf9; cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.provider-tile:hover { border-color: #f2c9d1; }
+.provider-tile.editing { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(229, 122, 141, 0.12); }
+.provider-tile.current { background: var(--accent-soft); }
+.provider-tile .tile-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.provider-tile .tile-head .badge { flex: none; white-space: nowrap; }
+.provider-tile .tile-name { font-weight: 650; }
+.provider-tile .tile-protocol { color: var(--text-dim); font-size: 12px; flex: 1; }
+.provider-tile .tile-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.provider-tile .tile-foot .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-section { border-top: 1.5px dashed var(--border); padding-top: 14px; margin-top: 14px; }
+.ai-section h4 { margin: 0 0 10px; font-size: 13.5px; }
+.ai-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
+.ai-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.ai-grid .span-2 { grid-column: span 2; }
+.test-result { margin-top: 8px; min-height: 18px; word-break: break-all; }
+.test-result.ok { color: #5c8f47; }
+.test-result.error { color: #c25555; }
 
 /* ---------- 配置中心 ---------- */
 .config-item { border-bottom: 1px dashed #f2e4d4; padding: 11px 0; }
@@ -389,9 +429,14 @@ pre.result {
   .nav::-webkit-scrollbar { display: none; }
   .nav a { white-space: nowrap; margin-bottom: 0; padding: 6px 10px; font-size: 13px; }
   .nav .group, .greet, .sidebar-foot { display: none; }
+  .credit.main-credit { display: block; }
+  .ai-grid, .ai-grid.three { grid-template-columns: 1fr; }
+  .ai-grid .span-2 { grid-column: auto; }
   .topbar { position: static; padding: 12px 16px; }
+  .topbar h2 { white-space: nowrap; }
   .content { padding: 16px 14px 32px; }
   .chat-layout { grid-template-columns: 1fr; height: auto; min-height: 0; }
   .conv-list { max-height: 260px; }
   .chat-panel { height: 68vh; min-height: 420px; }
+  .msg .msg-col { max-width: 86%; }
 }

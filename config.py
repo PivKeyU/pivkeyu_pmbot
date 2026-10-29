@@ -43,11 +43,16 @@ class Config:
     
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')
+
+    ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+    ANTHROPIC_BASE_URL = (os.getenv('ANTHROPIC_BASE_URL') or '').strip() or None
     
     ENABLE_AI_FILTER = os.getenv('ENABLE_AI_FILTER', 'true').lower() == 'true'
     AI_CONFIDENCE_THRESHOLD = int(os.getenv('AI_CONFIDENCE_THRESHOLD', '70'))
     
     VERIFICATION_ENABLED = os.getenv('VERIFICATION_ENABLED', 'true').lower() == 'true'
+    # 首次验证方式：random（图片 / 文字随机）、text（常识文字题）、image（图片验证码）
+    VERIFICATION_MODE = os.getenv('VERIFICATION_MODE', 'random').strip().lower()
     AUTO_UNBLOCK_ENABLED = os.getenv('AUTO_UNBLOCK_ENABLED', 'true').lower() == 'true'
     
     DATABASE_PATH = os.getenv('DATABASE_PATH', './data/bot.db')

@@ -9,13 +9,15 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![python-telegram-bot](https://img.shields.io/badge/python--telegram--bot-v20%2B-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)](https://python-telegram-bot.org/)
 [![Async SQLite](https://img.shields.io/badge/Async-SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://github.com/omnilib/aiosqlite)
-[![AI](https://img.shields.io/badge/AI-Gemini%20%7C%20OpenAI-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![AI](https://img.shields.io/badge/AI-Gemini%20%7C%20OpenAI%20%7C%20Claude-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
 [![Docker](https://img.shields.io/badge/Docker-amd64%20%7C%20arm64-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://hub.docker.com/r/pivkeyu/pivkeyu_pmbot)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 [![Docker Build](https://img.shields.io/github/actions/workflow/status/PivKeyU/pivkeyu_pmbot/docker-publish.yml?style=for-the-badge&label=Docker%20Build)](https://github.com/PivKeyU/pivkeyu_pmbot/actions/workflows/docker-publish.yml)
 [![GitHub Stars](https://img.shields.io/github/stars/PivKeyU/pivkeyu_pmbot?style=for-the-badge)](https://github.com/PivKeyU/pivkeyu_pmbot/stargazers)
 
 **私聊直达管理员 · 论坛话题工单 · AI 双重防护 · 群频道与网页监控 · 面板远程运维**
+
+作者：[片刻月](https://github.com/PivKeyU)
 
 </div>
 
@@ -36,6 +38,7 @@
 - [❓ 常见问题](#-常见问题)
 - [🧰 技术栈](#-技术栈)
 - [🤝 参与贡献](#-参与贡献)
+- [👤 作者](#-作者)
 - [📄 许可证](#-许可证)
 
 ---
@@ -44,9 +47,9 @@
 
 | 方向 | 能力 |
 | --- | --- |
-| 🗣️ **双向沟通** | 每位用户自动分配独立论坛话题线程，消息附带用户信息卡片 · 文本 / 图片 / 视频 / 音频 / 语音 / 文档 / 贴纸 / 动画全媒体递送并保留 Markdown · 双方**编辑**消息同步 · 回复后打 👁️ 已读标记 · `/inbox` 聚合待回复话题 |
-| 🤖 **AI 能力** | Gemini / OpenAI 双提供商，可在面板里切换 · 在线获取并按用途选择模型 · AI 内容审查支持图片等多模态输入 · 知识库自动回复并通知管理员 · 可配置自动回复 `人格.md` |
-| 🧩 **人机验证** | 新用户首次交互需完成 AI 验证题，答错自动换题、超限拉黑 · 被临时拉黑的用户可答 AI 挑战题自助解封 · 无 API Key 时自动使用内置本地题库兜底 |
+| 🗣️ **双向沟通** | 每位用户自动分配独立论坛话题线程，消息附带用户信息卡片 · 文本 / 图片 / 视频 / 音频 / 语音 / 文档 / 贴纸 / 动画全媒体递送并保留 Markdown · 双方**编辑**消息同步 · `/inbox` 聚合待回复话题 |
+| 🤖 **AI 能力** | Gemini / OpenAI 兼容 / Anthropic Claude 三种协议，可在面板里切换；OpenAI 兼容协议内置 DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenRouter、Ollama 等预设 · 在线获取并按用途选择模型 · AI 内容审查支持图片等多模态输入 · 知识库自动回复并通知管理员 · 可配置自动回复 `人格.md` |
+| 🧩 **人机验证** | 新用户首次交互需完成验证：**图片验证码**（本地生成的扭曲字符图）或**文字题**（AI 每次随机主题与题型出题），默认随机二选一 · 答错自动换题、超限拉黑 · 被临时拉黑的用户可答挑战题自助解封 · 无 API Key 时文字题自动改用本地题库 + 程序化出题（算术、找规律、分类、反义词、星期推算等，几乎不重复） |
 | 🛡️ **安全防护** | 四道关卡：限速 → 黑名单 → 关键词广告拦截 → AI 人机验证与内容审查 · 黑名单 / 审查通行证 / 速率限制 / 自动拉黑策略均可在面板配置 |
 | 📡 **TG 群频道监听** | Bot 入群监听 + Telethon 用户会话监听（Bot 无法加入的群 / 频道）· 关键词、排除词、去重与最小推送间隔 |
 | 🕸️ **网页监控** | CSS 选择器解析条目 · 新条目、关键词命中、内容 / 价格 / 库存变化提醒 · 任务防重叠 |
@@ -234,9 +237,9 @@ python bot.py
 | 页面 | 能力 |
 | :--- | :--- |
 | 📊 仪表盘 | 用户 / 消息 / 黑名单 / 拦截篮统计，RSS、TG 监听、网页监控等定时任务的运行状态 |
-| 💬 会话回复 | 左侧会话列表（可搜索）+ 右侧聊天记录，**新消息通过 WebSocket 实时推送**，输入框直接回复用户（回复会同步镜像到论坛话题并打 👁 已读），图片 / 视频 / 语音可在线预览，支持快捷封禁 / 解封 |
+| 💬 会话回复 | 左侧会话列表（可搜索）+ 右侧聊天记录，**新消息通过 WebSocket 实时推送**，输入框直接回复用户（回复会原样同步镜像到论坛话题），图片 / 视频 / 语音可在线预览，支持快捷封禁 / 解封 |
 | ⚙️ 配置中心 | `.env` 里配置项可视化修改：开关 / 数字 / 枚举 / 文本分控件呈现，密钥类只显示掩码；**绝大多数配置改完立即热生效**，少数结构性配置（群 ID、数据库路径等）标注「需重启」；面板密码通过独立表单更改；其它修改会持久化到数据库，重启后自动加载，也可一键还原为 `.env` 值 |
-| 🤖 AI 设置 | Gemini / OpenAI 提供商切换、在线获取模型列表并按用途设置六个模型（热生效）、API Key 配置状态 |
+| 🤖 AI 设置 | Gemini / OpenAI 兼容 / Anthropic Claude 协议切换；直接在页面里填写 API Key、选择 Base URL 预设、一键测试连接；在线获取模型列表并按用途设置模型（全部热生效） |
 | 💡 回复与关键词 | AI 自动回复总开关、可编辑并持久保存的 `人格.md`、知识库增删改查、关键词广告拦截开关与词表管理 |
 | 👥 用户管理 | 全部用户、黑名单（手动拉黑 / 解封）、审查通行证（发放 / 移除）、拦截篮（查看 / 删除 / 清空） |
 | 📣 广播群发 | 按分组或全体用户发广播（后台异步投递，自动记录成功 / 失败），分组与成员管理，投递历史 |
@@ -245,7 +248,8 @@ python bot.py
 
 ### AI 模型与自动回复人格
 
-- 在「配置中心」设置对应服务商的 API Key；OpenAI 兼容服务还可以设置 Base URL。进入「AI 设置」后选择服务商，点击「获取模型列表」，即可把服务商当前可用的模型加入各用途输入框的候选项。也可以手动填写模型 ID；模型配置保存后立即生效。
+- 进入「AI 设置」，点选协议卡片，填写 API Key、从「服务预设」里挑选服务地址（也可填自定义反代），点「测试连接」会先保存再发一条极短的测试消息，返回耗时与回复。点击「获取模型列表」即可把服务商当前可用的模型加入各用途输入框的候选项，也可以手动填写模型 ID。所有改动保存后立即生效；密钥同时出现在「配置中心 → AI 能力」，两边是同一份。
+- 协议列表、预设地址与默认模型统一登记在 `services/ai_providers.py`，新增一种协议只需登记一项并在 `services/ai_service.py` 实现对应的 Provider。
 - 在「回复与关键词」中编辑并保存 `人格.md`，可设定自动回复的称呼、语气和表达习惯，最多 20,000 个字符。内容保存在数据库，留空时使用默认人格；自定义人格只影响表达风格，知识库回答规则和未命中兜底文案仍由系统规则控制。
 
 ### 启用与访问
@@ -460,7 +464,7 @@ Web 面板修改 `.env` 类配置时，会写入 SQLite 的 `settings` 表作为
 3. **改语气不要动业务逻辑**。`utils/copy.py` 的命名约定是：固定文案用 `UPPER_SNAKE_CASE` 常量，带参数的文案用 `snake_case` 函数。
 4. **静态界面的文案不做全量分身，也不需要配置项**。只在少数语义位提供两个常量（温柔档 + 傲娇档），由**状态升级函数**按真实业务状态选档并渲染；自动回复的动态说话风格另由面板 `人格.md` 管理，不影响知识库与兜底规则。当前的状态升级函数是 `verify_wrong`（小验证答错）与 `unblock_question`（解封验证重问），均为**第 2 次错误起**才升级为傲娇。
 5. **傲娇档不允许吞掉真实信息**：剩余次数 `{n}`、服务器名、错误原因必须原样保留；异常详情一类内部细节转 `logger`，只给读者简短原因。
-6. **AI 人设 prompt 只有一份**：自动回复的人设规则定义在 `services/ai_service.py` 的 `AUTOREPLY_PERSONA_RULES`，Gemini 与 OpenAI 两条链路共用同一常量，不要各自复制一份。
+6. **AI 人设 prompt 只有一份**：自动回复的人设规则定义在 `services/ai_service.py` 的 `AUTOREPLY_PERSONA_RULES`，Gemini / OpenAI / Claude 三条链路共用同一常量，不要各自复制一份。
 
 ---
 
@@ -473,7 +477,7 @@ flowchart LR
     B -->|黑名单检查| BL[⚫ 已拉黑<br/>永久:拒绝 / 临时:AI 解封挑战]
     B -->|关键词广告拦截| SF[🚫 命中→拦截篮<br/>可配置自动拉黑]
     B -->|AI 人机验证| V[🧩 未验证用户<br/>AI 验证题]
-    B -->|AI 内容审查| AI[🕵️ Gemini / OpenAI<br/>支持多模态图片]
+    B -->|AI 内容审查| AI[🕵️ Gemini / OpenAI / Claude<br/>支持多模态图片]
     AI -->|疑似垃圾| FB[🧺 拦截篮<br/>/view_filtered 可查看]
     AI -->|通过| F[📨 转发到论坛话题群]
     F -->|创建或复用话题| T[🗂️ 用户专属话题线程]
@@ -504,8 +508,11 @@ pivkeyu_msg/
 │   ├── admin_handler.py    #   管理员话题回复回传、编辑同步、拦截篮查看
 │   └── callback_handler.py #   内联键盘回调（面板、模型衣柜、分页等）
 ├── services/               # 核心业务服务
-│   ├── ai_service.py       #   AI 提供商抽象（Gemini / OpenAI）+ 本地题库兜底
-│   ├── verification.py     #   AI 人机验证（换题、超限拉黑）
+│   ├── ai_providers.py     #   AI 协议注册表（协议、预设地址、默认模型）
+│   ├── ai_service.py       #   AI 提供商实现（Gemini / OpenAI 兼容 / Claude）+ 本地题库兜底
+│   ├── verification.py     #   人机验证（图片 / 文字随机、换题、超限拉黑）
+│   ├── captcha_image.py    #   图片验证码生成（Pillow）
+│   ├── text_questions.py   #   文字题库与程序化出题器
 │   ├── blacklist.py        #   黑名单与 AI 自助解封挑战
 │   ├── spam_filter.py      #   关键词广告拦截
 │   ├── thread_manager.py   #   论坛话题创建、用户信息卡片、深链
@@ -712,7 +719,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 ### 🎛️ 女仆长面板 /panel
 
-面板一站式管理：黑名单、客人名册、拦截消息篮、自动回复女仆、审查通行证、网络测试茶具、广播与分组、RSS 订阅、TG 监听、网页监控、关键词拦截、运行状态、安全更新、**AI 模型衣柜**（分别配置 Gemini / OpenAI 的内容审查、验证题生成、自动回复模型）。
+面板一站式管理：黑名单、客人名册、拦截消息篮、自动回复女仆、审查通行证、网络测试茶具、广播与分组、RSS 订阅、TG 监听、网页监控、关键词拦截、运行状态、安全更新、**AI 模型衣柜**（分别配置 Gemini / OpenAI / Claude 的内容审查、验证题生成、自动回复模型）。
 
 ---
 
@@ -734,8 +741,10 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | :--- | :---: | :--- | :--- |
 | `GEMINI_API_KEY` | ❌ | 空 | Gemini API 密钥，从 [Google AI Studio](https://aistudio.google.com/api-keys) 获取；配置后启用 AI 审查/自动回复 |
 | `GEMINI_BASE_URL` | ❌ | 空 | Gemini 自定义 Base URL（兼容网关/代理），留空使用官方接口 |
-| `OPENAI_API_KEY` | ❌ | 空 | OpenAI API 密钥（可选，作为第二提供商，可在面板中切换） |
-| `OPENAI_BASE_URL` | ❌ | `https://api.openai.com/v1` | OpenAI Base URL，可指向兼容网关 |
+| `OPENAI_API_KEY` | ❌ | 空 | OpenAI 兼容协议密钥（OpenAI / DeepSeek / 通义 / Kimi / 智谱 / Ollama 等，可在面板中切换） |
+| `OPENAI_BASE_URL` | ❌ | `https://api.openai.com/v1` | OpenAI 兼容服务地址，「AI 设置」里有常用服务预设 |
+| `ANTHROPIC_API_KEY` | ❌ | 空 | Anthropic Claude 密钥（Messages 协议） |
+| `ANTHROPIC_BASE_URL` | ❌ | 空 | Claude 自定义地址，留空使用官方接口；也可指向兼容 Anthropic 协议的服务 |
 | `ENABLE_AI_FILTER` | ❌ | `true` | 是否启用 AI 内容审查 |
 | `AI_CONFIDENCE_THRESHOLD` | ❌ | `70` | AI 判断置信度阈值（0-100）。**预留配置，当前代码未使用** |
 
@@ -743,7 +752,8 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
-| `VERIFICATION_ENABLED` | ❌ | `true` | 是否启用新用户 AI 人机验证 |
+| `VERIFICATION_ENABLED` | ❌ | `true` | 是否启用新用户人机验证 |
+| `VERIFICATION_MODE` | ❌ | `random` | 验证方式：`random` 每次随机出图片验证码或文字题，`text` 只出文字题（AI 出题，失败时用本地题库与程序化题目），`image` 只出本地生成的图片验证码 |
 | `AUTO_UNBLOCK_ENABLED` | ❌ | `true` | 是否启用黑名单用户 AI 挑战自助解封 |
 | `DATABASE_PATH` | ❌ | `./data/bot.db` | SQLite 数据库路径（容器内路径通常无需修改） |
 | `MAX_WORKERS` | ❌ | `5` | 消息队列 Worker 数量。**预留配置，当前代码未使用** |
@@ -1113,7 +1123,8 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 | [python-telegram-bot v20+](https://github.com/python-telegram-bot/python-telegram-bot) | Telegram Bot 框架（长轮询 + 异步） |
 | [aiosqlite](https://github.com/omnilib/aiosqlite) | 异步 SQLite，内置 8 连接池与事务安全包装 |
 | [Google Gemini](https://ai.google.dev/) | AI 内容审查 / 验证题生成 / 自动回复 / 多模态识别 |
-| [OpenAI](https://openai.com/) | 可选第二 AI 提供商 |
+| [OpenAI](https://openai.com/) 兼容协议 | 可选 AI 提供商（DeepSeek / 通义 / Kimi / 智谱等） |
+| [Anthropic Claude](https://www.anthropic.com/) | 可选 AI 提供商（Messages 协议） |
 | [Telethon](https://github.com/LonamiWebs/Telethon) | 用户会话监听 Bot 无法加入的群/频道 |
 | [aiohttp](https://docs.aiohttp.org/) | 异步 HTTP 抓取（网页监控） |
 | [BeautifulSoup4](https://www.crummy.com/software/BeautifulSoup/) | 网页 CSS 选择器解析 |
@@ -1137,9 +1148,15 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 
 ---
 
+## 👤 作者
+
+**片刻月**（[@PivKeyU](https://github.com/PivKeyU)）设计并开发。
+
+运行中的机器人会在这些地方显示作者署名：`/start` 欢迎语、`/help` 小手册、`/panel` 管理面板、Web 面板的登录页和侧栏底部，以及启动日志。署名统一定义在 `utils/about.py`（Web 面板在 `web_panel/static/js/app.js` 的 `ABOUT` 常量），二次分发时请保留。
+
 ## 📄 许可证
 
-本项目采用 [MIT 许可协议](LICENSE)。
+本项目采用 [MIT 许可协议](LICENSE)，版权所有 © 2026 片刻月。按协议要求，分发或修改本项目时请保留版权声明与作者署名。
 
 ---
 

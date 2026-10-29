@@ -12,15 +12,15 @@ from pathlib import Path
 
 from aiohttp import web
 
-from config import config
 from database import models as db
 from rss import data_manager as rss_data
 from rss import settings as rss_settings
 from rss.handlers import ensure_user_data, is_valid_url
 from services import broadcast as broadcast_service
 from services import image_update, safe_update
-from services.ai_service import AUTOREPLY_PERSONALITY_MAX_CHARS, ai_service
-from . import events, http_utils, keys
+from services.ai_providers import AI_FEATURES, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, model_setting_key
+from services.ai_service import AUTOREPLY_PERSONALITY_MAX_CHARS, ai_service, provider_credentials
+from . import api_config, events, http_utils, keys
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +28,7 @@ routes = web.RouteTableDef()
 
 REPO_DIR = Path(__file__).resolve().parent.parent
 
-AI_MODEL_KEYS = (
-    'gemini_model_filter',
-    'gemini_model_verification',
-    'gemini_model_autoreply',
-    'openai_model_filter',
-    'openai_model_verification',
-    'openai_model_autoreply',
-)
+AI_MODEL_KEYS = all_model_setting_keys()
 
 TG_MONITOR_EDITABLE = {
     'name', 'chat_id', 'chat_title', 'listen_source', 'keywords', 'exclude_keywords',
@@ -339,34 +332,66 @@ async def clear_spam_keywords(request):
 # AI 设置
 # --------------------------------------------------------------------------- #
 
+def _provider_label(provider_type: str) -> str:
+    return PROVIDERS[provider_type]['label']
+
+
+def _provider_list_hint() -> str:
+    return ' / '.join(PROVIDER_IDS)
+
+
 @routes.get('/api/ai-settings')
 async def get_ai_settings(request):
     provider = await db.get_setting('ai_provider', 'gemini')
+    if provider not in PROVIDERS:
+        provider = 'gemini'
     models = {key: await db.get_setting(key, '') for key in AI_MODEL_KEYS}
+
+    providers = []
+    for provider_type, meta in PROVIDERS.items():
+        api_key, base_url = provider_credentials(provider_type)
+        providers.append({
+            'id': provider_type,
+            'label': meta['label'],
+            'protocol': meta['protocol'],
+            'key_env': meta['key_env'],
+            'base_env': meta['base_env'],
+            'configured': bool(api_key),
+            # 密钥只回掩码，永不回显明文
+            'key': api_config.item_state(meta['key_env']),
+            'base_url': base_url or '',
+            'presets': meta['presets'],
+            'model_keys': {feature: model_setting_key(provider_type, feature) for feature in AI_FEATURES},
+            'default_models': meta['default_models'],
+        })
+
     return http_utils.ok({
         'provider': provider,
         'models': models,
+        'providers': providers,
+        # 兼容旧前端：按协议给出是否已配置 Key 与当前地址
         'keys': {
-            'gemini_configured': bool(config.GEMINI_API_KEY),
-            'openai_configured': bool(config.OPENAI_API_KEY),
-            'gemini_base_url': config.GEMINI_BASE_URL or '',
-            'openai_base_url': config.OPENAI_BASE_URL or '',
+            **{f'{p["id"]}_configured': p['configured'] for p in providers},
+            **{f'{p["id"]}_base_url': p['base_url'] for p in providers},
         },
     })
 
 
+def _read_provider(raw) -> str:
+    provider = str(raw or '').strip().lower()
+    if provider not in PROVIDERS:
+        raise ValueError(f'provider 只允许 {_provider_list_hint()}')
+    return provider
+
+
 @routes.get('/api/ai-models')
 async def list_ai_models(request):
-    provider = str(
+    provider = _read_provider(
         request.query.get('provider') or await db.get_setting('ai_provider', 'gemini') or 'gemini'
-    ).strip().lower()
-    if provider not in ('gemini', 'openai'):
-        return http_utils.fail('provider 只允许 gemini 或 openai')
-
-    api_key = config.GEMINI_API_KEY if provider == 'gemini' else config.OPENAI_API_KEY
+    )
+    api_key, _ = provider_credentials(provider)
     if not api_key:
-        provider_label = 'Gemini' if provider == 'gemini' else 'OpenAI 兼容服务'
-        return http_utils.fail(f'请先在配置中心设置 {provider_label} API Key')
+        return http_utils.fail(f'请先设置 {_provider_label(provider)} 的 API Key')
 
     try:
         models = await ai_service.get_available_models(provider)
@@ -376,15 +401,33 @@ async def list_ai_models(request):
     return http_utils.ok({'provider': provider, 'models': models})
 
 
+@routes.post('/api/ai-test')
+async def test_ai_connection(request):
+    data = await http_utils.read_json(request)
+    provider = _read_provider(data.get('provider'))
+    model = str(data.get('model') or '').strip() or None
+    api_key, _ = provider_credentials(provider)
+    if not api_key:
+        return http_utils.fail(f'请先设置 {_provider_label(provider)} 的 API Key')
+
+    try:
+        result = await asyncio.wait_for(ai_service.test_connection(provider, model), timeout=60)
+    except asyncio.TimeoutError:
+        return http_utils.fail('连接超时（60 秒），请检查 Base URL 与网络', status=502)
+    except Exception as exc:
+        logger.warning('AI 连接测试失败 provider=%s: %s', provider, exc)
+        return http_utils.fail(f'连接失败：{str(exc)[:300]}', status=502)
+    http_utils.audit(request, 'ai_settings.test', f'provider={provider} model={result["model"]}')
+    return http_utils.ok({'provider': provider, **result})
+
+
 @routes.put('/api/ai-settings')
 async def update_ai_settings(request):
     data = await http_utils.read_json(request)
     provider = data.get('provider')
     if provider is not None:
-        provider = str(provider).strip().lower()
-        if provider not in ('gemini', 'openai'):
-            return http_utils.fail('ai_provider 只允许 gemini 或 openai')
-        await db.set_setting('ai_provider', provider, '当前使用的AI提供商 (gemini, openai)')
+        provider = _read_provider(provider)
+        await db.set_setting('ai_provider', provider, f'当前使用的AI提供商 ({_provider_list_hint()})')
 
     models = data.get('models') or {}
     if not isinstance(models, dict):

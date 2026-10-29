@@ -64,8 +64,18 @@ META = [
     },
     {
         'key': 'OPENAI_BASE_URL', 'type': 'str', 'category': 'ai',
-        'label': 'OpenAI Base URL', 'hint': '兼容 OpenAI 协议的服务地址',
+        'label': 'OpenAI Base URL', 'hint': '兼容 OpenAI 协议的服务地址（DeepSeek / 通义 / Kimi / 智谱 / Ollama 等，可在「AI 设置」里一键选择）',
         'default': 'https://api.openai.com/v1', 'restart': False,
+    },
+    {
+        'key': 'ANTHROPIC_API_KEY', 'type': 'str', 'category': 'ai',
+        'label': 'Anthropic API Key', 'hint': 'Claude（Anthropic Messages 协议）密钥，修改后立即重建 AI 客户端',
+        'default': '', 'restart': False, 'secret': True,
+    },
+    {
+        'key': 'ANTHROPIC_BASE_URL', 'type': 'str', 'category': 'ai',
+        'label': 'Anthropic Base URL', 'hint': '留空使用官方地址；也可填兼容 Anthropic 协议的服务地址',
+        'default': '', 'restart': False,
     },
     {
         'key': 'ENABLE_AI_FILTER', 'type': 'bool', 'category': 'ai',
@@ -83,6 +93,12 @@ META = [
         'key': 'VERIFICATION_ENABLED', 'type': 'bool', 'category': 'security',
         'label': '新用户人机验证', 'hint': '关闭后新用户无需答题即可发消息',
         'default': 'true', 'restart': False,
+    },
+    {
+        'key': 'VERIFICATION_MODE', 'type': 'enum', 'category': 'security',
+        'label': '验证方式', 'hint': 'random = 每次随机出图片验证码或文字题；text = 只出文字题；image = 只出图片验证码',
+        'default': 'random', 'restart': False,
+        'options': ['random', 'text', 'image'],
     },
     {
         'key': 'AUTO_UNBLOCK_ENABLED', 'type': 'bool', 'category': 'security',

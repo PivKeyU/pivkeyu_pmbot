@@ -1110,34 +1110,6 @@ async def count_pending_reply_topics() -> int:
             return int(row[0]) if row else 0
 
 
-# --- Read Receipts ---
-
-async def add_read_receipt(user_id: int, forum_message_id: int, thread_id: int):
-    async with db_manager.get_connection() as db:
-        await db.execute('''
-            INSERT INTO read_receipts (user_id, forum_message_id, thread_id)
-            VALUES (?, ?, ?)
-        ''', (user_id, forum_message_id, thread_id))
-        await db.commit()
-
-
-async def mark_receipts_read(user_id: int):
-    async with db_manager.get_connection() as db:
-        async with db.execute('''
-            SELECT forum_message_id, thread_id FROM read_receipts
-            WHERE user_id = ? AND is_read = 0
-        ''', (user_id,)) as cursor:
-            rows = await cursor.fetchall()
-            unread = [{'forum_message_id': r[0], 'thread_id': r[1]} for r in rows]
-        if unread:
-            await db.execute('''
-                UPDATE read_receipts SET is_read = 1, read_at = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND is_read = 0
-            ''', (user_id,))
-            await db.commit()
-        return unread
-
-
 # --- Settings ---
 
 async def get_setting(key: str, default: str = None):

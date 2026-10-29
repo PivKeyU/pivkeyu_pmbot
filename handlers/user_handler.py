@@ -2,12 +2,13 @@ from telegram import Update, constants
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from database import models as db
-from services.verification import create_verification, is_verification_pending, get_pending_verification_message
+from services.verification import (
+    create_verification, get_pending_verification_message, is_verification_pending, send_verification_prompt,
+)
 from services.thread_manager import get_or_create_thread
 from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
 from utils.message_sender import edit_message_by_type, send_message_by_type
-from utils.reactions import read_reaction
 from services.rate_limiter import rate_limiter
 from services import spam_filter
 from config import config
@@ -18,13 +19,10 @@ async def handle_invalid_thread(update: Update, context: ContextTypes.DEFAULT_TY
     await db.update_user_thread_id(user_id, None)
     await db.update_user_verification(user_id, False)
     context.user_data['pending_update'] = update
-    question, keyboard = await create_verification(user_id)
+    prompt = await create_verification(user_id)
     full_message = copy_text.with_deco_head(
-        f"{copy_text.THREAD_CLOSED_REVERIFY}{question}", 'ASK')
-    await update.message.reply_text(
-        text=full_message,
-        reply_markup=keyboard
-    )
+        f"{copy_text.THREAD_CLOSED_REVERIFY}{prompt.text}", 'ASK')
+    await send_verification_prompt(update.message, prompt, full_message)
 
 async def _get_private_reply_target(message, user_id: int, thread_id: int):
     if not message.reply_to_message:
@@ -240,21 +238,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             has_pending, is_expired = is_verification_pending(user.id)
             
             if has_pending and not is_expired:
-                verification_data = get_pending_verification_message(user.id)
-                if verification_data:
-                    question, keyboard = verification_data
+                prompt = get_pending_verification_message(user.id)
+                if prompt:
                     context.user_data['pending_update'] = update
-                    await update.message.reply_text(
+                    await send_verification_prompt(
+                        update.message,
+                        prompt,
                         copy_text.with_deco_head(
-                            f"{copy_text.VERIFY_INVITE_PENDING}\n\n{question}", 'ASK'),
-                        reply_markup=keyboard
+                            f"{copy_text.VERIFY_INVITE_PENDING}\n\n{prompt.question}", 'ASK'),
                     )
                     return
             else:
                 context.user_data['pending_update'] = update
-                question, keyboard = await create_verification(user.id)
-                await update.message.reply_text(
-                    copy_text.with_deco_head(question, 'ASK'), reply_markup=keyboard)
+                prompt = await create_verification(user.id)
+                await send_verification_prompt(
+                    update.message, prompt, copy_text.with_deco_head(prompt.text, 'ASK'))
                 return
     
     image_bytes = None
@@ -318,19 +316,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user.id))))
                 return
 
-    # Mark previous admin messages as read
-    unread = await db.mark_receipts_read(user.id)
-    for entry in unread:
-        try:
-            await context.bot.set_message_reaction(
-                chat_id=config.FORUM_GROUP_ID,
-                message_id=entry['forum_message_id'],
-                reaction=read_reaction(),
-            )
-        except Exception as exc:
-            # 已读回执失败不能中断后面的自动回复
-            print(f"设置已读表情失败: {exc}")
-    
     if message.text and await db.get_autoreply_enabled():
         knowledge_base_content = await db.get_all_knowledge_content()
         if knowledge_base_content:

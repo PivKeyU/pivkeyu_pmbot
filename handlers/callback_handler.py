@@ -3,10 +3,10 @@ import logging
 import re
 import secrets
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import BadRequest
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
-from services.verification import verify_answer, create_verification
+from services.verification import verify_answer, create_verification, send_verification_prompt
 from services.gemini_service import gemini_service
 from database import models as db
 from utils.media_converter import sticker_to_image
@@ -18,6 +18,7 @@ from config import config
 from rss import data_manager as rss_data_manager, settings as rss_settings
 from rss import enable_feature as rss_enable_feature, disable_feature as rss_disable_feature
 from utils import copy as copy_text
+from utils import about
 
 RSS_PANEL_CACHE_KEY = "rss_panel_cache"
 RSS_FEEDS_PER_PAGE = 4
@@ -69,7 +70,8 @@ async def _build_panel_back_view():
         f"黑名单里的捣乱者: {blocked_users}\n"
         f"持有通行证的主人: {exempted_users}\n"
         f"自动回复女仆: {'正在值班' if is_enabled else '正在休息'}\n\n"
-        f"主人，请挑选要打理的事项："
+        f"主人，请挑选要打理的事项：\n\n"
+        f"{about.signature_markdown()}"
     )
 
     keyboard = [
@@ -367,6 +369,91 @@ async def _build_updatebot_view():
     return await _build_git_updatebot_view()
 
 
+async def _show_verification_result(query, text: str):
+    """把验证消息改成结果文字并收起按钮；图片题改说明文字，文字题改正文。"""
+    if query.message and query.message.photo:
+        await query.edit_message_caption(caption=text, reply_markup=None)
+    else:
+        await query.edit_message_text(text=text, reply_markup=None)
+
+
+async def _show_next_verification(query, prompt, text: str):
+    """答错后换题：题型不变就原地编辑；图片题与文字题互换时删掉旧消息重发。"""
+    old_is_photo = bool(query.message and query.message.photo)
+    if prompt.image and old_is_photo:
+        await query.edit_message_media(
+            media=InputMediaPhoto(media=prompt.image, caption=text),
+            reply_markup=prompt.keyboard,
+        )
+        return
+    if not prompt.image and not old_is_photo:
+        await query.edit_message_text(text=text, reply_markup=prompt.keyboard)
+        return
+
+    bot = query.get_bot()
+    chat_id = query.message.chat_id
+    try:
+        await query.message.delete()
+    except TelegramError:
+        # 删不掉旧题就把按钮收起来，避免客人点到已失效的选项
+        await _show_verification_result(query, copy_text.with_deco("这道题作废啦，请看下面的新题。", 'ASK'))
+    if prompt.image:
+        await bot.send_photo(chat_id=chat_id, photo=prompt.image, caption=text, reply_markup=prompt.keyboard)
+    else:
+        await bot.send_message(chat_id=chat_id, text=text, reply_markup=prompt.keyboard)
+
+
+async def _build_ai_settings_view():
+    """AI 模型衣柜：按注册表列出每种协议的模型与切换按钮。"""
+    from services.ai_providers import AI_FEATURES, PROVIDERS, model_setting_key
+    from services.ai_service import provider_credentials
+
+    keys = ['ai_provider'] + [model_setting_key(p, f) for p in PROVIDERS for f in AI_FEATURES]
+    placeholders = ','.join('?' for _ in keys)
+    async with db.db_manager.get_connection() as conn:
+        cursor = await conn.execute(
+            f"SELECT key, value FROM settings WHERE key IN ({placeholders})", keys,
+        )
+        settings = {row[0]: row[1] for row in await cursor.fetchall()}
+
+    current_provider = settings.get('ai_provider', 'gemini')
+    if current_provider not in PROVIDERS:
+        current_provider = 'gemini'
+
+    lines = [
+        "**AI 模型衣柜**",
+        "",
+        f"当前侍奉提供商: `{PROVIDERS[current_provider]['label']}`",
+        "",
+    ]
+    for provider_type, meta in PROVIDERS.items():
+        api_key, _ = provider_credentials(provider_type)
+        status = "已配置 Key" if api_key else "未配置 Key"
+        lines.append(f"**{meta['label']} 衣架**（{status}）:")
+        lines.append(f"• 审查: `{settings.get(model_setting_key(provider_type, 'filter'), 'N/A')}`")
+        lines.append(f"• 验证: `{settings.get(model_setting_key(provider_type, 'verification'), 'N/A')}`")
+        lines.append(f"• 回复: `{settings.get(model_setting_key(provider_type, 'autoreply'), 'N/A')}`")
+        lines.append("")
+    lines.append("主人，请挑选要整理的项目:")
+
+    # 每种协议一行：左边切换为当前提供商，右边整理它的分功能模型
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                copy_text.btn_ai_enable(meta['short'], provider_type == current_provider),
+                callback_data=f"ai_set_provider_{provider_type}",
+            ),
+            InlineKeyboardButton(
+                copy_text.btn_ai_models(meta['short']),
+                callback_data=f"ai_config_models_{provider_type}",
+            ),
+        ]
+        for provider_type, meta in PROVIDERS.items()
+    ]
+    keyboard.append([InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")])
+    return "\n".join(lines), InlineKeyboardMarkup(keyboard)
+
+
 def _build_ai_model_selection_view(application, provider_type: str, feature_type: str, models: list, page: int = 1):
     total = len(models)
     total_pages = max(1, (total + AI_MODELS_PER_PAGE - 1) // AI_MODELS_PER_PAGE)
@@ -462,21 +549,17 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data.startswith("verify_"):
         answer = data.split("_", 1)[1]
-        success, message, is_banned, new_question = await verify_answer(user_id, answer)
+        success, message, is_banned, new_prompt = await verify_answer(user_id, answer)
         
         if is_banned:
-            await query.edit_message_text(text=message, reply_markup=None)
+            await _show_verification_result(query, message)
             return
         
-        if new_question:
-            new_question_text, new_keyboard = new_question
-            await query.edit_message_text(
-                text=f"{message}\n\n{new_question_text}",
-                reply_markup=new_keyboard
-            )
+        if new_prompt:
+            await _show_next_verification(query, new_prompt, f"{message}\n\n{new_prompt.text}")
             return
         
-        await query.edit_message_text(text=message)
+        await _show_verification_result(query, message)
 
         if success:
             if 'pending_update' in context.user_data:
@@ -541,17 +624,14 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                             await db.update_user_verification(user_id, False)
                             
                             context.user_data['pending_update'] = pending_update
-                            question, keyboard = await create_verification(user_id)
+                            prompt = await create_verification(user_id)
                             
                             # 会客厅被关掉后重新验证：装饰落在首行（那句话）末尾，
                             # 不去碰下面接的命令/题目文本
                             full_message = copy_text.with_deco_head(
-                                f"{copy_text.THREAD_CLOSED_REVERIFY}{question}", 'ERROR')
+                                f"{copy_text.THREAD_CLOSED_REVERIFY}{prompt.text}", 'ERROR')
 
-                            await pending_update.message.reply_text(
-                                text=full_message,
-                                reply_markup=keyboard
-                            )
+                            await send_verification_prompt(pending_update.message, prompt, full_message)
                         else:
                             print(f"发送消息时发生未知错误: {e}")
                             await pending_update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user_id))))
@@ -570,7 +650,8 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(
             message,
             reply_markup=keyboard,
-            parse_mode='Markdown'
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
         )
     
     elif data == "panel_broadcast":
@@ -1120,100 +1201,28 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-            
-        async with db.db_manager.get_connection() as conn:
-             cursor = await conn.execute("""
-                SELECT key, value FROM settings 
-                WHERE key IN (
-                    'ai_provider', 
-                    'gemini_model_filter', 'gemini_model_verification', 'gemini_model_autoreply',
-                    'openai_model_filter', 'openai_model_verification', 'openai_model_autoreply'
-                )
-             """)
-             settings = {row[0]: row[1] for row in await cursor.fetchall()}
-             
-        current_provider = settings.get('ai_provider', 'gemini')
-        
-        provider_name = "Gemini" if current_provider == 'gemini' else "OpenAI"
-        
-        message = (
-            f"**AI 模型衣柜**\n\n"
-            f"当前侍奉提供商: `{provider_name}`\n\n"
-            f"**Gemini 衣架**:\n"
-            f"• 审查: `{settings.get('gemini_model_filter', 'N/A')}`\n"
-            f"• 验证: `{settings.get('gemini_model_verification', 'N/A')}`\n"
-            f"• 回复: `{settings.get('gemini_model_autoreply', 'N/A')}`\n\n"
-            f"**OpenAI 衣架**:\n"
-            f"• 审查: `{settings.get('openai_model_filter', 'N/A')}`\n"
-            f"• 验证: `{settings.get('openai_model_verification', 'N/A')}`\n"
-            f"• 回复: `{settings.get('openai_model_autoreply', 'N/A')}`\n\n"
-            f"主人，请挑选要整理的项目:"
-        )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton(copy_text.btn_ai_enable_gemini(current_provider == 'gemini'), callback_data="ai_set_provider_gemini"),
-                InlineKeyboardButton(copy_text.btn_ai_enable_openai(current_provider == 'openai'), callback_data="ai_set_provider_openai")
-            ],
-            [
-                InlineKeyboardButton(copy_text.BTN_AI_MODELS_GEMINI, callback_data="ai_config_models_gemini"),
-                InlineKeyboardButton(copy_text.BTN_AI_MODELS_OPENAI, callback_data="ai_config_models_openai")
-            ],
-            [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]
-        ]
-        
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+        message, keyboard = await _build_ai_settings_view()
+        await query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
 
     elif data.startswith("ai_set_provider_"):
         if not await db.is_admin(user_id): return
-        
-        new_provider = data.split("_")[3]
+
+        from services.ai_providers import PROVIDERS
+
+        new_provider = data[len("ai_set_provider_"):]
+        if new_provider not in PROVIDERS:
+            await answer_callback(copy_text.with_deco("这个提供商女仆不认识呢，主人。", 'ERROR'), show_alert=True)
+            return
         async with db.db_manager.get_connection() as conn:
             await conn.execute("UPDATE settings SET value = ? WHERE key = 'ai_provider'", (new_provider,))
             await conn.commit()
-            
-        await answer_callback(copy_text.with_deco(f"AI 提供商已经替主人换成 {new_provider.upper()} 啦。", 'OK'))
-        
-        async with db.db_manager.get_connection() as conn:
-             cursor = await conn.execute("""
-                SELECT key, value FROM settings 
-                WHERE key IN (
-                    'ai_provider', 
-                    'gemini_model_filter', 'gemini_model_verification', 'gemini_model_autoreply',
-                    'openai_model_filter', 'openai_model_verification', 'openai_model_autoreply'
-                )
-             """)
-             settings = {row[0]: row[1] for row in await cursor.fetchall()}
-             
-        current_provider = settings.get('ai_provider', 'gemini')
-        provider_name = "Gemini" if current_provider == 'gemini' else "OpenAI"
-        
-        message = (
-            f"**AI 模型衣柜**\n\n"
-            f"当前侍奉提供商: `{provider_name}`\n\n"
-            f"**Gemini 衣架**:\n"
-            f"• 审查: `{settings.get('gemini_model_filter', 'N/A')}`\n"
-            f"• 验证: `{settings.get('gemini_model_verification', 'N/A')}`\n"
-            f"• 回复: `{settings.get('gemini_model_autoreply', 'N/A')}`\n\n"
-            f"**OpenAI 衣架**:\n"
-            f"• 审查: `{settings.get('openai_model_filter', 'N/A')}`\n"
-            f"• 验证: `{settings.get('openai_model_verification', 'N/A')}`\n"
-            f"• 回复: `{settings.get('openai_model_autoreply', 'N/A')}`\n\n"
-            f"主人，请挑选要整理的项目:"
-        )
-        
-        keyboard = [
-            [
-                InlineKeyboardButton(copy_text.btn_ai_enable_gemini(current_provider == 'gemini'), callback_data="ai_set_provider_gemini"),
-                InlineKeyboardButton(copy_text.btn_ai_enable_openai(current_provider == 'openai'), callback_data="ai_set_provider_openai")
-            ],
-            [
-                InlineKeyboardButton(copy_text.BTN_AI_MODELS_GEMINI, callback_data="ai_config_models_gemini"),
-                InlineKeyboardButton(copy_text.BTN_AI_MODELS_OPENAI, callback_data="ai_config_models_openai")
-            ],
-            [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]
-        ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+        await answer_callback(copy_text.with_deco(
+            f"AI 提供商已经替主人换成 {PROVIDERS[new_provider]['label']} 啦。", 'OK'))
+
+        message, keyboard = await _build_ai_settings_view()
+        await query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
 
     elif data.startswith("ai_config_models_"):
         if not await db.is_admin(user_id): return
@@ -1308,7 +1317,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             await answer_callback(copy_text.with_deco("这份请求数据不对劲哦，主人。", 'ERROR'), show_alert=True)
             return
             
-        p_map = {'g': 'gemini', 'o': 'openai'}
+        p_map = {'g': 'gemini', 'o': 'openai', 'a': 'anthropic'}
         f_map = {'f': 'filter', 'v': 'verification', 'a': 'autoreply'}
         
         provider_type = p_map.get(p_code, 'gemini')

@@ -1,11 +1,28 @@
+import random
 import time
+from dataclasses import dataclass
+from typing import Optional
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from database import models as db
 from config import config
 from utils import copy as copy_text
+from services import captcha_image
 from services.gemini_service import gemini_service
 
 pending_verifications = {}
+
+# 验证方式：text = 常识文字题，image = 图片验证码，random = 每次随机二选一
+VERIFICATION_MODES = ('random', 'text', 'image')
+
+
+@dataclass
+class VerificationPrompt:
+    """一道待展示的验证题：文字 + 选项按钮，图片题额外带 PNG。"""
+    text: str
+    question: str
+    keyboard: InlineKeyboardMarkup
+    image: Optional[bytes] = None
 
 
 def _cleanup_expired_verifications() -> None:
@@ -15,30 +32,61 @@ def _cleanup_expired_verifications() -> None:
     for uid in expired:
         del pending_verifications[uid]
 
-async def create_verification(user_id: int):
-    _cleanup_expired_verifications()
 
-    challenge = await gemini_service.generate_verification_challenge()
-    question = challenge['question']
-    correct_answer = challenge['correct_answer']
-    options = challenge['options']
-    
-    existing_attempts = pending_verifications.get(user_id, {}).get('attempts', 0)
-    
+def _pick_mode() -> str:
+    mode = str(getattr(config, 'VERIFICATION_MODE', 'random') or 'random').strip().lower()
+    if mode not in VERIFICATION_MODES:
+        mode = 'random'
+    if mode == 'random':
+        return random.choice(('text', 'image'))
+    return mode
+
+
+async def _new_challenge() -> dict:
+    if _pick_mode() == 'image':
+        return captcha_image.generate_image_challenge()
+    return await gemini_service.generate_verification_challenge()
+
+
+def _build_prompt(session: dict) -> VerificationPrompt:
+    buttons = [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in session['options']]
+    # 选项较长时排成 2×2，避免一行四个按钮把文字截断
+    per_row = 4 if max(len(option) for option in session['options']) <= 4 else 2
+    keyboard = InlineKeyboardMarkup([buttons[i:i + per_row] for i in range(0, len(buttons), per_row)])
+    return VerificationPrompt(
+        text=f"{copy_text.VERIFY_INVITE}\n\n{session['question']}",
+        question=session['question'],
+        keyboard=keyboard,
+        image=session.get('image'),
+    )
+
+
+async def _start_session(user_id: int, attempts: int) -> VerificationPrompt:
+    challenge = await _new_challenge()
     pending_verifications[user_id] = {
-        'answer': correct_answer,
-        'question': question,
-        'options': options,
-        'attempts': existing_attempts,
+        'answer': challenge['correct_answer'],
+        'question': challenge['question'],
+        'options': challenge['options'],
+        'image': challenge.get('image'),
+        'attempts': attempts,
         'created_at': time.time(),
         'expires_at': time.time() + config.VERIFICATION_TIMEOUT
     }
-    
-    keyboard = [
-        [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in options]
-    ]
-    
-    return f"{copy_text.VERIFY_INVITE}\n\n{question}", InlineKeyboardMarkup(keyboard)
+    return _build_prompt(pending_verifications[user_id])
+
+
+async def send_verification_prompt(message, prompt: VerificationPrompt, text: str = None):
+    """回复一道验证题：图片题发图片（文字放进说明），文字题直接发文字。"""
+    text = text if text is not None else prompt.text
+    if prompt.image:
+        return await message.reply_photo(photo=prompt.image, caption=text, reply_markup=prompt.keyboard)
+    return await message.reply_text(text=text, reply_markup=prompt.keyboard)
+
+
+async def create_verification(user_id: int) -> VerificationPrompt:
+    _cleanup_expired_verifications()
+    existing_attempts = pending_verifications.get(user_id, {}).get('attempts', 0)
+    return await _start_session(user_id, existing_attempts)
 
 async def verify_answer(user_id: int, answer: str):
     _cleanup_expired_verifications()
@@ -70,29 +118,12 @@ async def verify_answer(user_id: int, answer: str):
         )
         return False, message, True, None
     
-    challenge = await gemini_service.generate_verification_challenge()
-    new_question = challenge['question']
-    new_correct_answer = challenge['correct_answer']
-    new_options = challenge['options']
-    
-    pending_verifications[user_id] = {
-        'answer': new_correct_answer,
-        'question': new_question,
-        'options': new_options,
-        'attempts': verification['attempts'],
-        'created_at': time.time(),
-        'expires_at': time.time() + config.VERIFICATION_TIMEOUT
-    }
-    
-    keyboard = [
-        [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in new_options]
-    ]
-    
-    new_question_text = f"{copy_text.VERIFY_INVITE}\n\n{new_question}"
+    # 答错换一道新题（随机模式下题型也会重新抽）
+    new_prompt = await _start_session(user_id, verification['attempts'])
     remaining = config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']
     # 首次答错保持温柔，第 2 次起升级为傲娇；{remaining} 次机会的真实信息不变
     new_message = copy_text.verify_wrong(remaining, verification['attempts'])
-    return False, new_message, False, (new_question_text, InlineKeyboardMarkup(keyboard))
+    return False, new_message, False, new_prompt
 
 def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     _cleanup_expired_verifications()
@@ -109,7 +140,7 @@ def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     
     return True, False
 
-def get_pending_verification_message(user_id: int):
+def get_pending_verification_message(user_id: int) -> Optional[VerificationPrompt]:
     _cleanup_expired_verifications()
 
     if user_id not in pending_verifications:
@@ -120,12 +151,5 @@ def get_pending_verification_message(user_id: int):
     if time.time() > verification['expires_at']:
         del pending_verifications[user_id]
         return None
-    
-    question = verification['question']
-    options = verification['options']
-    
-    keyboard = [
-        [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in options]
-    ]
-    
-    return question, InlineKeyboardMarkup(keyboard)
+
+    return _build_prompt(verification)

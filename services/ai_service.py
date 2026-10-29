@@ -2,8 +2,11 @@ from abc import ABC, abstractmethod
 from google.genai import Client as GeminiClient
 from google.genai import types
 from openai import AsyncOpenAI
+import asyncio
+import inspect
 import json
 import re
+import time
 import random
 import io
 from PIL import Image
@@ -33,63 +36,24 @@ def _unique_model_names(names) -> list:
     return unique
 
 
-LOCAL_VERIFICATION_QUESTIONS = [
-    {"question": "中国的首都是哪里？", "correct_answer": "北京", "incorrect_answers": ["上海", "广州", "深圳"]},
-    {"question": "一年有多少个月？", "correct_answer": "12", "incorrect_answers": ["10", "11", "13"]},
-    {"question": "一周有多少天？", "correct_answer": "7", "incorrect_answers": ["5", "6", "8"]},
-    {"question": "太阳从哪个方向升起？", "correct_answer": "东方", "incorrect_answers": ["西方", "南方", "北方"]},
-    {"question": "水的化学式是什么？", "correct_answer": "H2O", "incorrect_answers": ["CO2", "O2", "NaCl"]},
-    {"question": "地球上最大的海洋是哪个？", "correct_answer": "太平洋", "incorrect_answers": ["大西洋", "印度洋", "北冰洋"]},
-    {"question": "哪个颜色是彩虹的第一种颜色？", "correct_answer": "红色", "incorrect_answers": ["橙色", "黄色", "绿色"]},
-    {"question": "人体有多少个心脏？", "correct_answer": "1", "incorrect_answers": ["2", "3", "4"]},
-    {"question": "哪个季节最热？", "correct_answer": "夏天", "incorrect_answers": ["春天", "秋天", "冬天"]},
-    {"question": "哪个是最大的行星？", "correct_answer": "木星", "incorrect_answers": ["土星", "天王星", "海王星"]},
-    {"question": "中国的国旗上有几颗星？", "correct_answer": "5", "incorrect_answers": ["3", "4", "6"]},
-    {"question": "哪个是哺乳动物？", "correct_answer": "狗", "incorrect_answers": ["鱼", "鸟", "蛇"]},
-    {"question": "哪个是水果？", "correct_answer": "苹果", "incorrect_answers": ["胡萝卜", "土豆", "洋葱"]},
-    {"question": "哪个是交通工具？", "correct_answer": "汽车", "incorrect_answers": ["桌子", "椅子", "床"]},
-    {"question": "哪个是颜色？", "correct_answer": "蓝色", "incorrect_answers": ["数字", "字母", "符号"]},
-    {"question": "以下哪个不属于行星？", "correct_answer": "月亮", "incorrect_answers": ["地球", "火星", "金星"]},
-    {"question": "以下哪个不属于水果？", "correct_answer": "胡萝卜", "incorrect_answers": ["苹果", "香蕉", "橙子"]},
-    {"question": "以下哪个不属于交通工具？", "correct_answer": "房子", "incorrect_answers": ["汽车", "飞机", "火车"]},
-    {"question": "以下哪个不属于颜色？", "correct_answer": "数字", "incorrect_answers": ["红色", "蓝色", "绿色"]},
-    {"question": "以下哪个不属于哺乳动物？", "correct_answer": "鱼", "incorrect_answers": ["猫", "狗", "牛"]},
-    {"question": "以下哪个不属于蔬菜？", "correct_answer": "苹果", "incorrect_answers": ["白菜", "萝卜", "黄瓜"]},
-    {"question": "以下哪个不属于鸟类？", "correct_answer": "狗", "incorrect_answers": ["麻雀", "鸽子", "燕子"]},
-    {"question": "以下哪个不属于金属？", "correct_answer": "木头", "incorrect_answers": ["铁", "铜", "铝"]},
-    {"question": "以下哪个不属于饮料？", "correct_answer": "米饭", "incorrect_answers": ["水", "茶", "咖啡"]},
-    {"question": "以下哪个不属于学习用品？", "correct_answer": "电视", "incorrect_answers": ["笔", "本子", "橡皮"]},
-    {"question": "以下哪个不属于运动项目？", "correct_answer": "睡觉", "incorrect_answers": ["跑步", "游泳", "篮球"]},
-    {"question": "以下哪个不属于季节？", "correct_answer": "星期", "incorrect_answers": ["春天", "夏天", "秋天"]},
-    {"question": "以下哪个不属于方向？", "correct_answer": "上下", "incorrect_answers": ["东", "南", "西"]},
-    {"question": "以下哪个不属于数字？", "correct_answer": "字母", "incorrect_answers": ["1", "2", "3"]}
-]
+# 本地出题：题库与程序化出题器都在 services/text_questions.py。
+# 无 API Key 或 AI 出题失败时，_get_local_question() 是唯一出口。
+from services import text_questions  # noqa: E402
 
-# 本地兜底题库：随机取一道题，用于无 API Key 或 API 调用失败时生成验证题
-#
-# 无 API Key 时 _get_local_question() 是**唯一出口**，此时题库里的裸题目没有任何人设。
-# 这里补一层女仆邀请语。注意两点：
-#   1) 只加「请客人答题」的引子，**不要**再写一遍「小验证」——外层
-#      services/verification.py 与 handlers/user_handler.py 已经拼过
-#      「请完成女仆小验证: \n\n{question}」，再写一遍就是两句重复的验证邀请。
-#   2) 措辞必须同时对「标准直接提问」和「反向排除提问（以下哪个不属于…？）」通顺。
-LOCAL_QUESTION_INVITE_PREFIX = "客人来答答这一题嘛～ "
+LOCAL_QUESTION_INVITE_PREFIX = text_questions.LOCAL_QUESTION_INVITE_PREFIX
 
 
 def _get_local_question() -> dict:
-    question_data = random.choice(LOCAL_VERIFICATION_QUESTIONS)
+    data = text_questions.random_question_data()
+    challenge = _challenge_from_data(data)
+    # 用拼接而不是 .format(question=...)：题目文字里万一出现 {} 也不能截断这条兜底路径
+    challenge['question'] = LOCAL_QUESTION_INVITE_PREFIX + challenge['question']
+    return challenge
 
-    correct_answer = question_data['correct_answer']
-    options = question_data['incorrect_answers'] + [correct_answer]
-    random.shuffle(options)
 
-    return {
-        # 用拼接而不是 .format(question=...)：题库文字里万一出现 {} 也不能截断
-        # 这条“无 API Key 时唯一出口”的兜底路径。
-        "question": LOCAL_QUESTION_INVITE_PREFIX + question_data['question'],
-        "correct_answer": correct_answer,
-        "options": options
-    }
+def _verification_prompt() -> str:
+    """AI 出题 prompt：固定规则 + 每次随机的主题与题型，避免模型反复出同一类题。"""
+    return VERIFICATION_CAPTCHA_PROMPT + "\n" + text_questions.ai_topic_hint()
 
 
 # ==========================================================================
@@ -215,7 +179,75 @@ VERIFICATION_CAPTCHA_PROMPT = "\n".join([
 ])
 
 
+# 提供商注册表在纯数据模块里，Web 面板预览服务器也能直接引用
+from services.ai_providers import PROVIDERS, model_setting_key  # noqa: E402
+
+
+def provider_credentials(provider_type: str):
+    """返回 (api_key, base_url)；未知协议返回 (None, None)。"""
+    meta = PROVIDERS.get(provider_type)
+    if not meta:
+        return None, None
+    api_key = getattr(config, meta['key_env'], None)
+    base_url = (getattr(config, meta['base_env'], None) or '').strip() or None
+    return api_key, base_url
+
+
+# 内容审查 system prompt：OpenAI 与 Claude 共用（Gemini 走原有的拼接方式）
+CONTENT_REVIEW_SYSTEM_PROMPT = "你是一个内容审查员。你的任务是分析提供给你的文本和/或图片内容，并判断其是否包含垃圾信息、恶意软件、钓鱼链接、不当言论、辱骂、攻击性词语或任何违反安全政策的内容。\n请严格按照要求，仅以JSON格式返回你的分析结果，不要包含任何额外的解释或标记。\n**输出格式**: 你必须且只能以严格的JSON格式返回你的分析结果，不得包含任何解释性文字或代码块标记。\n**JSON结构**:\n```json\n{\n  \"is_spam\": boolean,\n  \"reason\": \"string\"\n}\n```\n*   `is_spam`: 如果内容违反**任何一条**安全策略，则为 `true`；如果内容完全安全，则为 `false`。\n*   `reason`: 用一句话精准概括判断依据。如果违规，请明确指出违规的类型。如果安全，此字段固定为 `\"内容未发现违规。\"`"
+
+# 连通性测试用的极短提示
+PING_PROMPT = '这是一次连通性测试，请只回复两个字母：OK'
+
+
+def _parse_json_response(response_text: str) -> dict:
+    """解析模型返回的 JSON：去掉 ```json 代码块，必要时截取第一个 { 到最后一个 }。"""
+    clean_text = re.sub(r'```json\s*|\s*```', '', response_text or '').strip()
+    if not clean_text.startswith('{'):
+        start, end = clean_text.find('{'), clean_text.rfind('}')
+        if start != -1 and end > start:
+            clean_text = clean_text[start:end + 1]
+    return json.loads(clean_text)
+
+
+def _challenge_from_data(data: dict) -> dict:
+    """校验题目并整理成 {question, correct_answer, options}，选项打乱顺序。"""
+    data = text_questions.validate_question_data(data)
+    correct_answer = data['correct_answer']
+    options = list(data['incorrect_answers']) + [correct_answer]
+    random.shuffle(options)
+    return {
+        "question": data['question'],
+        "correct_answer": correct_answer,
+        "options": options,
+    }
+
+
+def _sniff_image_media_type(image_bytes: bytes) -> str:
+    """按文件头判断图片类型，Telegram 照片默认是 JPEG。"""
+    if image_bytes.startswith(b'\x89PNG'):
+        return 'image/png'
+    if image_bytes[:6] in (b'GIF87a', b'GIF89a'):
+        return 'image/gif'
+    if image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/jpeg'
+
+
 class AIProvider(ABC):
+    async def _get_model_name(self, setting_key: str, default: str) -> str:
+        async with db_manager.get_connection() as db:
+            cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (setting_key,))
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+            return default
+
+    @abstractmethod
+    async def ping(self, model: str) -> str:
+        """发一条极短的请求验证 Key / 地址 / 模型是否可用，返回模型回复。"""
+        pass
+
     @abstractmethod
     async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
         pass
@@ -248,14 +280,6 @@ class GeminiProvider(AIProvider):
         self.api_key = api_key
         self.base_url = base_url or None
         
-    async def _get_model_name(self, setting_key: str, default: str) -> str:
-         async with db_manager.get_connection() as db:
-            cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (setting_key,))
-            row = await cursor.fetchone()
-            if row:
-                return row[0]
-            return default
-
     async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
         model_name = await self._get_model_name('gemini_model_filter', 'gemini-2.5-flash')
         content = []
@@ -313,7 +337,7 @@ class GeminiProvider(AIProvider):
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('gemini_model_verification', 'gemini-2.5-flash-lite')
         # 出题 prompt 与 OpenAI 版共用同一常量（原先是两份逐字重复的三引号字符串）
-        prompt = VERIFICATION_CAPTCHA_PROMPT
+        prompt = _verification_prompt()
         try:
             response = await self.client.aio.models.generate_content(
                 model=model_name,
@@ -328,18 +352,7 @@ class GeminiProvider(AIProvider):
             if not response_text:
                 raise ValueError("Gemini API返回空响应")
             
-            clean_text = re.sub(r'```json\s*|\s*```', '', response_text).strip()
-            data = json.loads(clean_text)
-            
-            correct_answer = data['correct_answer']
-            options = data['incorrect_answers'] + [correct_answer]
-            random.shuffle(options)
-            
-            return {
-                "question": data['question'],
-                "correct_answer": correct_answer,
-                "options": options
-            }
+            return _challenge_from_data(_parse_json_response(response_text))
         except Exception as e:
             print(f"生成验证问题失败: {e}")
             return self._get_local_question()
@@ -399,6 +412,10 @@ class GeminiProvider(AIProvider):
             print(f"Gemini自动回复生成失败: {e}")
             return None
     
+    async def ping(self, model: str) -> str:
+        response = await self.client.aio.models.generate_content(model=model, contents=PING_PROMPT)
+        return (getattr(response, 'text', None) or '').strip()
+
     async def get_models(self) -> list:
         fetched_models = []
         try:
@@ -416,20 +433,13 @@ class OpenAIProvider(AIProvider):
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url or None
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-
-    async def _get_model_name(self, setting_key: str, default: str) -> str:
-         async with db_manager.get_connection() as db:
-            cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (setting_key,))
-            row = await cursor.fetchone()
-            if row:
-                return row[0]
-            return default
+        # 空字符串交给 SDK 会被当成真实地址，留空时传 None 走官方默认地址
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url or None)
 
     async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
         model_name = await self._get_model_name('openai_model_filter', 'gpt-4.1')
         messages = [
-            {"role": "system", "content": "你是一个内容审查员。你的任务是分析提供给你的文本和/或图片内容，并判断其是否包含垃圾信息、恶意软件、钓鱼链接、不当言论、辱骂、攻击性词语或任何违反安全政策的内容。\n请严格按照要求，仅以JSON格式返回你的分析结果，不要包含任何额外的解释或标记。\n**输出格式**: 你必须且只能以严格的JSON格式返回你的分析结果，不得包含任何解释性文字或代码块标记。\n**JSON结构**:\n```json\n{\n  \"is_spam\": boolean,\n  \"reason\": \"string\"\n}\n```\n*   `is_spam`: 如果内容违反**任何一条**安全策略，则为 `true`；如果内容完全安全，则为 `false`。\n*   `reason`: 用一句话精准概括判断依据。如果违规，请明确指出违规的类型。如果安全，此字段固定为 `\"内容未发现违规。\"`"},
+            {"role": "system", "content": CONTENT_REVIEW_SYSTEM_PROMPT},
             {"role": "user", "content": []}
         ]
 
@@ -473,7 +483,7 @@ class OpenAIProvider(AIProvider):
     async def generate_verification_challenge(self) -> dict:
         model_name = await self._get_model_name('openai_model_verification', 'gpt-4.1-mini')
         # 出题 prompt 与 Gemini 版共用同一常量（原先是两份逐字重复的三引号字符串）
-        prompt = VERIFICATION_CAPTCHA_PROMPT
+        prompt = _verification_prompt()
         try:
             response = await self.client.chat.completions.create(
                 model=model_name,
@@ -481,18 +491,7 @@ class OpenAIProvider(AIProvider):
             )
             response_text = response.choices[0].message.content
             
-            clean_text = re.sub(r'```json\s*|\s*```', '', response_text).strip()
-            data = json.loads(clean_text)
-            
-            correct_answer = data['correct_answer']
-            options = data['incorrect_answers'] + [correct_answer]
-            random.shuffle(options)
-            
-            return {
-                "question": data['question'],
-                "correct_answer": correct_answer,
-                "options": options
-            }
+            return _challenge_from_data(_parse_json_response(response_text))
         except Exception as e:
             print(f"OpenAI Generate verification failed: {e}")
             return self._get_local_question()
@@ -541,6 +540,13 @@ class OpenAIProvider(AIProvider):
              print(f"OpenAI autoreply failed: {e}")
              return None
     
+    async def ping(self, model: str) -> str:
+        response = await self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": PING_PROMPT}],
+        )
+        return (response.choices[0].message.content or '').strip()
+
     async def get_models(self) -> list:
         fetched_models = []
         try:
@@ -555,6 +561,130 @@ class OpenAIProvider(AIProvider):
         return _unique_model_names(fetched_models)
 
 
+class AnthropicProvider(AIProvider):
+    """Anthropic Messages 协议（Claude），也可以指向兼容该协议的第三方服务。"""
+
+    def __init__(self, api_key: str, base_url: str = None):
+        # 延迟导入：没装 anthropic 包时不影响 Gemini / OpenAI 两条链路
+        from anthropic import AsyncAnthropic
+
+        self.api_key = api_key
+        self.base_url = (base_url or '').strip() or None
+        client_kwargs = {'api_key': api_key}
+        if self.base_url:
+            client_kwargs['base_url'] = self.base_url
+        self.client = AsyncAnthropic(**client_kwargs)
+
+    async def _create_text(self, model: str, content, system: str = None, max_tokens: int = 4096) -> str:
+        """发一次 Messages 请求，拼出全部 text 块；被安全策略拒绝时抛异常。"""
+        kwargs = {
+            'model': model,
+            # 新模型默认开启自适应思考，思考也计入 max_tokens，给足空间避免截断
+            'max_tokens': max_tokens,
+            'messages': [{'role': 'user', 'content': content}],
+        }
+        if system:
+            kwargs['system'] = system
+        response = await self.client.messages.create(**kwargs)
+        if response.stop_reason == 'refusal':
+            raise RuntimeError('Claude 拒绝了这次请求（stop_reason=refusal）')
+        return ''.join(
+            block.text for block in response.content if getattr(block, 'type', None) == 'text'
+        ).strip()
+
+    async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
+        model_name = await self._get_model_name(
+            'anthropic_model_filter', PROVIDERS['anthropic']['default_models']['filter'])
+        content = []
+        if image_bytes:
+            import base64
+            content.append({
+                'type': 'image',
+                'source': {
+                    'type': 'base64',
+                    'media_type': _sniff_image_media_type(image_bytes),
+                    'data': base64.standard_b64encode(image_bytes).decode('utf-8'),
+                },
+            })
+        if text:
+            content.append({'type': 'text', 'text': text})
+        if not content:
+            return {"is_spam": False, "reason": "No content to analyze"}
+
+        try:
+            response_text = await self._create_text(model_name, content, system=CONTENT_REVIEW_SYSTEM_PROMPT)
+            if not response_text:
+                raise ValueError("Claude API returned an empty response.")
+            result = _parse_json_response(response_text)
+            # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
+            if not isinstance(result.get("is_spam"), bool):
+                raise ValueError("Claude 返回的 is_spam 字段不是布尔值")
+            return result
+        except Exception as e:
+            print(f"Claude analysis failed: {e}")
+            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
+            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: Claude analysis failed: {e}", "analysis_failed": True}
+
+    async def generate_verification_challenge(self) -> dict:
+        model_name = await self._get_model_name(
+            'anthropic_model_verification', PROVIDERS['anthropic']['default_models']['verification'])
+        try:
+            response_text = await self._create_text(model_name, _verification_prompt())
+            return _challenge_from_data(_parse_json_response(response_text))
+        except Exception as e:
+            print(f"Claude 生成验证问题失败: {e}")
+            return _get_local_question()
+
+    async def generate_unblock_question(self) -> dict:
+        return await self.generate_verification_challenge()
+
+    async def generate_autoreply(
+        self, user_message: str, knowledge_base_content: str, personality_md: str = '',
+    ) -> str:
+        model_name = await self._get_model_name(
+            'anthropic_model_autoreply', PROVIDERS['anthropic']['default_models']['autoreply'])
+        if not knowledge_base_content or knowledge_base_content.strip() == "":
+            return None
+
+        # 人设规则与知识库都是运营方内容，放进 system；客人的消息单独作为 user 轮
+        system_prompt = "\n".join([
+            _build_autoreply_persona_rules(personality_md),
+            "",
+            AUTOREPLY_KB_LABEL,
+            knowledge_base_content,
+        ])
+        try:
+            response_text = await self._create_text(model_name, user_message, system=system_prompt)
+            if not response_text:
+                return None
+            if _is_knowledge_miss(response_text):
+                # 答不上来时把「管理员女仆长会来回复」的承诺送到客人面前
+                return KNOWLEDGE_MISS_REPLY
+            return response_text
+        except Exception as e:
+            print(f"Claude 自动回复生成失败: {e}")
+            return None
+
+    async def ping(self, model: str) -> str:
+        return await self._create_text(model, PING_PROMPT, max_tokens=1024)
+
+    async def get_models(self) -> list:
+        fetched_models = []
+        try:
+            async for model in self.client.models.list():
+                fetched_models.append(getattr(model, 'id', None))
+        except Exception as e:
+            print(f"Failed to list Claude models: {e}")
+        return _unique_model_names(fetched_models)
+
+
+PROVIDER_CLASSES = {
+    'gemini': GeminiProvider,
+    'openai': OpenAIProvider,
+    'anthropic': AnthropicProvider,
+}
+
+
 # 模块级 AI client 单例缓存：避免每次调用都新建 httpx 连接池（连接泄漏）
 _provider_cache = {}  # provider_type -> AIProvider 实例
 
@@ -567,7 +697,13 @@ def _close_provider(provider) -> None:
     close = getattr(client, 'close', None)
     if callable(close):
         try:
-            close()
+            result = close()
+            # AsyncOpenAI / AsyncAnthropic 的 close() 是协程，需要交给事件循环执行
+            if inspect.isawaitable(result):
+                try:
+                    asyncio.get_running_loop().create_task(result)
+                except RuntimeError:
+                    result.close()
         except Exception as e:
             print(f"关闭 AI client 失败: {e}")
 
@@ -580,10 +716,7 @@ def _get_cached_provider(provider_type: str, api_key: str, base_url: str = None)
     # 配置变更或首次创建：先关闭旧实例，避免连接池泄漏
     if cached is not None:
         _close_provider(cached)
-    if provider_type == 'gemini':
-        cached = GeminiProvider(api_key, base_url)
-    else:
-        cached = OpenAIProvider(api_key, base_url or "")
+    cached = PROVIDER_CLASSES[provider_type](api_key, base_url)
     _provider_cache[provider_type] = cached
     return cached
 
@@ -604,21 +737,24 @@ class AIService:
             cls._instance.provider = None
         return cls._instance
 
-    async def get_provider(self) -> AIProvider:
+    async def get_current_provider_type(self) -> str:
         async with db_manager.get_connection() as db:
             cursor = await db.execute("SELECT value FROM settings WHERE key = 'ai_provider'")
             row = await cursor.fetchone()
-            provider_type = row[0] if row else 'gemini'
-        
-        if provider_type == 'gemini':
-            if not config.GEMINI_API_KEY:
-                return None
-            return _get_cached_provider('gemini', config.GEMINI_API_KEY, config.GEMINI_BASE_URL)
-        elif provider_type == 'openai':
-            if not config.OPENAI_API_KEY:
-                return None
-            return _get_cached_provider('openai', config.OPENAI_API_KEY, config.OPENAI_BASE_URL)
-        return None
+        provider_type = row[0] if row and row[0] else 'gemini'
+        return provider_type if provider_type in PROVIDERS else 'gemini'
+
+    def get_provider_by_type(self, provider_type: str):
+        """按协议取 provider；未知协议或未配置 API Key 时返回 None。"""
+        if provider_type not in PROVIDERS:
+            return None
+        api_key, base_url = provider_credentials(provider_type)
+        if not api_key:
+            return None
+        return _get_cached_provider(provider_type, api_key, base_url)
+
+    async def get_provider(self) -> AIProvider:
+        return self.get_provider_by_type(await self.get_current_provider_type())
 
     async def analyze_message(self, message, image_bytes: bytes = None) -> dict:
         if not config.ENABLE_AI_FILTER:
@@ -658,12 +794,27 @@ class AIService:
         return await provider.generate_autoreply(user_message, knowledge_base_content, personality_md or '')
 
     async def get_available_models(self, provider_type: str) -> list:
-        if provider_type == 'gemini':
-            if not config.GEMINI_API_KEY: return []
-            return await _get_cached_provider('gemini', config.GEMINI_API_KEY, config.GEMINI_BASE_URL).get_models()
-        elif provider_type == 'openai':
-            if not config.OPENAI_API_KEY: return []
-            return await _get_cached_provider('openai', config.OPENAI_API_KEY, config.OPENAI_BASE_URL).get_models()
-        return []
+        provider = self.get_provider_by_type(provider_type)
+        if not provider:
+            return []
+        return await provider.get_models()
+
+    async def test_connection(self, provider_type: str, model: str = None) -> dict:
+        """用自动回复模型（或指定模型）发一条极短请求，返回耗时与回复；失败直接抛异常。"""
+        provider = self.get_provider_by_type(provider_type)
+        if not provider:
+            raise ValueError('请先配置该提供商的 API Key')
+        if not model:
+            model = await provider._get_model_name(
+                model_setting_key(provider_type, 'autoreply'),
+                PROVIDERS[provider_type]['default_models']['autoreply'],
+            )
+        started = time.monotonic()
+        reply = await provider.ping(model)
+        return {
+            'model': model,
+            'latency_ms': int((time.monotonic() - started) * 1000),
+            'reply': (reply or '')[:200],
+        }
 
 ai_service = AIService()

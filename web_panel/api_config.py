@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 routes = web.RouteTableDef()
 
 # 修改这些键后需要清空 AI 客户端缓存，让新密钥/地址立即生效
-AI_CLIENT_KEYS = {'GEMINI_API_KEY', 'GEMINI_BASE_URL', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'}
+AI_CLIENT_KEYS = {
+    'GEMINI_API_KEY', 'GEMINI_BASE_URL',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL',
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL',
+}
 PASSWORD_CONFIG_KEYS = {'WEB_PANEL_PASSWORD', 'WEB_PANEL_PASSWORD_SHA256'}
 
 
@@ -74,6 +78,11 @@ def _item_state(meta: dict) -> dict:
         original = _serialize(config.get_env_value(key))
         item['original_value'] = _mask(original) if secret else original
     return item
+
+
+def item_state(key: str) -> dict:
+    """按键取配置项的展示状态（敏感值只给掩码），供其他接口复用。"""
+    return _item_state(config_meta.META_BY_KEY[key])
 
 
 def _clear_ai_cache_if_needed(key: str) -> None:

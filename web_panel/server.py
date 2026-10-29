@@ -46,6 +46,9 @@ async def security_headers_middleware(request, handler):
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'no-referrer')
     response.headers.setdefault('Content-Security-Policy', CONTENT_SECURITY_POLICY)
+    # 前端资源不带版本号，要求浏览器每次按 ETag/Last-Modified 校验，更新后不会继续用旧样式
+    if request.path.startswith('/static/'):
+        response.headers.setdefault('Cache-Control', 'no-cache')
     return response
 
 

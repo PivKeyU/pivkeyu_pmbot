@@ -9,7 +9,6 @@ from telegram.error import BadRequest, TelegramError
 from config import config
 from database import models as db
 from services import blacklist as blacklist_service
-from utils.reactions import seen_reaction
 from . import events, http_utils, keys
 
 logger = logging.getLogger(__name__)
@@ -115,10 +114,8 @@ async def reply_to_user(request):
 
     thread_id = await _ensure_user_thread(bot, user)
     mirror = None
-    mirror_prefix = '（Web 面板回复）\n'
-    mirror_text = f'{mirror_prefix}{text}'
-    if len(mirror_text) > 4096:
-        mirror_text = f'{mirror_prefix}{text[:4096 - len(mirror_prefix) - 1]}…'
+    # 镜像到论坛话题时原样转发，不加任何来源前缀
+    mirror_text = text
 
     if thread_id and config.FORUM_GROUP_ID:
         try:
@@ -161,20 +158,6 @@ async def reply_to_user(request):
         direction='admin_to_user',
         thread_id=thread_id,
     )
-
-    if mirror:
-        try:
-            await bot.set_message_reaction(
-                chat_id=config.FORUM_GROUP_ID,
-                message_id=mirror.message_id,
-                reaction=seen_reaction(),
-            )
-        except Exception as exc:
-            # 表情只是尽力而为的已读标记。此刻消息已经发给用户和论坛了，
-            # 这里再抛异常会让面板收到 500，并让下面的落库/推送全部跳过，
-            # 所以任何失败都只记日志。
-            logger.warning('Web 面板回复设置已读表情失败: %s', exc)
-        await db.add_read_receipt(user_id, mirror.message_id, thread_id)
 
     await db.save_message(
         user_id=user_id,

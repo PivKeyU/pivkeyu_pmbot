@@ -254,15 +254,14 @@ BTN_BACK_RSS = '回 RSS 控制台'  # 3 处
 
 BTN_BACK_AI = '回模型衣柜'  # 3 处
 
-def btn_ai_enable_gemini(is_current) -> str:
-    """AI 设置按钮：把当前提供商标记为 Gemini（选中时带勾）。"""
+def btn_ai_enable(label: str, is_current) -> str:
+    """AI 设置按钮：把当前提供商切换为某个协议（选中时带勾）。"""
     mark = '✅ ' if is_current else ''
-    return '{mark}启用 Gemini'.format(mark=mark)
+    return '{mark}启用 {label}'.format(mark=mark, label=label)
 
-def btn_ai_enable_openai(is_current) -> str:
-    """AI 设置按钮：把当前提供商标记为 OpenAI（选中时带勾）。"""
-    mark = '✅ ' if is_current else ''
-    return '{mark}启用 OpenAI'.format(mark=mark)
+def btn_ai_models(short_name: str) -> str:
+    """AI 设置按钮：整理某个协议的分功能模型。"""
+    return '整理 {name} 模型'.format(name=short_name)
 
 def btn_admin_unblock(first_name: str) -> str:
     """黑名单/通行证列表按钮：为某个主人开门。"""
@@ -275,10 +274,6 @@ BTN_BACK_TG_MONITOR = '回 TG 监听'  # 2 处
 BTN_BACK_KB_LIST = '回小本本列表'  # 2 处
 
 BTN_BACK_BROADCAST = '回广播与分组'  # 2 处
-
-BTN_AI_MODELS_GEMINI = '整理 Gemini 模型'  # 2 处
-
-BTN_AI_MODELS_OPENAI = '整理 OpenAI 模型'  # 2 处
 
 BTN_BACK = '返回'  # 2 处
 

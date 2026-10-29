@@ -16,6 +16,22 @@ import toolsPage from './pages/tools.js';
 
 const root = document.getElementById('app');
 
+// 项目署名：与 utils/about.py 保持一致
+const ABOUT = {
+  author: '片刻月',
+  authorUrl: 'https://github.com/PivKeyU',
+  repoUrl: 'https://github.com/PivKeyU/pivkeyu_pmbot',
+};
+
+function authorCredit(extraClass = '') {
+  return el('div', { class: `credit ${extraClass}`.trim() },
+    '本女仆由伟大的 ',
+    el('a', { href: ABOUT.authorUrl, target: '_blank', rel: 'noopener' }, ABOUT.author),
+    ' 创造 · ',
+    el('a', { href: ABOUT.repoUrl, target: '_blank', rel: 'noopener' }, 'GitHub'),
+  );
+}
+
 const NAV = [
   { group: '总览', items: [
     { id: 'overview', label: '仪表盘', icon: '📊', page: overview },
@@ -96,6 +112,7 @@ function renderLogin(errorText = '') {
       el('div', { class: 'field' }, passwordInput),
       errorNode,
       submitButton,
+      authorCredit(),
     ),
   ));
   passwordInput.focus();
@@ -138,11 +155,14 @@ function renderShell() {
             renderLogin();
           },
         }, '女仆先退下了'),
+        authorCredit('on-dark'),
       ),
     ),
     el('div', { class: 'main' },
       el('div', { class: 'topbar' }, titleNode, el('div', {}, wsDot, ' ', hintNode)),
       contentNode,
+      // 窄屏下侧栏底部会被隐藏，署名改放在内容区底部
+      authorCredit('main-credit'),
     ),
   );
 
@@ -256,6 +276,7 @@ function renderSetup(me) {
       submitButton,
       el('p', { class: 'muted small', style: { marginTop: '12px' } },
         '密码只保存 SHA256 摘要，不会以明文落盘；登录后可在「配置中心 → 修改面板密码」随时更改。'),
+      authorCredit(),
     ),
   ));
   passwordInput.focus();
@@ -279,6 +300,7 @@ function renderLocked() {
       el('div', { style: { marginTop: '16px' } },
         el('button', { class: 'btn primary', onClick: () => boot() }, '我弄好了，再检查一次'),
       ),
+      authorCredit(),
     ),
   ));
 }

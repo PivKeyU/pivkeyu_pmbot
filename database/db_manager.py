@@ -208,7 +208,6 @@ class DatabaseManager:
             await self.create_user_groups_table(db)
             await self.create_message_mappings_table(db)
             await self.create_broadcasts_table(db)
-            await self.create_read_receipts_table(db)
             await self.create_spam_keywords_table(db)
             await self.create_runtime_status_table(db)
             await self.create_tg_group_monitors_table(db)
@@ -326,7 +325,7 @@ class DatabaseManager:
             ('ai_filter_enabled', '1', '是否启用AI垃圾消息过滤 (1=是, 0=否)'),
             ('max_message_length', '4096', '允许接收的最大消息长度'),
             ('queue_max_size', '1000', '内部消息处理队列的最大容量'),
-            ('ai_provider', 'gemini', '当前使用的AI提供商 (gemini, openai)'),
+            ('ai_provider', 'gemini', '当前使用的AI提供商 (gemini, openai, anthropic)'),
             
             ('gemini_model_filter', 'gemini-2.5-flash', 'Gemini 内容审查模型'),
             ('gemini_model_verification', 'gemini-2.5-flash-lite', 'Gemini 验证码生成模型'),
@@ -334,7 +333,11 @@ class DatabaseManager:
 
             ('openai_model_filter', 'gpt-4.1', 'OpenAI 内容审查模型'),
             ('openai_model_verification', 'gpt-4.1-mini', 'OpenAI 验证码生成模型'),
-            ('openai_model_autoreply', 'gpt-4.1', 'OpenAI 自动回复模型')
+            ('openai_model_autoreply', 'gpt-4.1', 'OpenAI 自动回复模型'),
+
+            ('anthropic_model_filter', 'claude-opus-5-5', 'Claude 内容审查模型'),
+            ('anthropic_model_verification', 'claude-opus-5-5', 'Claude 验证码生成模型'),
+            ('anthropic_model_autoreply', 'claude-opus-5-5', 'Claude 自动回复模型'),
         ]
         for key, value, description in default_settings:
             await db.execute(
@@ -490,22 +493,6 @@ class DatabaseManager:
         ''')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_broadcast ON broadcast_deliveries(broadcast_id)')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_user ON broadcast_deliveries(user_id)')
-
-    async def create_read_receipts_table(self, db):
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS read_receipts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                forum_message_id INTEGER NOT NULL,
-                thread_id INTEGER NOT NULL,
-                is_read INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                read_at TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-        ''')
-        await db.execute('CREATE INDEX IF NOT EXISTS idx_read_receipts_user_unread ON read_receipts(user_id, is_read)')
-        await db.execute('CREATE INDEX IF NOT EXISTS idx_read_receipts_thread ON read_receipts(thread_id)')
 
     async def create_spam_keywords_table(self, db):
         await db.execute('''
@@ -688,6 +675,10 @@ class DatabaseManager:
             await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('openai_model_filter', 'gpt-4.1', 'OpenAI 内容审查模型'))
             await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('openai_model_verification', 'gpt-4.1-mini', 'OpenAI 验证码生成模型'))
             await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('openai_model_autoreply', 'gpt-4.1', 'OpenAI 自动回复模型'))
+
+            await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('anthropic_model_filter', 'claude-opus-5-5', 'Claude 内容审查模型'))
+            await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('anthropic_model_verification', 'claude-opus-5-5', 'Claude 验证码生成模型'))
+            await db.execute('INSERT OR IGNORE INTO settings (key, value, description) VALUES (?, ?, ?)', ('anthropic_model_autoreply', 'claude-opus-5-5', 'Claude 自动回复模型'))
 
             await db.execute("DELETE FROM settings WHERE key IN ('openai_model', 'gemini_model')")
 

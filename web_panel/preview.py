@@ -20,6 +20,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 import config_meta
+from services.ai_providers import AI_FEATURES, PROVIDERS, all_model_setting_keys, model_setting_key
 
 STATIC_DIR = Path(__file__).parent / 'static'
 
@@ -59,7 +60,7 @@ STORE = {
             {'id': 1, 'message_id': 1, 'thread_id': 11, 'content': '女仆小姐，晚上好呀～',
              'media_type': None, 'media_file_id': None, 'direction': 'user_to_admin',
              'dest_message_id': 101, 'created_at': _now()},
-            {'id': 2, 'message_id': 2, 'thread_id': 11, 'content': '（Web 面板回复）晚上好，主人～今晚有红烧肉哦。',
+            {'id': 2, 'message_id': 2, 'thread_id': 11, 'content': '晚上好，主人～今晚有红烧肉哦。',
              'media_type': None, 'media_file_id': None, 'direction': 'admin_to_user',
              'dest_message_id': None, 'created_at': _now()},
             {'id': 3, 'message_id': 3, 'thread_id': 11, 'content': '哇！那我要吃两碗！',
@@ -130,12 +131,9 @@ STORE = {
     'ai': {
         'provider': 'gemini',
         'models': {
-            'gemini_model_filter': 'gemini-2.5-flash', 'gemini_model_verification': 'gemini-2.5-flash-lite',
-            'gemini_model_autoreply': 'gemini-2.5-flash', 'openai_model_filter': 'gpt-4.1',
-            'openai_model_verification': 'gpt-4.1-mini', 'openai_model_autoreply': 'gpt-4.1',
+            model_setting_key(p, f): meta['default_models'][f]
+            for p, meta in PROVIDERS.items() for f in AI_FEATURES
         },
-        'keys': {'gemini_configured': True, 'openai_configured': False,
-                 'gemini_base_url': '', 'openai_base_url': 'https://api.openai.com/v1'},
     },
     'config_values': {
         'BOT_TOKEN': '123456:FAKE-TOKEN-example', 'FORUM_GROUP_ID': '-1001234567890',
@@ -323,7 +321,7 @@ async def reply(request):
         return web.json_response({'ok': False, 'error': '回复内容不能为空'}, status=400)
     STORE['messages'].setdefault(user_id, []).append(
         {'id': int(time.time()), 'message_id': int(time.time()) % 100000, 'thread_id': 11,
-         'content': f'（Web 面板回复）{text}', 'media_type': None, 'media_file_id': None,
+         'content': text, 'media_type': None, 'media_file_id': None,
          'direction': 'admin_to_user', 'dest_message_id': None, 'created_at': _now()})
     return _ok({'message_id': 1, 'mirrored': True})
 
@@ -525,21 +523,44 @@ async def clear_keywords(request):
 # AI 设置
 # --------------------------------------------------------------------------- #
 
+def _ai_settings_payload():
+    providers = []
+    for provider_type, meta in PROVIDERS.items():
+        key_item = _config_item(config_meta.META_BY_KEY[meta['key_env']])
+        base_item = _config_item(config_meta.META_BY_KEY[meta['base_env']])
+        providers.append({
+            'id': provider_type, 'label': meta['label'], 'protocol': meta['protocol'],
+            'key_env': meta['key_env'], 'base_env': meta['base_env'],
+            'configured': key_item['has_value'], 'key': key_item,
+            'base_url': base_item['value'], 'presets': meta['presets'],
+            'model_keys': {f: model_setting_key(provider_type, f) for f in AI_FEATURES},
+            'default_models': meta['default_models'],
+        })
+    return {**STORE['ai'], 'providers': providers}
+
+
 @routes.get('/api/ai-settings')
 async def ai_settings(request):
-    return _ok(STORE['ai'])
+    return _ok(_ai_settings_payload())
 
 
 @routes.get('/api/ai-models')
 async def ai_models(request):
     provider = (request.query.get('provider') or 'gemini').strip().lower()
-    if provider == 'gemini':
-        models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro']
-    elif provider == 'openai':
-        models = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano']
-    else:
-        return web.json_response({'ok': False, 'error': 'provider 只允许 gemini 或 openai'}, status=400)
-    return _ok({'provider': provider, 'models': models})
+    if provider not in PROVIDERS:
+        return web.json_response({'ok': False, 'error': f"provider 只允许 {' / '.join(PROVIDERS)}"}, status=400)
+    defaults = PROVIDERS[provider]['default_models']
+    return _ok({'provider': provider, 'models': sorted(set(defaults.values())) + [f'{provider}-preview-model']})
+
+
+@routes.post('/api/ai-test')
+async def ai_test(request):
+    body = await request.json()
+    provider = body.get('provider')
+    if provider not in PROVIDERS:
+        return web.json_response({'ok': False, 'error': '未知提供商'}, status=400)
+    model = body.get('model') or PROVIDERS[provider]['default_models']['autoreply']
+    return _ok({'provider': provider, 'model': model, 'latency_ms': 321, 'reply': 'OK（预览模式模拟回复）'})
 
 
 @routes.put('/api/ai-settings')
@@ -548,9 +569,9 @@ async def put_ai_settings(request):
     if body.get('provider'):
         STORE['ai']['provider'] = body['provider']
     for key, value in (body.get('models') or {}).items():
-        if key in STORE['ai']['models'] and value:
+        if key in all_model_setting_keys() and value:
             STORE['ai']['models'][key] = value
-    return _ok(STORE['ai'])
+    return _ok(_ai_settings_payload())
 
 
 # --------------------------------------------------------------------------- #

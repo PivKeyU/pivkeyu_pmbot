@@ -47,7 +47,7 @@ function messageNode(message) {
   if (media) bubble.appendChild(media);
   if (!message.content && !media) bubble.appendChild(el('div', { class: 'muted small' }, '（空消息）'));
   return el('div', { class: `msg ${out ? 'out' : ''}`.trim() },
-    el('div', {},
+    el('div', { class: 'msg-col' },
       bubble,
       el('div', { class: 'meta' }, `${out ? '管理员' : '用户'} · ${fmtTime(message.created_at)}`),
     ),

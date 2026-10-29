@@ -10,6 +10,7 @@ from services import broadcast as broadcast_service, safe_update, spam_filter, t
 from utils.decorators import admin_only
 from config import config
 from utils import copy as copy_text
+from utils import about
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -30,7 +31,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "输入 /help 可以查看女仆小手册。"
     )
     
-    await update.message.reply_text(copy_text.with_deco_head(welcome_message, 'GREET'))
+    await update.message.reply_text(
+        f"{copy_text.with_deco_head(welcome_message, 'GREET')}\n\n{about.signature_plain()}",
+        disable_web_page_preview=True,
+    )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -55,7 +59,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/updatebot` - 安全检查/更新/回滚本地代码\n"
     )
     
-    await update.message.reply_text(copy_text.with_deco_head(help_text, 'GREET'), parse_mode='Markdown')
+    await update.message.reply_text(
+        f"{copy_text.with_deco_head(help_text, 'GREET')}\n{about.signature_markdown()}",
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
+    )
 
 @admin_only
 async def blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,7 +246,8 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"黑名单里的捣乱者: {blocked_users}\n"
         f"持有通行证的主人: {exempted_users}\n"
         f"自动回复女仆: {'正在值班' if is_enabled else '正在休息'}\n\n"
-        f"主人，请挑选要打理的事项："
+        f"主人，请挑选要打理的事项：\n\n"
+        f"{about.signature_markdown()}"
     )
     
     keyboard = [
@@ -255,7 +264,8 @@ async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         message,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
     )
 
 

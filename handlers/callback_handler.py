@@ -7,6 +7,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMe
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
 from services.verification import verify_answer, create_verification, send_verification_prompt
+from services import moderation
+from services.thread_manager import ensure_user_thread
 from services.gemini_service import gemini_service
 from database import models as db
 from utils.media_converter import sticker_to_image
@@ -547,6 +549,43 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             return
 
+    if data == "appeal_req":
+        # 客人在私聊里点「申请暂停审查」
+        submitted, notice = await moderation.create_appeal(
+            context.bot, user_id, lambda user: ensure_user_thread(context.bot, user))
+        if submitted:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except BadRequest:
+                pass
+        await answer_callback(notice, show_alert=True)
+        return
+
+    if data.startswith(("appeal_ok:", "appeal_no:", "appeal_custom:")):
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
+        parts = data.split(":")
+        appeal = await db.get_review_appeal(int(parts[1]))
+        if not appeal or appeal['status'] != 'pending':
+            await answer_callback(copy_text.with_deco("这条申请已经处理过啦。", 'ERROR'), show_alert=True)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except BadRequest:
+                pass
+            return
+        if parts[0] == "appeal_ok":
+            result = await moderation.grant_review_pause(
+                context.bot, appeal['user_id'], int(parts[2]), user_id, 'TG 话题')
+            await answer_callback(copy_text.with_deco(f"已暂停审查 {result['duration_text']}。", 'OK'))
+        elif parts[0] == "appeal_no":
+            await moderation.reject_appeal(context.bot, appeal['user_id'], user_id, 'TG 话题')
+            await answer_callback(copy_text.with_deco("已拒绝这条申请。", 'OK'))
+        else:
+            await moderation.ask_custom_duration(context.bot, context.application, appeal)
+            await answer_callback(copy_text.with_deco("请回复女仆刚发的那条消息，告诉女仆要暂停多久。", 'ASK'))
+        return
+
     if data.startswith("verify_"):
         answer = data.split("_", 1)[1]
         success, message, is_banned, new_prompt = await verify_answer(user_id, answer)
@@ -605,7 +644,10 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                             media_file_id=media_file_id,
                         )
                         reason = analysis_result.get("reason", "暂时没有写明理由")
-                        await analyzing_message.edit_text(copy_text.msg_blocked(reason))
+                        await analyzing_message.edit_text(
+                            copy_text.msg_blocked(reason),
+                            reply_markup=await moderation.blocked_reply_markup(reason),
+                        )
                     else:
                         await analyzing_message.delete()
 

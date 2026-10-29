@@ -9,6 +9,8 @@ from telegram.error import BadRequest, TelegramError
 from config import config
 from database import models as db
 from services import blacklist as blacklist_service
+from services import moderation
+from services.thread_manager import ensure_user_thread
 from . import events, http_utils, keys
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,7 @@ async def list_conversations(request):
 async def conversation_detail(request):
     user_id = int(request.match_info['user_id'])
     user = await _get_user_or_404(user_id)
-    if not user.get('is_verified'):
+    if not await db.is_conversation_visible(user_id):
         raise web.HTTPNotFound(text='用户不存在')
     page, per_page, offset = http_utils.pagination(request, default_per=HISTORY_PAGE_SIZE, max_per=200)
 
@@ -65,33 +67,15 @@ async def conversation_detail(request):
             'created_at': user.get('created_at'),
             'last_active': user.get('last_active'),
             'exempted': await db.is_exempted(user_id),
+            'exemption': await db.get_exemption(user_id),
+            'pending_appeal': await db.get_pending_review_appeal(user_id),
         },
         'messages': http_utils.page_payload(messages, total, page, per_page),
     })
 
 
-async def _ensure_user_thread(bot, user: dict) -> int | None:
-    """确保用户在论坛群中有对应的话题 thread_id；若尚未创建则尝试新建。"""
-    thread_id = user.get('thread_id')
-    if thread_id:
-        return thread_id
-    if not config.FORUM_GROUP_ID or not hasattr(bot, 'create_forum_topic'):
-        return None
-    user_id = user['user_id']
-    first_name = user.get('first_name') or str(user_id)
-    topic_name = f'{first_name} (ID: {user_id})'
-    try:
-        topic = await bot.create_forum_topic(
-            chat_id=config.FORUM_GROUP_ID,
-            name=topic_name,
-        )
-        thread_id = topic.message_thread_id
-        await db.update_user_thread_id(user_id, thread_id)
-        user['thread_id'] = thread_id
-        return thread_id
-    except Exception as exc:
-        logger.warning('Web 面板为用户 %s 创建论坛话题失败: %s', user_id, exc)
-        return None
+# 建话题的逻辑在 services/thread_manager.py，申诉流程也要用
+_ensure_user_thread = ensure_user_thread
 
 
 @routes.post('/api/conversations/{user_id}/reply')
@@ -176,6 +160,80 @@ async def reply_to_user(request):
     )
     http_utils.audit(request, 'conversation.reply', f'user_id={user_id} 长度={len(text)}')
     return http_utils.ok({'message_id': sent.message_id, 'mirrored': bool(mirror)})
+
+
+@routes.post('/api/conversations/read-all')
+async def mark_all_read(request):
+    count = await db.mark_all_conversations_read()
+    events.publish('user_status', change='read_all')
+    http_utils.audit(request, 'conversation.read_all', f'会话数={count}')
+    return http_utils.ok({'count': count})
+
+
+@routes.post('/api/conversations/{user_id}/read')
+async def mark_read(request):
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    await db.mark_conversation_read(user_id)
+    return http_utils.ok({'user_id': user_id})
+
+
+@routes.post('/api/conversations/{user_id}/unverify')
+async def unverify_user(request):
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    await moderation.revoke_verification(user_id)
+    http_utils.audit(request, 'conversation.unverify', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id, 'is_verified': False})
+
+
+@routes.post('/api/conversations/{user_id}/verify')
+async def verify_user(request):
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    await moderation.restore_verification(user_id)
+    http_utils.audit(request, 'conversation.verify', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id, 'is_verified': True})
+
+
+@routes.post('/api/conversations/{user_id}/review-pause')
+async def pause_review(request):
+    """暂停 AI 审查：minutes 为分钟数，permanent=true 为永久。会一并批准待处理的申请并通知用户。"""
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    data = await http_utils.read_json(request)
+    if data.get('permanent'):
+        minutes = None
+    else:
+        raw = str(data.get('minutes') or data.get('duration') or '').strip()
+        minutes = moderation.parse_duration(raw)
+        if minutes is None:
+            return http_utils.fail('请填写暂停时长，例如 30、3h、2d')
+    try:
+        result = await moderation.grant_review_pause(request.app[keys.BOT_KEY], user_id, minutes, 0, 'Web 面板')
+    except ValueError as exc:
+        return http_utils.fail(str(exc))
+    http_utils.audit(request, 'conversation.review_pause', f"user_id={user_id} 时长={result['duration_text']}")
+    return http_utils.ok(result)
+
+
+@routes.delete('/api/conversations/{user_id}/review-pause')
+async def resume_review(request):
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    await moderation.resume_review(user_id)
+    http_utils.audit(request, 'conversation.review_resume', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id})
+
+
+@routes.post('/api/conversations/{user_id}/appeal/reject')
+async def reject_appeal(request):
+    user_id = int(request.match_info['user_id'])
+    await _get_user_or_404(user_id)
+    if not await moderation.reject_appeal(request.app[keys.BOT_KEY], user_id, 0, 'Web 面板'):
+        return http_utils.fail('这个用户没有待处理的申请')
+    http_utils.audit(request, 'conversation.appeal_reject', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id})
 
 
 @routes.post('/api/conversations/{user_id}/block')

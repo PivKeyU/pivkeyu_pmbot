@@ -213,6 +213,8 @@ class DatabaseManager:
             await self.create_tg_group_monitors_table(db)
             await self.create_discovered_tg_chats_table(db)
             await self.create_web_monitors_table(db)
+            await self.create_review_appeals_table(db)
+            await self.create_conversation_reads_table(db)
             await self.create_app_meta_table(db)
             await self.migrate_database(db)
             await db.commit()
@@ -493,6 +495,34 @@ class DatabaseManager:
         ''')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_broadcast ON broadcast_deliveries(broadcast_id)')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_broadcast_deliveries_user ON broadcast_deliveries(user_id)')
+
+    async def create_review_appeals_table(self, db):
+        """被 AI 误杀的用户申请「暂停审查」的记录（TG 话题按钮与 Web 面板共用）。"""
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS review_appeals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                blocked_reason TEXT,
+                topic_message_id INTEGER,
+                duration_minutes INTEGER,
+                handled_by INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                handled_at TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_review_appeals_user_status ON review_appeals(user_id, status)')
+
+    async def create_conversation_reads_table(self, db):
+        """Web 面板「标为已读」：read_at 之后没有新的用户消息，就不再显示待回复。"""
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS conversation_reads (
+                user_id INTEGER PRIMARY KEY,
+                read_at TIMESTAMP NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+        ''')
 
     async def create_spam_keywords_table(self, db):
         await db.execute('''

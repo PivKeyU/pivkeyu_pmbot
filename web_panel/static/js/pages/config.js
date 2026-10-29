@@ -72,7 +72,8 @@ function buildControl(item, onSave) {
       checked: item.value === 'true',
       onChange: (checked) => onSave(checked ? 'true' : 'false'),
     });
-    return control;
+    // 统一包一层 .controls：「还原」按钮要追加在开关旁边，而不是塞进开关里面
+    return el('div', { class: 'controls' }, control);
   }
   if (type === 'enum') {
     const select = selectInput({
@@ -80,7 +81,7 @@ function buildControl(item, onSave) {
       value: item.value,
       onChange: (value) => onSave(value),
     });
-    return el('div', { style: { maxWidth: '260px' } }, select);
+    return el('div', { class: 'controls' }, el('div', { style: { width: '260px', maxWidth: '100%' } }, select));
   }
 
   const isSecret = item.secret;
@@ -116,7 +117,7 @@ function buildControl(item, onSave) {
       },
     }, '清除'));
   }
-  return el('div', { class: 'controls' }, el('div', { style: { flex: '1', minWidth: '240px' } }, input), buttons);
+  return el('div', { class: 'controls' }, el('div', { class: 'control-input' }, input), buttons);
 }
 
 function buildItem(item, onChange) {
@@ -192,7 +193,17 @@ export default {
         byCategory.get(item.category).push(item);
       }
 
+      // AI 相关的密钥、地址与开关都集中在「AI 设置」页，这里不再重复展示
+      container.appendChild(el('div', { class: 'card' },
+        el('div', { class: 'card-head' },
+          el('h3', {}, 'AI 能力'),
+          el('a', { class: 'btn sm primary', href: '#/ai' }, '前往 AI 设置'),
+        ),
+        el('div', { class: 'muted small' }, 'API Key、Base URL、内容审查开关、思考等级与提示词都已移到「AI 设置」统一管理。'),
+      ));
+
       for (const category of data.categories) {
+        if (category.key === 'ai') continue;
         const items = byCategory.get(category.key) || [];
         if (items.length === 0) continue;
         const list = el('div', {});

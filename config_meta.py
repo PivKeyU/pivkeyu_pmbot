@@ -82,11 +82,6 @@ META = [
         'label': '启用 AI 内容审查', 'hint': '关闭后不再对私聊消息做 AI 垃圾审查',
         'default': 'true', 'restart': False,
     },
-    {
-        'key': 'AI_CONFIDENCE_THRESHOLD', 'type': 'int', 'category': 'ai',
-        'label': 'AI 判定阈值', 'hint': '置信度达到该值才判为垃圾消息（0-100）',
-        'default': '70', 'restart': False, 'min': 0, 'max': 100,
-    },
 
     # --- 安全与验证 ---
     {

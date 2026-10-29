@@ -57,67 +57,13 @@ export default {
 
     async function loadAutoreply() {
       clear(replyCard);
-      replyCard.appendChild(spinner());
-      let data;
-      try {
-        data = await api.get('/api/autoreply');
-      } catch (err) {
-        clear(replyCard);
-        replyCard.appendChild(el('div', {}, err.message));
-        return;
-      }
-      clear(replyCard);
+      // 自动回复开关、人格.md 与模型参数都在「AI 设置」统一管理，这里只保留知识库
       replyCard.appendChild(el('div', { class: 'card-head' },
         el('h3', {}, 'AI 自动回复'),
-        switchBox({
-          checked: data.enabled,
-          onChange: async (checked) => {
-            try {
-              await api.put('/api/autoreply', { enabled: checked });
-              toast(checked ? '自动回复已开启' : '自动回复已关闭', 'ok');
-            } catch (err) {
-              toast(err.message, 'error');
-              loadAutoreply();
-            }
-          },
-        }),
+        el('a', { class: 'btn sm primary', href: '#/ai' }, '前往 AI 设置'),
       ));
-      replyCard.appendChild(el('div', { class: 'muted small' }, '开启后，AI 会依据下面的知识库内容自动回复用户私聊。'));
-
-      const personalityInput = el('textarea', {
-        class: 'input',
-        rows: '14',
-        maxlength: '20000',
-        placeholder: '# 人格设定\n写下称呼、语气、性格和表达习惯。留空时使用默认女仆人格。',
-        style: { fontFamily: 'var(--font-mono, monospace)', lineHeight: '1.6' },
-      });
-      personalityInput.value = data.personality_md || '';
-      const personalityCount = el('span', { class: 'muted small' }, `${personalityInput.value.length} / 20000`);
-      personalityInput.addEventListener('input', () => {
-        personalityCount.textContent = `${personalityInput.value.length} / 20000`;
-      });
-      const savePersonality = el('button', { class: 'btn sm primary' }, '保存人格.md');
-      savePersonality.addEventListener('click', async () => {
-        savePersonality.disabled = true;
-        try {
-          const updated = await api.put('/api/autoreply', { personality_md: personalityInput.value });
-          data.personality_md = updated.personality_md;
-          toast('人格.md 已保存', 'ok');
-        } catch (err) {
-          toast(err.message, 'error');
-        } finally {
-          savePersonality.disabled = false;
-        }
-      });
-      replyCard.appendChild(el('div', { class: 'field', style: { marginTop: '14px' } },
-        el('label', {}, '人格.md（自动回复角色设定）'),
-        el('div', { class: 'muted small' }, '支持 Markdown，留空时使用默认人格。人格只调整表达风格，知识库回答和未命中兜底规则保持固定。'),
-        personalityInput,
-        el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', marginTop: '8px' } },
-          savePersonality,
-          personalityCount,
-        ),
-      ));
+      replyCard.appendChild(el('div', { class: 'muted small' },
+        '自动回复的开关、人格.md 与模型参数已移到「AI 设置」。下面的知识库是自动回复的答题依据。'));
     }
 
     /* ---------------- 知识库 ---------------- */

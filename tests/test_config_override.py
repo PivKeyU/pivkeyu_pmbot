@@ -51,10 +51,10 @@ def test_enum_validation():
 
 def test_int_bounds_validation():
     with pytest.raises(ValueError):
-        config.apply_override('AI_CONFIDENCE_THRESHOLD', '140')
+        config.apply_override('MAX_VERIFICATION_ATTEMPTS', '140')
     with pytest.raises(ValueError):
         config.apply_override('WEB_PANEL_PORT', '0')
-    config.clear_override('AI_CONFIDENCE_THRESHOLD')
+    config.clear_override('MAX_VERIFICATION_ATTEMPTS')
 
 
 def test_unknown_key_raises():
@@ -64,11 +64,11 @@ def test_unknown_key_raises():
 
 def test_override_priority_over_env_default():
     """覆盖值优先于 .env；还原后回到原值（不残留覆盖标记）。"""
-    original = config.AI_CONFIDENCE_THRESHOLD
+    original = config.MAX_VERIFICATION_ATTEMPTS
     try:
-        config.apply_override('AI_CONFIDENCE_THRESHOLD', '55')
-        assert config.AI_CONFIDENCE_THRESHOLD == 55
-        assert config.get_env_value('AI_CONFIDENCE_THRESHOLD') == original
+        config.apply_override('MAX_VERIFICATION_ATTEMPTS', '5')
+        assert config.MAX_VERIFICATION_ATTEMPTS == 5
+        assert config.get_env_value('MAX_VERIFICATION_ATTEMPTS') == original
     finally:
-        config.clear_override('AI_CONFIDENCE_THRESHOLD')
-    assert config.AI_CONFIDENCE_THRESHOLD == original
+        config.clear_override('MAX_VERIFICATION_ATTEMPTS')
+    assert config.MAX_VERIFICATION_ATTEMPTS == original

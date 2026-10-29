@@ -1,5 +1,6 @@
 """aiohttp 应用：中间件（错误兜底、安全响应头、认证与 CSRF）与静态资源托管。"""
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -46,8 +47,10 @@ async def security_headers_middleware(request, handler):
     response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'no-referrer')
     response.headers.setdefault('Content-Security-Policy', CONTENT_SECURITY_POLICY)
-    # 前端资源不带版本号，要求浏览器每次按 ETag/Last-Modified 校验，更新后不会继续用旧样式
-    if request.path.startswith('/static/'):
+    if request.path.startswith(VERSIONED_STATIC_PREFIX):
+        # 带版本号的路径内容永不变化：版本号随文件内容变，更新后自然换成新地址
+        response.headers.setdefault('Cache-Control', 'public, max-age=31536000, immutable')
+    elif request.path.startswith('/static/'):
         response.headers.setdefault('Cache-Control', 'no-cache')
     return response
 
@@ -87,11 +90,36 @@ async def auth_middleware(request, handler):
     return await handler(request)
 
 
-async def index_handler(request):
-    index_path = STATIC_DIR / 'index.html'
+VERSIONED_STATIC_PREFIX = '/static/v-'
+
+
+def compute_asset_version(static_dir: Path = STATIC_DIR) -> str:
+    """按静态文件内容算版本号：任何 CSS / JS 改动都会得到新版本号。"""
+    digest = hashlib.sha1()
+    for path in sorted(static_dir.rglob('*')):
+        if path.is_file() and path.name != 'index.html':
+            digest.update(str(path.relative_to(static_dir)).encode('utf-8'))
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:10]
+
+
+def render_index(version: str, static_dir: Path = STATIC_DIR):
+    """把 index.html 里的 /static/ 换成带版本号的路径。JS 模块之间用相对路径互相引用，
+    所以入口带上版本号后，整棵模块树都会从新地址加载，浏览器不可能混用新旧文件。"""
+    index_path = static_dir / 'index.html'
     if not index_path.exists():
-        return http_utils.fail('面板静态资源缺失', status=500)
-    return web.FileResponse(index_path, headers={'Cache-Control': 'no-cache'})
+        return None
+    html = index_path.read_text(encoding='utf-8')
+    return html.replace('"/static/', f'"{VERSIONED_STATIC_PREFIX}{version}/')
+
+
+def make_index_handler(version: str):
+    async def index_handler(request):
+        html = render_index(version)
+        if html is None:
+            return http_utils.fail('面板静态资源缺失', status=500)
+        return web.Response(text=html, content_type='text/html', headers={'Cache-Control': 'no-cache'})
+    return index_handler
 
 
 def create_app(bot, http_session) -> web.Application:
@@ -108,6 +136,8 @@ def create_app(bot, http_session) -> web.Application:
     app.add_routes(api_conversations.routes)
     app.add_routes(api_admin.routes)
     app.add_routes(ws.routes)
-    app.router.add_get('/', index_handler)
+    asset_version = compute_asset_version()
+    app.router.add_get('/', make_index_handler(asset_version))
+    app.router.add_static(f'{VERSIONED_STATIC_PREFIX}{asset_version}/', STATIC_DIR, name='static_versioned')
     app.router.add_static('/static/', STATIC_DIR, name='static')
     return app

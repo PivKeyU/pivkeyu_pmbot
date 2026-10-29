@@ -10,7 +10,7 @@ from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
 from utils.message_sender import edit_message_by_type, send_message_by_type
 from services.rate_limiter import rate_limiter
-from services import spam_filter
+from services import moderation, spam_filter
 from config import config
 from utils import copy as copy_text
 from web_panel import events as panel_events
@@ -288,7 +288,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
                 )
                 reason = analysis_result.get("reason", "暂时没有写明理由")
-                await analyzing_message.edit_text(copy_text.msg_blocked(reason))
+                await analyzing_message.edit_text(
+                    copy_text.msg_blocked(reason),
+                    reply_markup=await moderation.blocked_reply_markup(reason),
+                )
+                # 开启「AI 自动撤销验证」时，短时间内多次违规就收回验证结果
+                if await moderation.maybe_auto_revoke(context.bot, user.id):
+                    await update.message.reply_text(copy_text.with_deco(
+                        '客人最近被拦下的次数有点多，女仆先收回验证结果啦，下次发消息要重新答题哦。', 'BLOCK'))
                 return
             else:
                 await analyzing_message.delete()

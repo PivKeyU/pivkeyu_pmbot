@@ -2,7 +2,7 @@
 
 import { api } from '../api.js';
 import * as bus from '../bus.js';
-import { el, clear, spinner, toast, badge, confirmDialog, fmtTime, fmtRelative, pager } from '../ui.js';
+import { el, clear, spinner, toast, badge, confirmDialog, modal, fmtTime, fmtRelative, pager } from '../ui.js';
 
 const PAGE_SIZE = 30;
 const HISTORY_SIZE = 50;
@@ -19,8 +19,59 @@ function userBadges(user) {
   const nodes = [];
   if (user.is_blacklisted) nodes.push(badge(user.blacklist_permanent ? '永久拉黑' : '黑名单', 'danger'));
   if (!user.is_verified) nodes.push(badge('未验证', 'warn'));
-  if (user.exempted) nodes.push(badge('通行证', 'accent'));
+  if (user.exempted) nodes.push(badge('审查已暂停', 'accent'));
+  if (user.pending_appeal) nodes.push(badge('申请暂停审查', 'warn'));
   return nodes;
+}
+
+/* 暂停审查弹窗：快捷时长 / 自定义时长 / 永久，返回 { minutes } 或 { permanent: true }，取消返回 null */
+function askPauseDuration({ title, hint }) {
+  return new Promise((resolve) => {
+    const amount = el('input', { class: 'input', type: 'number', min: '1', value: '2', style: { maxWidth: '120px' } });
+    const unit = el('select', { class: 'input', style: { maxWidth: '120px' } },
+      el('option', { value: '1' }, '分钟'),
+      el('option', { value: '60', selected: true }, '小时'),
+      el('option', { value: '1440' }, '天'),
+    );
+    const permanent = el('input', { type: 'checkbox' });
+    const errorNode = el('div', { class: 'login-error' });
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      dialog.close();
+      resolve(value);
+    };
+    const presets = [[30, '30 分钟'], [120, '2 小时'], [1440, '1 天'], [10080, '7 天']].map(([minutes, label]) =>
+      el('button', { class: 'btn sm', onClick: () => finish({ minutes }) }, label));
+    const confirmButton = el('button', {
+      class: 'btn primary',
+      onClick: () => {
+        if (permanent.checked) { finish({ permanent: true }); return; }
+        const value = Number(amount.value);
+        if (!Number.isFinite(value) || value <= 0) {
+          errorNode.textContent = '请填写大于 0 的时长';
+          return;
+        }
+        finish({ minutes: Math.round(value * Number(unit.value)) });
+      },
+    }, '确定');
+    const dialog = modal({
+      title,
+      body: el('div', {},
+        hint ? el('div', { class: 'muted small', style: { marginBottom: '12px' } }, hint) : null,
+        el('div', { class: 'field' }, el('label', {}, '快捷时长'), el('div', { class: 'row' }, presets)),
+        el('div', { class: 'field' },
+          el('label', {}, '自定义时长'),
+          el('div', { class: 'row', style: { alignItems: 'center' } }, amount, unit),
+        ),
+        el('label', { class: 'small', style: { display: 'flex', gap: '6px', alignItems: 'center' } }, permanent, '永久暂停（直到手动恢复审查）'),
+        errorNode,
+      ),
+      footer: [el('button', { class: 'btn', onClick: () => finish(null) }, '取消'), confirmButton],
+    });
+    dialog.mask.addEventListener('click', (event) => { if (event.target === dialog.mask) finish(null); });
+  });
 }
 
 function mediaNode(message) {
@@ -64,6 +115,22 @@ export default {
     state.history = { page: 1, totalPages: 1, loaded: [] };
 
     const listNode = el('div', { class: 'conv-items' });
+    const readAllButton = el('button', {
+      class: 'btn sm',
+      title: '把所有「待回复」标记清掉（在 TG 里已经回复过时使用）',
+      onClick: async () => {
+        readAllButton.disabled = true;
+        try {
+          const result = await api.post('/api/conversations/read-all');
+          toast(`已把 ${result.count} 个会话标为已读`, 'ok');
+          loadList();
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          readAllButton.disabled = false;
+        }
+      },
+    }, '全部已读');
     const listPager = el('div', {});
     const searchInput = el('input', {
       class: 'input',
@@ -84,7 +151,11 @@ export default {
     const chatPanel = el('div', { class: 'chat-panel' }, chatHead, chatBody, chatInputArea);
 
     container.appendChild(el('div', { class: 'chat-layout' },
-      el('div', { class: 'conv-list' }, el('div', { class: 'conv-search' }, searchInput), listNode, listPager),
+      el('div', { class: 'conv-list' },
+        el('div', { class: 'conv-search' }, searchInput, readAllButton),
+        listNode,
+        listPager,
+      ),
       chatPanel,
     ));
 
@@ -112,8 +183,10 @@ export default {
         const preview = item.last_content
           ? item.last_content.slice(0, 40)
           : (item.last_media_type ? `[${item.last_media_type}]` : '（还没有消息）');
-        const isUnread = item.last_direction === 'user_to_admin';
-        const badges = userBadges({ ...item, exempted: false, is_verified: !!item.is_verified });
+        const isUnread = item.is_unread !== undefined ? !!item.is_unread : item.last_direction === 'user_to_admin';
+        const badges = userBadges({
+          ...item, exempted: false, is_verified: !!item.is_verified, pending_appeal: !!item.pending_appeal,
+        });
         if (isUnread) badges.unshift(badge('待回复', 'accent'));
         const node = el('div', {
           class: `conv-item ${item.user_id === state.selectedUserId ? 'active' : ''} ${isUnread ? 'unread' : ''}`.trim(),
@@ -190,32 +263,106 @@ export default {
       }
     }
 
+    async function runAction(button, task, okText) {
+      button.disabled = true;
+      try {
+        const result = await task();
+        if (okText) toast(typeof okText === 'function' ? okText(result) : okText, 'ok');
+        loadDetail({ keepScroll: true });
+        loadList();
+      } catch (err) {
+        toast(err.message, 'error');
+        button.disabled = false;
+      }
+    }
+
+    async function pauseReview(user, appeal) {
+      const choice = await askPauseDuration({
+        title: appeal ? '批准暂停审查' : '暂停 AI 审查',
+        hint: appeal
+          ? `用户申请暂停审查。拦截理由：${appeal.blocked_reason || '（未记录）'}`
+          : '暂停期间该用户的消息不经过 AI 审查，到期自动恢复；会通知用户。',
+      });
+      if (!choice) return null;
+      return api.post(`/api/conversations/${user.user_id}/review-pause`, choice);
+    }
+
     function renderChatHead(user) {
       clear(chatHead);
-      chatHead.appendChild(el('div', {},
-        el('div', { class: 'who' }, `${user.first_name || '未知'} ${user.username ? `(@${user.username})` : ''}`),
-        el('div', { class: 'small muted' }, `ID ${user.user_id} · 线程 ${user.thread_id || '-'} · 最近活跃 ${fmtTime(user.last_active)}`),
+      const uid = user.user_id;
+      const actions = [];
+
+      const readButton = el('button', { class: 'btn sm', title: '清除这个会话的「待回复」标记' }, '标为已读');
+      readButton.addEventListener('click', () => runAction(readButton,
+        () => api.post(`/api/conversations/${uid}/read`), '已标为已读'));
+      actions.push(readButton);
+
+      if (user.exempted) {
+        const resumeButton = el('button', { class: 'btn sm' }, '恢复审查');
+        resumeButton.addEventListener('click', () => runAction(resumeButton,
+          () => api.del(`/api/conversations/${uid}/review-pause`), '已恢复 AI 审查'));
+        actions.push(resumeButton);
+      } else {
+        const pauseButton = el('button', { class: 'btn sm' }, '暂停审查');
+        pauseButton.addEventListener('click', () => runAction(pauseButton,
+          () => pauseReview(user, null), (r) => r && `已暂停审查 ${r.duration_text}`));
+        actions.push(pauseButton);
+      }
+
+      if (user.is_verified) {
+        const unverifyButton = el('button', { class: 'btn sm', title: '收回验证结果，用户下次发消息要重新验证' }, '撤销验证');
+        unverifyButton.addEventListener('click', async () => {
+          if (!(await confirmDialog({
+            title: '撤销验证',
+            message: `收回用户 ${uid} 的验证结果？他下次发消息时需要重新完成人机验证。`,
+            confirmText: '撤销验证',
+          }))) return;
+          runAction(unverifyButton, () => api.post(`/api/conversations/${uid}/unverify`), '已撤销验证');
+        });
+        actions.push(unverifyButton);
+      } else {
+        const verifyButton = el('button', { class: 'btn sm' }, '恢复验证');
+        verifyButton.addEventListener('click', () => runAction(verifyButton,
+          () => api.post(`/api/conversations/${uid}/verify`), '已恢复验证'));
+        actions.push(verifyButton);
+      }
+
+      if (user.is_blacklisted) {
+        const unblockButton = el('button', { class: 'btn sm' }, '解封');
+        unblockButton.addEventListener('click', async () => {
+          if (!(await confirmDialog({ title: '解除封禁', message: `确定把用户 ${uid} 移出黑名单吗？`, confirmText: '解封', danger: false }))) return;
+          runAction(unblockButton, () => api.post(`/api/conversations/${uid}/unblock`), (r) => (r && r.message) || '已解封');
+        });
+        actions.push(unblockButton);
+      } else {
+        actions.push(el('button', { class: 'btn sm danger', onClick: () => openBlockDialog(uid) }, '封禁'));
+      }
+
+      chatHead.appendChild(el('div', { class: 'chat-head-main' },
+        el('div', { class: 'chat-head-info' },
+          el('div', { class: 'who' }, `${user.first_name || '未知'} ${user.username ? `(@${user.username})` : ''}`),
+          el('div', { class: 'small muted' }, `ID ${uid} · 线程 ${user.thread_id || '-'} · 最近活跃 ${fmtTime(user.last_active)}`),
+          el('div', { class: 'conv-badges' }, userBadges(user)),
+        ),
+        el('div', { class: 'chat-actions' }, actions),
       ));
-      chatHead.appendChild(el('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-        userBadges(user),
-        user.is_blacklisted
-          ? el('button', {
-              class: 'btn sm',
-              onClick: async () => {
-                if (!(await confirmDialog({ title: '解除封禁', message: `确定把用户 ${user.user_id} 移出黑名单吗？`, confirmText: '解封', danger: false }))) return;
-                try {
-                  const result = await api.post(`/api/conversations/${user.user_id}/unblock`);
-                  toast(result.message || '已解封', 'ok');
-                  loadDetail({ keepScroll: true });
-                  loadList();
-                } catch (err) { toast(err.message, 'error'); }
-              },
-            }, '解封')
-          : el('button', {
-              class: 'btn sm danger',
-              onClick: () => openBlockDialog(user.user_id),
-            }, '封禁'),
-      ));
+
+      const appeal = user.pending_appeal;
+      if (appeal) {
+        const approveButton = el('button', { class: 'btn sm primary' }, '批准…');
+        approveButton.addEventListener('click', () => runAction(approveButton,
+          () => pauseReview(user, appeal), (r) => r && `已暂停审查 ${r.duration_text}`));
+        const rejectButton = el('button', { class: 'btn sm' }, '拒绝');
+        rejectButton.addEventListener('click', () => runAction(rejectButton,
+          () => api.post(`/api/conversations/${uid}/appeal/reject`), '已拒绝申请'));
+        chatHead.appendChild(el('div', { class: 'appeal-banner' },
+          el('div', {},
+            el('strong', {}, '🙋 用户申请暂停审查'),
+            el('div', { class: 'small' }, `拦截理由：${appeal.blocked_reason || '（未记录）'} · ${fmtTime(appeal.created_at)}`),
+          ),
+          el('div', { class: 'chat-actions' }, approveButton, rejectButton),
+        ));
+      }
     }
 
     function renderChatBody({ forceBottom = false, preservePrepend = false } = {}) {
@@ -361,12 +508,17 @@ export default {
       }
       scheduleListRefresh();
     });
+    const offAppeal = bus.on('appeal', (event) => {
+      toast('有用户申请暂停审查，请在会话里处理', 'info');
+      scheduleListRefresh();
+      if (event.user_id === state.selectedUserId) scheduleDetailRefresh();
+    });
     const offStatus = bus.on('user_status', () => {
       scheduleListRefresh();
       if (state.selectedUserId) scheduleDetailRefresh();
     });
 
-    state.cleanupFns.push(offMessage, offStatus, () => {
+    state.cleanupFns.push(offMessage, offStatus, offAppeal, () => {
       clearTimeout(listTimer);
       clearTimeout(detailTimer);
     });

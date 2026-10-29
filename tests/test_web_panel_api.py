@@ -113,7 +113,7 @@ async def _flow(tmp_path):
         assert response.status == 404
 
         # 非法取值
-        response = await client.put('/api/config/AI_CONFIDENCE_THRESHOLD', json={'value': '999'}, headers=PANEL_HEADERS)
+        response = await client.put('/api/config/MAX_VERIFICATION_ATTEMPTS', json={'value': '999'}, headers=PANEL_HEADERS)
         assert response.status == 400
 
         # 只读接口全量探活

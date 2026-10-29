@@ -130,3 +130,27 @@ async def send_user_info_card(update: Update, context: ContextTypes.DEFAULT_TYPE
         parse_mode=ParseMode.MARKDOWN_V2,
         reply_markup=reply_markup
     )
+
+
+async def ensure_user_thread(bot, user: dict) -> Optional[int]:
+    """确保用户在论坛群中有对应的话题 thread_id；若尚未创建则尝试新建。"""
+    thread_id = user.get('thread_id')
+    if thread_id:
+        return thread_id
+    if not config.FORUM_GROUP_ID or not hasattr(bot, 'create_forum_topic'):
+        return None
+    user_id = user['user_id']
+    first_name = user.get('first_name') or str(user_id)
+    topic_name = f'{first_name} (ID: {user_id})'
+    try:
+        topic = await bot.create_forum_topic(
+            chat_id=config.FORUM_GROUP_ID,
+            name=topic_name,
+        )
+        thread_id = topic.message_thread_id
+        await db.update_user_thread_id(user_id, thread_id)
+        user['thread_id'] = thread_id
+        return thread_id
+    except Exception as exc:
+        print(f'为用户 {user_id} 创建论坛话题失败: {exc}')
+        return None

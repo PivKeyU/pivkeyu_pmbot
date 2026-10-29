@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes
 from database import models as db
 from utils.message_sender import edit_message_by_type, get_message_media_info, send_message_by_type
 from utils import copy as copy_text
+from services import moderation
 from web_panel import events as panel_events
 
 async def _send_reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
@@ -53,6 +54,10 @@ async def _send_reply_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.is_topic_message:
+        return
+
+    # 回复的是「自定义暂停审查时长」提示：这是给女仆的指令，不转发给用户
+    if await moderation.handle_custom_duration_reply(update.message, context.bot, context.application):
         return
     
     thread_id = update.message.message_thread_id

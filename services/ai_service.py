@@ -1,4 +1,6 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Optional
 from google.genai import Client as GeminiClient
 from google.genai import types
 from openai import AsyncOpenAI
@@ -39,6 +41,8 @@ def _unique_model_names(names) -> list:
 # 本地出题：题库与程序化出题器都在 services/text_questions.py。
 # 无 API Key 或 AI 出题失败时，_get_local_question() 是唯一出口。
 from services import text_questions  # noqa: E402
+from services import ai_options  # noqa: E402
+from services.ai_options import DEFAULT_REVIEW_PROMPT, DEFAULT_VERIFICATION_PROMPT  # noqa: E402
 
 LOCAL_QUESTION_INVITE_PREFIX = text_questions.LOCAL_QUESTION_INVITE_PREFIX
 
@@ -51,9 +55,9 @@ def _get_local_question() -> dict:
     return challenge
 
 
-def _verification_prompt() -> str:
-    """AI 出题 prompt：固定规则 + 每次随机的主题与题型，避免模型反复出同一类题。"""
-    return VERIFICATION_CAPTCHA_PROMPT + "\n" + text_questions.ai_topic_hint()
+def _verification_prompt(rules: str = None) -> str:
+    """AI 出题 prompt：出题规则 + 固定输出格式 + 每次随机的主题与题型。"""
+    return "\n".join([rules or DEFAULT_VERIFICATION_PROMPT, VERIFICATION_FORMAT, text_questions.ai_topic_hint()])
 
 
 # ==========================================================================
@@ -142,41 +146,22 @@ def _build_autoreply_persona_rules(personality_md: str = '') -> str:
 
 
 # ==========================================================================
-# 小验证（CAPTCHA）出题 prompt：Gemini 与 OpenAI 两边共用同一份文本
+# 小验证（CAPTCHA）出题 prompt
 # ==========================================================================
-# 原先这里是两份逐字重复的三引号字符串（sha1 相同），改一处必漏另一处；
-# 三引号写法还会把函数缩进的 8 个空格原样发进 prompt，改用 "\n".join 一并修掉。
-VERIFICATION_CAPTCHA_PROMPT = "\n".join([
-    "# 角色",
-    "你是一个女仆风格的人机验证（CAPTCHA）问题生成器。",
-    "# 任务",
-    "生成一个随机的、适合成年人的中文常识性问题，用于区分人类和机器人。问题要保持清楚易懂。",
-    "# 语气要求",
-    "- 题干可以带轻快女仆语气，句尾可自然使用「～」「呀」「哦」，但一句话最多一个语气词，不要堆砌。",
-    "- 选项文本必须保持纯中性：correct_answer 与 incorrect_answers 都不得出现语气词、颜文字或情绪符号。",
-    "- 题干与选项都不得使用「主人」「客人」「女仆」「人家」等称呼或自称：这是给用户做的题，不是对话。",
-    "- 语气不得影响题意：提问的对象、类别与逻辑必须一眼看明白。",
-    "# 要求",
-    "1.  **问题格式多样性**: 你需要随机选择以下两种问题格式之一进行提问：",
-    '    *   **a) 标准直接提问**: 例如，"中国的首都是哪里？"',
-    '    *   **b) 反向排除提问**: 使用"以下哪个不属于...？"或类似的句式。例如，"以下哪个不属于行星？"',
-    "2.  **主题**: 问题主题应为完全随机的日常通用常识，无需限定在特定领域。",
-    '3.  **难度**: 问题和选项的难度应设定为"绝大多数18岁以上母语为中文的成年人都能立即回答正确"的水平，避免专业或冷门知识。',
-    "4.  **明确性**: 问题必须只有一个明确无误的正确答案。",
-    "5.  **答案逻辑**:",
-    "    *   提供一个`correct_answer`（正确答案）。",
-    "    *   提供一个包含三个字符串的列表`incorrect_answers`（干扰项）。",
-    "    *   **对于标准问题**，所有选项应属于同一类别。",
-    "    *   **对于反向排除问题**，三个`incorrect_answers`应属于同一类别，而`correct_answer`则是那个不属于该类别的 outlier（局外者）。",
-    "6.  **语言**: 所有内容必须为简体中文。",
-    "7.  **输出格式**: 严格按照以下JSON格式返回，不要包含任何额外的解释或文字。",
-    "# JSON格式示例",
+# 出题规则可在 Web 面板「AI 设置 → 提示词」修改（默认值见 services/ai_options.py），
+# 这里只保留固定的 JSON 输出格式：管理员怎么改规则都不会把解析改坏。
+VERIFICATION_FORMAT = "\n".join([
+    "# 输出格式（必须遵守）",
+    "严格按照以下 JSON 格式返回，不要包含任何额外的解释或文字：",
     "{",
     '  "question": "问题文本",',
     '  "correct_answer": "正确答案",',
     '  "incorrect_answers": ["干扰项1", "干扰项2", "干扰项3"]',
     "}",
 ])
+
+# 兼容旧引用：默认规则 + 固定格式
+VERIFICATION_CAPTCHA_PROMPT = DEFAULT_VERIFICATION_PROMPT + "\n" + VERIFICATION_FORMAT
 
 
 # 提供商注册表在纯数据模块里，Web 面板预览服务器也能直接引用
@@ -193,8 +178,18 @@ def provider_credentials(provider_type: str):
     return api_key, base_url
 
 
-# 内容审查 system prompt：OpenAI 与 Claude 共用（Gemini 走原有的拼接方式）
-CONTENT_REVIEW_SYSTEM_PROMPT = "你是一个内容审查员。你的任务是分析提供给你的文本和/或图片内容，并判断其是否包含垃圾信息、恶意软件、钓鱼链接、不当言论、辱骂、攻击性词语或任何违反安全政策的内容。\n请严格按照要求，仅以JSON格式返回你的分析结果，不要包含任何额外的解释或标记。\n**输出格式**: 你必须且只能以严格的JSON格式返回你的分析结果，不得包含任何解释性文字或代码块标记。\n**JSON结构**:\n```json\n{\n  \"is_spam\": boolean,\n  \"reason\": \"string\"\n}\n```\n*   `is_spam`: 如果内容违反**任何一条**安全策略，则为 `true`；如果内容完全安全，则为 `false`。\n*   `reason`: 用一句话精准概括判断依据。如果违规，请明确指出违规的类型。如果安全，此字段固定为 `\"内容未发现违规。\"`"
+# 内容审查：审查规则可在面板修改（默认值见 services/ai_options.py），JSON 输出格式固定
+REVIEW_OUTPUT_FORMAT = "\n".join([
+    "请严格按照要求，仅以 JSON 格式返回分析结果，不要包含任何解释性文字或代码块标记。",
+    "JSON 结构：",
+    '{"is_spam": boolean, "reason": "string"}',
+    "- is_spam：内容违反任何一条审查规则则为 true；完全安全则为 false。",
+    '- reason：用一句话概括判断依据；违规时指出违规类型，安全时固定为 "内容未发现违规。"',
+])
+
+# 兼容旧引用：默认审查规则 + 固定格式
+CONTENT_REVIEW_SYSTEM_PROMPT = DEFAULT_REVIEW_PROMPT + "\n\n" + REVIEW_OUTPUT_FORMAT
+
 
 # 连通性测试用的极短提示
 PING_PROMPT = '这是一次连通性测试，请只回复两个字母：OK'
@@ -234,7 +229,46 @@ def _sniff_image_media_type(image_bytes: bytes) -> str:
     return 'image/jpeg'
 
 
+class ContentBlockedError(Exception):
+    """服务商的安全策略直接拦下了这次请求（没有返回任何候选结果）。"""
+
+
+@dataclass
+class CompletionRequest:
+    """一次模型调用：三种协议各自把它翻译成自己的请求格式。"""
+    model: str
+    user_text: str
+    system: Optional[str] = None
+    image_bytes: Optional[bytes] = None
+    json_mode: bool = False
+    options: ai_options.GenerationOptions = field(default_factory=ai_options.GenerationOptions)
+
+
+def _truncate(text: str, limit: int) -> str:
+    text = text or ''
+    if limit and len(text) > limit:
+        return text[:limit] + '…（内容过长，已截断）'
+    return text
+
+
+def _analysis_failed(provider_label: str, detail) -> dict:
+    # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
+    return {
+        "is_spam": False,
+        "reason": f"ANALYSIS_FAILED: {provider_label} analysis failed: {detail}",
+        "analysis_failed": True,
+    }
+
+
 class AIProvider(ABC):
+    """三种协议共用的业务流程：审查、出题、自动回复、连通性测试。
+
+    子类只负责 complete()（把 CompletionRequest 翻译成各自的 API 调用）与 get_models()。
+    """
+
+    provider_type = ''
+    label = ''
+
     async def _get_model_name(self, setting_key: str, default: str) -> str:
         async with db_manager.get_connection() as db:
             cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (setting_key,))
@@ -243,119 +277,66 @@ class AIProvider(ABC):
                 return row[0]
             return default
 
-    @abstractmethod
-    async def ping(self, model: str) -> str:
-        """发一条极短的请求验证 Key / 地址 / 模型是否可用，返回模型回复。"""
-        pass
+    async def model_for(self, feature: str) -> str:
+        return await self._get_model_name(
+            model_setting_key(self.provider_type, feature),
+            PROVIDERS[self.provider_type]['default_models'][feature],
+        )
 
     @abstractmethod
-    async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
+    async def complete(self, request: CompletionRequest) -> str:
         pass
 
-    @abstractmethod
-    async def generate_verification_challenge(self) -> dict:
-        pass
-
-    @abstractmethod
-    async def generate_unblock_question(self) -> dict:
-        pass
-
-    @abstractmethod
-    async def generate_autoreply(
-        self, user_message: str, knowledge_base_content: str, personality_md: str = '',
-    ) -> str:
-        pass
-        
     @abstractmethod
     async def get_models(self) -> list:
         pass
 
-class GeminiProvider(AIProvider):
-    def __init__(self, api_key: str, base_url: str = None):
-        client_kwargs = {"api_key": api_key}
-        base_url = (base_url or "").strip()
-        if base_url:
-            client_kwargs["http_options"] = types.HttpOptions(baseUrl=base_url)
-        self.client = GeminiClient(**client_kwargs)
-        self.api_key = api_key
-        self.base_url = base_url or None
-        
+    async def _complete(self, request: CompletionRequest) -> str:
+        return await asyncio.wait_for(self.complete(request), timeout=request.options.timeout)
+
     async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
-        model_name = await self._get_model_name('gemini_model_filter', 'gemini-2.5-flash')
-        content = []
-        prompt_parts = [
-            "你是一个内容审查员。你的任务是分析提供给你的文本和/或图片内容，并判断其是否包含垃圾信息、恶意软件、钓鱼链接、不当言论、辱骂、攻击性词语或任何违反安全政策的内容。",
-            "请严格按照要求，仅以JSON格式返回你的分析结果，不要包含任何额外的解释或标记。",
-            "**输出格式**: 你必须且只能以严格的JSON格式返回你的分析结果，不得包含任何解释性文字或代码块标记。",
-            "**JSON结构**:\n```json\n{\n  \"is_spam\": boolean,\n  \"reason\": \"string\"\n}\n```\n*   `is_spam`: 如果内容违反**任何一条**安全策略，则为 `true`；如果内容完全安全，则为 `false`。\n*   `reason`: 用一句话精准概括判断依据。如果违规，请明确指出违规的类型。如果安全，此字段固定为 `\"内容未发现违规。\"`",
-            "\n--- 以下是需要分析的内容 ---",
-        ]
-
-        if text:
-            content.append(text)
-        
-        if image_bytes:
-            try:
-                image = Image.open(io.BytesIO(image_bytes))
-                content.append(image)
-            except Exception as e:
-                print(f"Error processing image for Gemini: {e}")
-
-        if not content:
+        if not text and not image_bytes:
             return {"is_spam": False, "reason": "No content to analyze"}
-
-        content.append("\n".join(prompt_parts))
-
+        options = await ai_options.get_generation_options('filter', self.provider_type)
         try:
-            response = await self.client.aio.models.generate_content(
-                model=model_name,
-                contents=content
-            )
-            
-            if not hasattr(response, 'candidates') or not response.candidates:
-                return {"is_spam": True, "reason": "内容审查失败，可能包含不当内容。"}
-
-            if response.candidates and response.candidates[0].content.parts:
-                response_text = response.candidates[0].content.parts[0].text
-            else:
-                response_text = None
-            
+            policy = await ai_options.get_prompt('review')
+            response_text = await self._complete(CompletionRequest(
+                model=await self.model_for('filter'),
+                system=f"{policy}\n\n{REVIEW_OUTPUT_FORMAT}",
+                user_text=_truncate(text, options.max_input_chars) or '（用户只发送了图片，请审查图片内容）',
+                image_bytes=image_bytes,
+                json_mode=True,
+                options=options,
+            ))
             if not response_text:
-                raise ValueError("Gemini API returned an empty response.")
-            
-            clean_text = re.sub(r'```json\s*|\s*```', '', response_text).strip()
-            result = json.loads(clean_text)
+                raise ValueError("模型返回了空内容")
+            result = _parse_json_response(response_text)
             # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
             if not isinstance(result.get("is_spam"), bool):
-                raise ValueError("Gemini 返回的 is_spam 字段不是布尔值")
+                raise ValueError("返回的 is_spam 字段不是布尔值")
             return result
+        except ContentBlockedError:
+            return {"is_spam": True, "reason": "内容审查失败，可能包含不当内容。"}
+        except asyncio.TimeoutError:
+            print(f"{self.label} 审查超时（{options.timeout:g} 秒）")
+            return _analysis_failed(self.label, f'超时（{options.timeout:g} 秒）')
         except Exception as e:
-            print(f"Gemini analysis failed: {e}")
-            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
-            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: Gemini analysis failed: {e}", "analysis_failed": True}
+            print(f"{self.label} analysis failed: {e}")
+            return _analysis_failed(self.label, e)
 
     async def generate_verification_challenge(self) -> dict:
-        model_name = await self._get_model_name('gemini_model_verification', 'gemini-2.5-flash-lite')
-        # 出题 prompt 与 OpenAI 版共用同一常量（原先是两份逐字重复的三引号字符串）
-        prompt = _verification_prompt()
         try:
-            response = await self.client.aio.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            
-            if response.candidates and response.candidates[0].content.parts:
-                response_text = response.candidates[0].content.parts[0].text
-            else:
-                response_text = None
-            
-            if not response_text:
-                raise ValueError("Gemini API返回空响应")
-            
+            options = await ai_options.get_generation_options('verification', self.provider_type)
+            rules = await ai_options.get_prompt('verification')
+            response_text = await self._complete(CompletionRequest(
+                model=await self.model_for('verification'),
+                user_text=_verification_prompt(rules),
+                options=options,
+            ))
             return _challenge_from_data(_parse_json_response(response_text))
         except Exception as e:
-            print(f"生成验证问题失败: {e}")
-            return self._get_local_question()
+            print(f"{self.label} 生成验证问题失败: {e!r}")
+            return _get_local_question()
 
     async def generate_unblock_question(self) -> dict:
         return await self.generate_verification_challenge()
@@ -367,54 +348,92 @@ class GeminiProvider(AIProvider):
     async def generate_autoreply(
         self, user_message: str, knowledge_base_content: str, personality_md: str = '',
     ) -> str:
-        model_name = await self._get_model_name('gemini_model_autoreply', 'gemini-2.5-flash')
         if not knowledge_base_content or knowledge_base_content.strip() == "":
             return None
-
-        # 空字符串元素 = 章节之间的空行；人设规则与分隔标记都取共用常量
-        prompt_parts = [
-            _build_autoreply_persona_rules(personality_md),
-            "",
-            AUTOREPLY_KB_LABEL,
-            knowledge_base_content,
-            "",
-            AUTOREPLY_QUESTION_LABEL,
-            user_message,
-            "",
-            AUTOREPLY_ANSWER_LABEL,
-            AUTOREPLY_KB_MISS_TAIL
-        ]
-
         try:
-            response = await self.client.aio.models.generate_content(
-                model=model_name,
-                contents="\n".join(prompt_parts)
-            )
-            
-            if not hasattr(response, 'candidates') or not response.candidates:
-                return None
-
-            if response.candidates and response.candidates[0].content.parts:
-                response_text = response.candidates[0].content.parts[0].text
-            else:
-                response_text = None
-            
+            options = await ai_options.get_generation_options('autoreply', self.provider_type)
+            # 人设规则与知识库都是运营方内容，放进 system；客人的消息单独作为 user 轮
+            system_prompt = "\n".join([
+                _build_autoreply_persona_rules(personality_md),
+                "",
+                AUTOREPLY_KB_LABEL,
+                _truncate(knowledge_base_content, options.max_kb_chars),
+                "",
+                AUTOREPLY_KB_MISS_TAIL,
+            ])
+            response_text = await self._complete(CompletionRequest(
+                model=await self.model_for('autoreply'),
+                system=system_prompt,
+                user_text=_truncate(user_message, options.max_input_chars),
+                options=options,
+            ))
             if not response_text:
                 return None
-            
             if _is_knowledge_miss(response_text):
                 # 模型答不上来时不能什么都不发：把“管理员女仆长会来回复”这个承诺
                 # 真正送到客人面前，否则客人只能看到消息被递送、却永远等不到回音。
                 return KNOWLEDGE_MISS_REPLY
-            
             return response_text.strip()
         except Exception as e:
-            print(f"Gemini自动回复生成失败: {e}")
+            print(f"{self.label} 自动回复生成失败: {e!r}")
             return None
-    
-    async def ping(self, model: str) -> str:
-        response = await self.client.aio.models.generate_content(model=model, contents=PING_PROMPT)
-        return (getattr(response, 'text', None) or '').strip()
+
+    async def ping(self, model: str, feature: str = 'filter') -> str:
+        options = await ai_options.get_generation_options(feature, self.provider_type)
+        return await self._complete(CompletionRequest(model=model, user_text=PING_PROMPT, options=options))
+
+
+# Gemini 思考预算（token）：off 关闭思考，其余按强度给预算
+GEMINI_THINKING_BUDGETS = {'off': 0, 'low': 1024, 'medium': 4096, 'high': 16384}
+
+
+class GeminiProvider(AIProvider):
+    provider_type = 'gemini'
+    label = 'Gemini'
+
+    def __init__(self, api_key: str, base_url: str = None):
+        client_kwargs = {"api_key": api_key}
+        base_url = (base_url or "").strip()
+        if base_url:
+            client_kwargs["http_options"] = types.HttpOptions(baseUrl=base_url)
+        self.client = GeminiClient(**client_kwargs)
+        self.api_key = api_key
+        self.base_url = base_url or None
+
+    async def complete(self, request: CompletionRequest) -> str:
+        contents = []
+        if request.user_text:
+            contents.append(request.user_text)
+        if request.image_bytes:
+            try:
+                contents.append(Image.open(io.BytesIO(request.image_bytes)))
+            except Exception as e:
+                print(f"Error processing image for Gemini: {e}")
+
+        options = request.options
+        config_kwargs = {}
+        if request.system:
+            config_kwargs['system_instruction'] = request.system
+        if options.max_tokens:
+            config_kwargs['max_output_tokens'] = options.max_tokens
+        if request.json_mode:
+            config_kwargs['response_mime_type'] = 'application/json'
+        if options.effort in GEMINI_THINKING_BUDGETS:
+            config_kwargs['thinking_config'] = types.ThinkingConfig(
+                thinking_budget=GEMINI_THINKING_BUDGETS[options.effort])
+        # 额外参数按 GenerateContentConfig 的字段名合并（例如 {"temperature": 0.2}）
+        config_kwargs.update(options.extra_body or {})
+
+        response = await self.client.aio.models.generate_content(
+            model=request.model,
+            contents=contents,
+            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None,
+        )
+        if not getattr(response, 'candidates', None):
+            raise ContentBlockedError()
+        parts = response.candidates[0].content.parts if response.candidates[0].content else None
+        return ''.join(getattr(part, 'text', '') or '' for part in (parts or [])
+                       if not getattr(part, 'thought', False)).strip()
 
     async def get_models(self) -> list:
         fetched_models = []
@@ -429,122 +448,80 @@ class GeminiProvider(AIProvider):
         return _unique_model_names(fetched_models)
 
 
+# 通义千问的思考预算（token）
+_DASHSCOPE_THINKING_BUDGETS = {'low': 1024, 'medium': 4096, 'high': 16384}
+
+
+def openai_effort_params(base_url: str, effort: str) -> tuple:
+    """把统一的思考等级翻译成各家 OpenAI 兼容服务的参数，返回 (顶层参数, extra_body)。
+
+    各家开关思考的字段不一样：OpenAI / Gemini 用 reasoning_effort，通义用 enable_thinking，
+    OpenRouter 用 reasoning，DeepSeek / 智谱 / 豆包等用 thinking.type。识别不了的服务
+    可以在「额外请求参数」里自己写，会覆盖这里的默认翻译。
+    """
+    if not effort:
+        return {}, {}
+    host = (base_url or 'https://api.openai.com/v1').lower()
+    if 'openrouter.ai' in host:
+        reasoning = {'enabled': False} if effort == 'off' else {'effort': effort}
+        return {}, {'reasoning': reasoning}
+    if 'dashscope' in host:
+        if effort == 'off':
+            return {}, {'enable_thinking': False}
+        return {}, {'enable_thinking': True, 'thinking_budget': _DASHSCOPE_THINKING_BUDGETS[effort]}
+    if 'generativelanguage.googleapis.com' in host:
+        return {'reasoning_effort': 'none' if effort == 'off' else effort}, {}
+    if 'api.openai.com' in host:
+        return {'reasoning_effort': 'minimal' if effort == 'off' else effort}, {}
+    if effort == 'off':
+        return {}, {'thinking': {'type': 'disabled'}}
+    return {'reasoning_effort': effort}, {}
+
+
 class OpenAIProvider(AIProvider):
+    provider_type = 'openai'
+    label = 'OpenAI'
+
     def __init__(self, api_key: str, base_url: str):
         self.api_key = api_key
         self.base_url = base_url or None
         # 空字符串交给 SDK 会被当成真实地址，留空时传 None 走官方默认地址
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url or None)
 
-    async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
-        model_name = await self._get_model_name('openai_model_filter', 'gpt-4.1')
-        messages = [
-            {"role": "system", "content": CONTENT_REVIEW_SYSTEM_PROMPT},
-            {"role": "user", "content": []}
-        ]
+    @property
+    def _is_official(self) -> bool:
+        return not self.base_url or 'api.openai.com' in self.base_url
 
-        if text:
-             messages[1]["content"].append({"type": "text", "text": text})
-        
-        if image_bytes:
-             import base64
-             base64_image = base64.b64encode(image_bytes).decode('utf-8')
-             messages[1]["content"].append({
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/jpeg;base64,{base64_image}"
-                }
-            })
+    async def complete(self, request: CompletionRequest) -> str:
+        if request.image_bytes:
+            import base64
+            image_b64 = base64.b64encode(request.image_bytes).decode('utf-8')
+            user_content = [
+                {"type": "text", "text": request.user_text},
+                {"type": "image_url", "image_url": {
+                    "url": f"data:{_sniff_image_media_type(request.image_bytes)};base64,{image_b64}"}},
+            ]
+        else:
+            user_content = request.user_text
+        messages = []
+        if request.system:
+            messages.append({"role": "system", "content": request.system})
+        messages.append({"role": "user", "content": user_content})
 
-        if not messages[1]["content"]:
-             return {"is_spam": False, "reason": "No content to analyze"}
+        options = request.options
+        kwargs = {'model': request.model, 'messages': messages}
+        if request.json_mode:
+            kwargs['response_format'] = {"type": "json_object"}
+        if options.max_tokens:
+            # OpenAI 官方的推理模型只认 max_completion_tokens，兼容服务普遍用 max_tokens
+            kwargs['max_completion_tokens' if self._is_official else 'max_tokens'] = options.max_tokens
+        effort_kwargs, extra_body = openai_effort_params(self.base_url, options.effort)
+        kwargs.update(effort_kwargs)
+        extra_body.update(options.extra_body or {})
+        if extra_body:
+            kwargs['extra_body'] = extra_body
 
-        try:
-            response = await self.client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                response_format={ "type": "json_object" }
-            )
-            
-            response_text = response.choices[0].message.content
-            if not response_text:
-                 raise ValueError("OpenAI API returned an empty response.")
-
-            result = json.loads(response_text)
-            # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
-            if not isinstance(result.get("is_spam"), bool):
-                raise ValueError("OpenAI 返回的 is_spam 字段不是布尔值")
-            return result
-        except Exception as e:
-            print(f"OpenAI analysis failed: {e}")
-            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
-            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: OpenAI analysis failed: {e}", "analysis_failed": True}
-
-    async def generate_verification_challenge(self) -> dict:
-        model_name = await self._get_model_name('openai_model_verification', 'gpt-4.1-mini')
-        # 出题 prompt 与 Gemini 版共用同一常量（原先是两份逐字重复的三引号字符串）
-        prompt = _verification_prompt()
-        try:
-            response = await self.client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            response_text = response.choices[0].message.content
-            
-            return _challenge_from_data(_parse_json_response(response_text))
-        except Exception as e:
-            print(f"OpenAI Generate verification failed: {e}")
-            return self._get_local_question()
-
-    async def generate_unblock_question(self) -> dict:
-        return await self.generate_verification_challenge()
-
-    def _get_local_question(self) -> dict:
-        # 统一走模块级兜底函数，避免依赖实例（无 API Key 时无需构造 provider）
-        return _get_local_question()
-
-    async def generate_autoreply(
-        self, user_message: str, knowledge_base_content: str, personality_md: str = '',
-    ) -> str:
-        model_name = await self._get_model_name('openai_model_autoreply', 'gpt-4.1')
-        if not knowledge_base_content or knowledge_base_content.strip() == "":
-            return None
-
-        # 人设规则与 Gemini 版共用同一常量（原先是两份独立的 prompt，且这里的
-        # 三引号字符串把函数缩进 12/15 个空格原样带进了发给模型的 system message）
-        system_prompt = _build_autoreply_persona_rules(personality_md)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "system", "content": f"{AUTOREPLY_KB_LABEL}\n{knowledge_base_content}"},
-            {"role": "user", "content": user_message}
-        ]
-
-        try:
-            response = await self.client.chat.completions.create(
-                model=model_name,
-                messages=messages
-            )
-            response_text = response.choices[0].message.content
-            
-            if not response_text:
-                return None
-            
-            if _is_knowledge_miss(response_text):
-                # 模型答不上来时不能什么都不发：把“管理员女仆长会来回复”这个承诺
-                # 真正送到客人面前，否则客人只能看到消息被递送、却永远等不到回音。
-                return KNOWLEDGE_MISS_REPLY
-            
-            return response_text.strip()
-        except Exception as e:
-             print(f"OpenAI autoreply failed: {e}")
-             return None
-    
-    async def ping(self, model: str) -> str:
-        response = await self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": PING_PROMPT}],
-        )
+        response = await self.client.chat.completions.create(**kwargs)
         return (response.choices[0].message.content or '').strip()
 
     async def get_models(self) -> list:
@@ -564,6 +541,10 @@ class OpenAIProvider(AIProvider):
 class AnthropicProvider(AIProvider):
     """Anthropic Messages 协议（Claude），也可以指向兼容该协议的第三方服务。"""
 
+    provider_type = 'anthropic'
+    label = 'Claude'
+    DEFAULT_MAX_TOKENS = 4096
+
     def __init__(self, api_key: str, base_url: str = None):
         # 延迟导入：没装 anthropic 包时不影响 Gemini / OpenAI 两条链路
         from anthropic import AsyncAnthropic
@@ -575,98 +556,44 @@ class AnthropicProvider(AIProvider):
             client_kwargs['base_url'] = self.base_url
         self.client = AsyncAnthropic(**client_kwargs)
 
-    async def _create_text(self, model: str, content, system: str = None, max_tokens: int = 4096) -> str:
-        """发一次 Messages 请求，拼出全部 text 块；被安全策略拒绝时抛异常。"""
+    async def complete(self, request: CompletionRequest) -> str:
+        content = []
+        if request.image_bytes:
+            import base64
+            content.append({
+                'type': 'image',
+                'source': {
+                    'type': 'base64',
+                    'media_type': _sniff_image_media_type(request.image_bytes),
+                    'data': base64.standard_b64encode(request.image_bytes).decode('utf-8'),
+                },
+            })
+        content.append({'type': 'text', 'text': request.user_text})
+
+        options = request.options
         kwargs = {
-            'model': model,
-            # 新模型默认开启自适应思考，思考也计入 max_tokens，给足空间避免截断
-            'max_tokens': max_tokens,
-            'messages': [{'role': 'user', 'content': content}],
+            'model': request.model,
+            # 新模型默认开启自适应思考，思考也计入 max_tokens，默认给足空间避免截断
+            'max_tokens': options.max_tokens or self.DEFAULT_MAX_TOKENS,
+            # 纯文本时直接传字符串，兼容只认字符串内容的第三方服务
+            'messages': [{'role': 'user', 'content': content if request.image_bytes else request.user_text}],
         }
-        if system:
-            kwargs['system'] = system
+        if request.system:
+            kwargs['system'] = request.system
+        extra_body = {}
+        if options.effort:
+            # 新 Claude 模型无法彻底关闭思考，「关闭」按最低强度 low 处理
+            extra_body['output_config'] = {'effort': 'low' if options.effort == 'off' else options.effort}
+        extra_body.update(options.extra_body or {})
+        if extra_body:
+            kwargs['extra_body'] = extra_body
+
         response = await self.client.messages.create(**kwargs)
         if response.stop_reason == 'refusal':
             raise RuntimeError('Claude 拒绝了这次请求（stop_reason=refusal）')
         return ''.join(
             block.text for block in response.content if getattr(block, 'type', None) == 'text'
         ).strip()
-
-    async def analyze_message(self, text: str, image_bytes: bytes = None) -> dict:
-        model_name = await self._get_model_name(
-            'anthropic_model_filter', PROVIDERS['anthropic']['default_models']['filter'])
-        content = []
-        if image_bytes:
-            import base64
-            content.append({
-                'type': 'image',
-                'source': {
-                    'type': 'base64',
-                    'media_type': _sniff_image_media_type(image_bytes),
-                    'data': base64.standard_b64encode(image_bytes).decode('utf-8'),
-                },
-            })
-        if text:
-            content.append({'type': 'text', 'text': text})
-        if not content:
-            return {"is_spam": False, "reason": "No content to analyze"}
-
-        try:
-            response_text = await self._create_text(model_name, content, system=CONTENT_REVIEW_SYSTEM_PROMPT)
-            if not response_text:
-                raise ValueError("Claude API returned an empty response.")
-            result = _parse_json_response(response_text)
-            # 校验模型输出格式：is_spam 不是布尔值一律视为审查失败而非安全
-            if not isinstance(result.get("is_spam"), bool):
-                raise ValueError("Claude 返回的 is_spam 字段不是布尔值")
-            return result
-        except Exception as e:
-            print(f"Claude analysis failed: {e}")
-            # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
-            return {"is_spam": False, "reason": f"ANALYSIS_FAILED: Claude analysis failed: {e}", "analysis_failed": True}
-
-    async def generate_verification_challenge(self) -> dict:
-        model_name = await self._get_model_name(
-            'anthropic_model_verification', PROVIDERS['anthropic']['default_models']['verification'])
-        try:
-            response_text = await self._create_text(model_name, _verification_prompt())
-            return _challenge_from_data(_parse_json_response(response_text))
-        except Exception as e:
-            print(f"Claude 生成验证问题失败: {e}")
-            return _get_local_question()
-
-    async def generate_unblock_question(self) -> dict:
-        return await self.generate_verification_challenge()
-
-    async def generate_autoreply(
-        self, user_message: str, knowledge_base_content: str, personality_md: str = '',
-    ) -> str:
-        model_name = await self._get_model_name(
-            'anthropic_model_autoreply', PROVIDERS['anthropic']['default_models']['autoreply'])
-        if not knowledge_base_content or knowledge_base_content.strip() == "":
-            return None
-
-        # 人设规则与知识库都是运营方内容，放进 system；客人的消息单独作为 user 轮
-        system_prompt = "\n".join([
-            _build_autoreply_persona_rules(personality_md),
-            "",
-            AUTOREPLY_KB_LABEL,
-            knowledge_base_content,
-        ])
-        try:
-            response_text = await self._create_text(model_name, user_message, system=system_prompt)
-            if not response_text:
-                return None
-            if _is_knowledge_miss(response_text):
-                # 答不上来时把「管理员女仆长会来回复」的承诺送到客人面前
-                return KNOWLEDGE_MISS_REPLY
-            return response_text
-        except Exception as e:
-            print(f"Claude 自动回复生成失败: {e}")
-            return None
-
-    async def ping(self, model: str) -> str:
-        return await self._create_text(model, PING_PROMPT, max_tokens=1024)
 
     async def get_models(self) -> list:
         fetched_models = []
@@ -799,18 +726,15 @@ class AIService:
             return []
         return await provider.get_models()
 
-    async def test_connection(self, provider_type: str, model: str = None) -> dict:
-        """用自动回复模型（或指定模型）发一条极短请求，返回耗时与回复；失败直接抛异常。"""
+    async def test_connection(self, provider_type: str, model: str = None, feature: str = 'filter') -> dict:
+        """按某个功能的模型与参数（思考等级 / token / 超时）发一条极短请求，返回耗时与回复。"""
         provider = self.get_provider_by_type(provider_type)
         if not provider:
             raise ValueError('请先配置该提供商的 API Key')
         if not model:
-            model = await provider._get_model_name(
-                model_setting_key(provider_type, 'autoreply'),
-                PROVIDERS[provider_type]['default_models']['autoreply'],
-            )
+            model = await provider.model_for(feature)
         started = time.monotonic()
-        reply = await provider.ping(model)
+        reply = await provider.ping(model, feature)
         return {
             'model': model,
             'latency_ms': int((time.monotonic() - started) * 1000),

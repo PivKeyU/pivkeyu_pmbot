@@ -138,7 +138,7 @@ STORE = {
     'config_values': {
         'BOT_TOKEN': '123456:FAKE-TOKEN-example', 'FORUM_GROUP_ID': '-1001234567890',
         'ADMIN_IDS': '10001,10002', 'GEMINI_API_KEY': 'AIzaFAKEexampleKEY123',
-        'ENABLE_AI_FILTER': 'true', 'AI_CONFIDENCE_THRESHOLD': '70',
+        'ENABLE_AI_FILTER': 'true',
         'MAX_MESSAGES_PER_MINUTE': '30', 'WEB_PANEL_PORT': '18080',
     },
     'config_overrides': {},
@@ -190,7 +190,17 @@ routes = web.RouteTableDef()
 
 @routes.get('/')
 async def index(request):
-    return web.FileResponse(STATIC_DIR / 'index.html')
+    # 和正式面板一样给静态资源加版本号，改完前端刷新即可看到最新效果
+    from web_panel.server import compute_asset_version, render_index
+
+    return web.Response(text=render_index(compute_asset_version()), content_type='text/html', headers={'Cache-Control': 'no-cache'})
+
+
+async def versioned_static(request):
+    path = (STATIC_DIR / request.match_info['path']).resolve()
+    if STATIC_DIR.resolve() not in path.parents or not path.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={'Cache-Control': 'no-cache'})
 
 
 @routes.get('/api/me')
@@ -290,16 +300,80 @@ async def reset_config(request):
 # 会话
 # --------------------------------------------------------------------------- #
 
+PREVIEW_STATE = {
+    'read': set(),                 # 已标为已读的 user_id
+    'paused': {100001: 120},       # user_id -> 暂停审查分钟数（None = 永久）
+    'appeals': {100002: {'id': 1, 'user_id': 100002, 'status': 'pending',
+                         'blocked_reason': '疑似广告推广', 'created_at': _now()}},
+    'ai_options': {},
+}
+
+
+def _summary(user):
+    item = dict(user)
+    item['is_unread'] = int(user.get('last_direction') == 'user_to_admin' and user['user_id'] not in PREVIEW_STATE['read'])
+    item['pending_appeal'] = int(user['user_id'] in PREVIEW_STATE['appeals'])
+    return item
+
+
 @routes.get('/api/conversations')
 async def conversations(request):
-    verified_users = [user for user in STORE['users'] if user.get('is_verified')]
+    verified_users = [_summary(user) for user in STORE['users'] if user.get('is_verified') or user.get('was_verified')]
     return _ok(_page(verified_users))
+
+
+@routes.post('/api/conversations/read-all')
+async def preview_read_all(request):
+    PREVIEW_STATE['read'].update(user['user_id'] for user in STORE['users'])
+    return _ok({'count': len(STORE['users'])})
+
+
+@routes.post('/api/conversations/{user_id}/read')
+async def preview_read(request):
+    PREVIEW_STATE['read'].add(int(request.match_info['user_id']))
+    return _ok({})
+
+
+@routes.post('/api/conversations/{user_id}/unverify')
+@routes.post('/api/conversations/{user_id}/verify')
+async def preview_verify_toggle(request):
+    user = _user_by_id(request.match_info['user_id'])
+    user['was_verified'] = True
+    user['is_verified'] = request.path.endswith('/verify') and not request.path.endswith('/unverify')
+    return _ok({'is_verified': user['is_verified']})
+
+
+@routes.post('/api/conversations/{user_id}/review-pause')
+async def preview_pause(request):
+    from services.moderation import format_duration, parse_duration
+
+    user_id = int(request.match_info['user_id'])
+    body = await request.json()
+    minutes = None if body.get('permanent') else parse_duration(str(body.get('minutes') or ''))
+    if minutes is None and not body.get('permanent'):
+        return web.json_response({'ok': False, 'error': '请填写暂停时长，例如 30、3h、2d'}, status=400)
+    PREVIEW_STATE['paused'][user_id] = minutes
+    PREVIEW_STATE['appeals'].pop(user_id, None)
+    return _ok({'minutes': minutes, 'duration_text': format_duration(minutes)})
+
+
+@routes.delete('/api/conversations/{user_id}/review-pause')
+async def preview_resume(request):
+    PREVIEW_STATE['paused'].pop(int(request.match_info['user_id']), None)
+    return _ok({})
+
+
+@routes.post('/api/conversations/{user_id}/appeal/reject')
+async def preview_reject(request):
+    if PREVIEW_STATE['appeals'].pop(int(request.match_info['user_id']), None) is None:
+        return web.json_response({'ok': False, 'error': '这个用户没有待处理的申请'}, status=400)
+    return _ok({})
 
 
 @routes.get('/api/conversations/{user_id}')
 async def conversation_detail(request):
     user = _user_by_id(request.match_info['user_id'])
-    if not user or not user.get('is_verified'):
+    if not user or not (user.get('is_verified') or user.get('was_verified')):
         return web.json_response({'ok': False, 'error': '用户不存在'}, status=404)
     messages = STORE['messages'].get(user['user_id'], [])
     return _ok({
@@ -307,7 +381,8 @@ async def conversation_detail(request):
                  'last_name': None, 'is_verified': user['is_verified'], 'is_blacklisted': user['blacklisted'],
                  'blacklist_permanent': False, 'blacklist_strikes': 1 if user['blacklisted'] else 0,
                  'thread_id': user['thread_id'], 'created_at': _now(), 'last_active': user['last_active'],
-                 'exempted': user['user_id'] == 100001},
+                 'exempted': user['user_id'] in PREVIEW_STATE['paused'],
+                 'exemption': None, 'pending_appeal': PREVIEW_STATE['appeals'].get(user['user_id'])},
         'messages': _page(messages, per_page=50),
     })
 
@@ -424,6 +499,58 @@ async def clear_filtered(request):
 # --------------------------------------------------------------------------- #
 # 自动回复 / 知识库 / 关键词
 # --------------------------------------------------------------------------- #
+
+@routes.get('/api/ai-options')
+async def preview_ai_options(request):
+    from services import ai_options
+    from services.ai_service import REVIEW_OUTPUT_FORMAT, VERIFICATION_FORMAT
+
+    saved = PREVIEW_STATE['ai_options']
+    return _ok({
+        'features': {
+            feature: {**{'effort': '', 'max_tokens': '', 'timeout': ''}, **saved.get('features', {}).get(feature, {}),
+                      'default_timeout': ai_options.DEFAULT_TIMEOUTS[feature]}
+            for feature in AI_FEATURES
+        },
+        'max_input_chars': saved.get('max_input_chars', ''),
+        'max_kb_chars': saved.get('max_kb_chars', ''),
+        'default_max_input_chars': ai_options.DEFAULT_MAX_INPUT_CHARS,
+        'default_max_kb_chars': ai_options.DEFAULT_MAX_KB_CHARS,
+        'extra_body': {p: saved.get('extra_body', {}).get(p, '') for p in PROVIDERS},
+        'prompts': {'review': saved.get('prompts', {}).get('review', ''),
+                    'verification': saved.get('prompts', {}).get('verification', '')},
+        'default_prompts': {'review': ai_options.DEFAULT_REVIEW_PROMPT,
+                            'verification': ai_options.DEFAULT_VERIFICATION_PROMPT},
+        'switches': {'appeal_enabled': True, 'auto_revoke_enabled': False,
+                     'auto_revoke_threshold': 2, 'auto_revoke_window_hours': 24, **saved.get('switches', {})},
+        'fixed_suffix': {'review': REVIEW_OUTPUT_FORMAT, 'verification': VERIFICATION_FORMAT},
+        'effort_levels': list(ai_options.EFFORT_LEVELS),
+    })
+
+
+@routes.put('/api/ai-options')
+async def preview_put_ai_options(request):
+    from services import ai_options
+
+    body = await request.json()
+    try:
+        for provider, raw in (body.get('extra_body') or {}).items():
+            ai_options.parse_extra_body(raw)
+    except ValueError as exc:
+        return web.json_response({'ok': False, 'error': str(exc)}, status=400)
+    saved = PREVIEW_STATE['ai_options']
+    for key, value in body.items():
+        if isinstance(value, dict):
+            target = saved.setdefault(key, {})
+            for sub_key, sub_value in value.items():
+                if isinstance(sub_value, dict):
+                    target.setdefault(sub_key, {}).update(sub_value)
+                else:
+                    target[sub_key] = sub_value
+        else:
+            saved[key] = value
+    return await preview_ai_options(request)
+
 
 @routes.get('/api/autoreply')
 async def get_autoreply(request):
@@ -908,6 +1035,7 @@ def build_app() -> web.Application:
 
     app = web.Application(middlewares=[no_store_cache])
     app.add_routes(routes)
+    app.router.add_get('/static/v-{version}/{path:.+}', versioned_static)
     app.router.add_static('/static/', STATIC_DIR, name='static')
     return app
 

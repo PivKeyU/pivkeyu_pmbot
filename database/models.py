@@ -223,6 +223,18 @@ async def save_filtered_message(user_id: int, message_id: int, content: str, rea
                 logger.exception("拦截消息篮机会性清理失败，本条记录仍会保存")
         await db.commit()
 
+async def get_latest_filtered_message(user_id: int):
+    async with db_manager.get_connection() as db:
+        async with db.execute('''
+            SELECT * FROM filtered_messages WHERE user_id = ? ORDER BY id DESC LIMIT 1
+        ''', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [description[0] for description in cursor.description]
+            return dict(zip(cols, row))
+
+
 async def get_filtered_messages(limit: int = 20, offset: int = 0):
     async with db_manager.get_connection() as db:
         async with db.execute('''
@@ -381,9 +393,14 @@ async def get_message_stats() -> dict:
             today = row[0] if row else 0
     return {'total': total, 'today': today}
 
+# 会话列表的可见范围：已验证用户，或者曾经验证过、已有往来消息的用户（例如被撤销验证的人），
+# 从没通过验证的机器人 / 骚扰号不会出现在列表里
+_CONVERSATION_VISIBLE_SQL = '(u.is_verified = 1 OR EXISTS(SELECT 1 FROM messages mv WHERE mv.user_id = u.user_id))'
+
+
 async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: str = None):
-    """会话列表：仅展示已通过验证的用户及其最后一条消息预览。"""
-    where_clauses = ['u.is_verified = 1']
+    """会话列表：可见用户及其最后一条消息预览、未读与申诉状态。"""
+    where_clauses = [_CONVERSATION_VISIBLE_SQL]
     params = []
     if query:
         where_clauses.append(
@@ -408,11 +425,17 @@ async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: st
                 m.content AS last_content,
                 m.direction AS last_direction,
                 m.media_type AS last_media_type,
-                m.created_at AS last_message_at
+                m.created_at AS last_message_at,
+                CASE WHEN m.direction = 'user_to_admin'
+                      AND (cr.read_at IS NULL OR m.created_at > cr.read_at)
+                     THEN 1 ELSE 0 END AS is_unread,
+                EXISTS(SELECT 1 FROM review_appeals ra
+                       WHERE ra.user_id = u.user_id AND ra.status = 'pending') AS pending_appeal
             FROM users u
             LEFT JOIN messages m ON m.id = (
                 SELECT id FROM messages WHERE user_id = u.user_id ORDER BY id DESC LIMIT 1
             )
+            LEFT JOIN conversation_reads cr ON cr.user_id = u.user_id
             {where_sql}
             ORDER BY (m.created_at IS NULL) ASC, m.created_at DESC, u.last_active DESC
             LIMIT ? OFFSET ?
@@ -424,17 +447,17 @@ async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: st
             return [dict(zip(cols, row)) for row in rows]
 
 async def get_conversation_summaries_count(query: str = None) -> int:
-    where_clauses = ['is_verified = 1']
+    where_clauses = [_CONVERSATION_VISIBLE_SQL]
     params = []
     if query:
         where_clauses.append(
-            '(CAST(user_id AS TEXT) LIKE ? OR username LIKE ? OR first_name LIKE ?)'
+            '(CAST(u.user_id AS TEXT) LIKE ? OR u.username LIKE ? OR u.first_name LIKE ?)'
         )
         like = f'%{query}%'
         params = [like, like, like]
     where_sql = 'WHERE ' + ' AND '.join(where_clauses)
     async with db_manager.get_connection() as db:
-        async with db.execute(f'SELECT COUNT(*) FROM users {where_sql}', params) as cursor:
+        async with db.execute(f'SELECT COUNT(*) FROM users u {where_sql}', params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -1077,8 +1100,10 @@ async def get_pending_reply_topics(limit: int = 15):
                 ON m_src.user_id = t.user_id AND m_src.message_id = t.source_message_id
             LEFT JOIN messages m_dst
                 ON m_dst.user_id = t.user_id AND m_dst.dest_message_id = t.dest_message_id
+            LEFT JOIN conversation_reads cr ON cr.user_id = t.user_id
             WHERE t.rn = 1
               AND t.direction = 'user_to_admin'
+              AND (cr.read_at IS NULL OR t.created_at > cr.read_at)
             ORDER BY t.created_at DESC, t.id DESC
             LIMIT ?
         ''', (int(limit),)) as cursor:
@@ -1095,7 +1120,7 @@ async def count_pending_reply_topics() -> int:
         async with db.execute('''
             SELECT COUNT(*)
             FROM (
-                SELECT mm.direction,
+                SELECT mm.user_id, mm.direction, mm.created_at,
                        ROW_NUMBER() OVER (
                            PARTITION BY mm.user_id
                            ORDER BY mm.created_at DESC, mm.id DESC
@@ -1103,11 +1128,117 @@ async def count_pending_reply_topics() -> int:
                 FROM message_mappings mm
                 WHERE mm.broadcast_id IS NULL
             ) t
+            LEFT JOIN conversation_reads cr ON cr.user_id = t.user_id
             WHERE t.rn = 1
               AND t.direction = 'user_to_admin'
+              AND (cr.read_at IS NULL OR t.created_at > cr.read_at)
         ''') as cursor:
             row = await cursor.fetchone()
             return int(row[0]) if row else 0
+
+
+# --- 会话已读 ---
+
+async def is_conversation_visible(user_id: int) -> bool:
+    """与会话列表同一口径：已验证，或者曾经有过往来消息。"""
+    async with db_manager.get_connection() as db:
+        async with db.execute(
+            f'SELECT {_CONVERSATION_VISIBLE_SQL} FROM users u WHERE u.user_id = ?', (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row and row[0])
+
+
+async def mark_conversation_read(user_id: int) -> None:
+    async with db_manager.get_connection() as db:
+        await db.execute('''
+            INSERT INTO conversation_reads (user_id, read_at) VALUES (?, CURRENT_TIMESTAMP)
+            ON CONFLICT(user_id) DO UPDATE SET read_at = CURRENT_TIMESTAMP
+        ''', (user_id,))
+        await db.commit()
+
+
+async def mark_all_conversations_read() -> int:
+    """把所有「最后一条是用户消息」的会话标为已读，返回处理的会话数。"""
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute('''
+            INSERT INTO conversation_reads (user_id, read_at)
+            SELECT DISTINCT user_id, CURRENT_TIMESTAMP FROM messages
+            WHERE true
+            ON CONFLICT(user_id) DO UPDATE SET read_at = CURRENT_TIMESTAMP
+        ''')
+        await db.commit()
+        return cursor.rowcount or 0
+
+
+# --- 审查暂停申请 ---
+
+async def count_recent_ai_filtered(user_id: int, hours: int) -> int:
+    """最近 hours 小时内被 AI 审查拦下的消息数（关键词拦截不算）。"""
+    async with db_manager.get_connection() as db:
+        async with db.execute('''
+            SELECT COUNT(*) FROM filtered_messages
+            WHERE user_id = ?
+              AND filtered_at >= datetime('now', ?)
+              AND (reason IS NULL OR reason NOT LIKE '关键词广告拦截命中%')
+        ''', (user_id, f'-{int(hours)} hours')) as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
+
+
+async def create_review_appeal(user_id: int, blocked_reason: str) -> int:
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute(
+            'INSERT INTO review_appeals (user_id, blocked_reason) VALUES (?, ?)',
+            (user_id, blocked_reason),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def set_review_appeal_topic_message(appeal_id: int, message_id: int) -> None:
+    async with db_manager.get_connection() as db:
+        await db.execute('UPDATE review_appeals SET topic_message_id = ? WHERE id = ?', (message_id, appeal_id))
+        await db.commit()
+
+
+async def _fetch_appeal(sql: str, params: tuple):
+    async with db_manager.get_connection() as db:
+        async with db.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [description[0] for description in cursor.description]
+            return dict(zip(cols, row))
+
+
+async def get_review_appeal(appeal_id: int):
+    return await _fetch_appeal('SELECT * FROM review_appeals WHERE id = ?', (appeal_id,))
+
+
+async def get_pending_review_appeal(user_id: int):
+    return await _fetch_appeal(
+        "SELECT * FROM review_appeals WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
+        (user_id,),
+    )
+
+
+async def get_latest_review_appeal(user_id: int):
+    return await _fetch_appeal(
+        'SELECT * FROM review_appeals WHERE user_id = ? ORDER BY id DESC LIMIT 1', (user_id,),
+    )
+
+
+async def resolve_review_appeals(user_id: int, status: str, handled_by: int, duration_minutes: int = None) -> int:
+    """把该用户所有待处理的申请标为 approved / rejected，返回处理条数。"""
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute('''
+            UPDATE review_appeals
+            SET status = ?, handled_by = ?, duration_minutes = ?, handled_at = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND status = 'pending'
+        ''', (status, handled_by, duration_minutes, user_id))
+        await db.commit()
+        return cursor.rowcount or 0
 
 
 # --- Settings ---

@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
-from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
+from services import broadcast as broadcast_service, moderation, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
 from config import config
 from utils import copy as copy_text
@@ -50,6 +50,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/inbox` - 查看待办小本本\n"
         "- `/view_filtered` - 查看被女仆拦下的消息\n"
         "- `/exempt` - 给可信用户发放审查通行证（临时或永久）\n"
+        "- `/unverify` - 收回用户的验证结果，让他重新验证（`/verify` 恢复）\n"
         "- `/group` - 管理私聊用户分组\n"
         "- `/broadcast` - 向全部用户或指定分组广播\n"
         "- `/spamrules` - 管理关键词广告拦截\n"
@@ -305,6 +306,48 @@ async def monitor_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     statuses = await db.get_runtime_statuses(category=category)
     await update.message.reply_text(_format_runtime_statuses(statuses))
+
+async def _target_user_for_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """在用户话题里直接用；不在话题里时第一个参数是 user_id。返回 user 字典或 None（已回复提示）。"""
+    message = update.message
+    if message.is_topic_message:
+        user = await db.get_user_by_thread_id(message.message_thread_id)
+        if not user:
+            await message.reply_text(copy_text.no_topic_user())
+        return user
+    try:
+        user = await db.get_user(int(context.args[0]))
+    except (IndexError, ValueError):
+        await message.reply_text(copy_text.with_deco(
+            "在用户的话题里直接发命令，或者带上用户 ID，例如：/unverify 123456789", 'ASK'))
+        return None
+    if not user:
+        await message.reply_text(copy_text.user_id_invalid())
+    return user
+
+
+@admin_only
+async def unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """收回用户的验证结果：他下次发消息要重新完成人机验证。"""
+    user = await _target_user_for_command(update, context)
+    if not user:
+        return
+    await moderation.revoke_verification(user['user_id'])
+    await update.message.reply_text(copy_text.with_deco(
+        f"已收回 {user.get('first_name') or user['user_id']}（{user['user_id']}）的验证结果，"
+        "他下次发消息需要重新验证。想恢复的话用 /verify。", 'OK'))
+
+
+@admin_only
+async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """直接把用户标记为已验证（撤销验证后反悔时使用）。"""
+    user = await _target_user_for_command(update, context)
+    if not user:
+        return
+    await moderation.restore_verification(user['user_id'])
+    await update.message.reply_text(copy_text.with_deco(
+        f"已恢复 {user.get('first_name') or user['user_id']}（{user['user_id']}）的验证状态。", 'OK'))
+
 
 @admin_only
 async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -174,8 +174,11 @@ input, select, textarea { font: inherit; color: inherit; }
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--border); background: var(--surface); color: var(--text);
   border-radius: 999px; padding: 6px 14px; font-size: 13px;
+  /* 按钮文字永远不换行：之前「还原」「发送」被挤成竖排就是这里没兜住 */
+  white-space: nowrap; flex-shrink: 0;
   transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
 }
+a.btn { text-decoration: none; }
 .btn:hover { background: #fbf1e6; }
 .btn.primary {
   background: linear-gradient(135deg, #f18ea0, #e57a8d);
@@ -322,7 +325,8 @@ pre.result {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow);
 }
-.conv-search { padding: 10px; border-bottom: 1.5px dashed var(--border); }
+.conv-search { padding: 10px; border-bottom: 1.5px dashed var(--border); display: flex; gap: 8px; align-items: center; }
+.conv-search .input { flex: 1; min-width: 0; }
 .conv-items { flex: 1; overflow-y: auto; }
 .conv-item { padding: 10px 12px; border-bottom: 1px dashed #f2e4d4; cursor: pointer; transition: background 0.12s; }
 .conv-item:hover { background: #fdf3ec; }
@@ -340,8 +344,17 @@ pre.result {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow);
 }
-.chat-head { padding: 10px 14px; border-bottom: 1.5px dashed var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.chat-head { padding: 10px 14px; border-bottom: 1.5px dashed var(--border); display: flex; flex-direction: column; gap: 8px; }
 .chat-head .who { font-weight: 650; }
+.chat-head-main { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.chat-head-info { min-width: 0; }
+.chat-head-info .conv-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chat-head-info .conv-badges:empty { display: none; }
+.chat-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.appeal-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  background: var(--warn-soft); border: 1px solid #f1dcb4; border-radius: 12px; padding: 8px 12px;
+}
 .chat-body {
   flex: 1; overflow-y: auto; padding: 14px; background: #fdf4ec;
   /* 淡淡的斜纹桌布 */
@@ -402,6 +415,21 @@ pre.result {
 .test-result { margin-top: 8px; min-height: 18px; word-break: break-all; }
 .test-result.ok { color: #5c8f47; }
 .test-result.error { color: #c25555; }
+.section-tabs { margin-bottom: 14px; }
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 12px 0; border-bottom: 1px dashed #f2e4d4;
+}
+.setting-row:last-of-type { border-bottom: none; }
+.setting-text { min-width: 0; }
+.setting-title { font-weight: 600; font-size: 13.5px; margin-bottom: 2px; }
+.setting-control { flex: none; }
+.params-table td { vertical-align: middle; }
+.params-table .input { min-width: 110px; }
+.prompt-input { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; min-height: 200px; }
+.fixed-suffix { margin-top: 8px; }
+.fixed-suffix summary { cursor: pointer; }
+.fixed-suffix pre { margin-top: 6px; }
 
 /* ---------- 配置中心 ---------- */
 .config-item { border-bottom: 1px dashed #f2e4d4; padding: 11px 0; }
@@ -410,6 +438,8 @@ pre.result {
 .config-item .label { font-weight: 600; font-size: 13.5px; }
 .config-item .hint { color: var(--text-dim); font-size: 12.5px; margin: 2px 0 6px; }
 .config-item .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.config-item .controls > .switch { align-self: center; }
+.config-item .controls .control-input { flex: 0 1 380px; min-width: 200px; }
 .config-item .controls .input { max-width: 380px; }
 
 @media (max-width: 900px) {
@@ -432,6 +462,7 @@ pre.result {
   .credit.main-credit { display: block; }
   .ai-grid, .ai-grid.three { grid-template-columns: 1fr; }
   .ai-grid .span-2 { grid-column: auto; }
+  .setting-row { align-items: flex-start; }
   .topbar { position: static; padding: 12px 16px; }
   .topbar h2 { white-space: nowrap; }
   .content { padding: 16px 14px 32px; }

@@ -48,7 +48,6 @@ class Config:
     ANTHROPIC_BASE_URL = (os.getenv('ANTHROPIC_BASE_URL') or '').strip() or None
     
     ENABLE_AI_FILTER = os.getenv('ENABLE_AI_FILTER', 'true').lower() == 'true'
-    AI_CONFIDENCE_THRESHOLD = int(os.getenv('AI_CONFIDENCE_THRESHOLD', '70'))
     
     VERIFICATION_ENABLED = os.getenv('VERIFICATION_ENABLED', 'true').lower() == 'true'
     # 首次验证方式：random（图片 / 文字随机）、text（常识文字题）、image（图片验证码）

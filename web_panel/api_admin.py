@@ -19,7 +19,10 @@ from rss.handlers import ensure_user_data, is_valid_url
 from services import broadcast as broadcast_service
 from services import image_update, safe_update
 from services.ai_providers import AI_FEATURES, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, model_setting_key
-from services.ai_service import AUTOREPLY_PERSONALITY_MAX_CHARS, ai_service, provider_credentials
+from services import ai_options
+from services.ai_service import (
+    AUTOREPLY_PERSONALITY_MAX_CHARS, REVIEW_OUTPUT_FORMAT, VERIFICATION_FORMAT, ai_service, provider_credentials,
+)
 from . import api_config, events, http_utils, keys
 
 logger = logging.getLogger(__name__)
@@ -406,19 +409,42 @@ async def test_ai_connection(request):
     data = await http_utils.read_json(request)
     provider = _read_provider(data.get('provider'))
     model = str(data.get('model') or '').strip() or None
+    feature = str(data.get('feature') or 'filter')
+    if feature not in AI_FEATURES:
+        return http_utils.fail('feature 只允许 filter / verification / autoreply')
     api_key, _ = provider_credentials(provider)
     if not api_key:
         return http_utils.fail(f'请先设置 {_provider_label(provider)} 的 API Key')
 
     try:
-        result = await asyncio.wait_for(ai_service.test_connection(provider, model), timeout=60)
+        result = await asyncio.wait_for(ai_service.test_connection(provider, model, feature), timeout=620)
     except asyncio.TimeoutError:
-        return http_utils.fail('连接超时（60 秒），请检查 Base URL 与网络', status=502)
+        return http_utils.fail('连接超时：超过了该功能设置的超时秒数，请检查 Base URL、网络或调低思考等级', status=502)
     except Exception as exc:
         logger.warning('AI 连接测试失败 provider=%s: %s', provider, exc)
         return http_utils.fail(f'连接失败：{str(exc)[:300]}', status=502)
     http_utils.audit(request, 'ai_settings.test', f'provider={provider} model={result["model"]}')
-    return http_utils.ok({'provider': provider, **result})
+    return http_utils.ok({'provider': provider, 'feature': feature, **result})
+
+
+@routes.get('/api/ai-options')
+async def get_ai_options(request):
+    data = await ai_options.dump_options()
+    # 固定的输出格式只读展示，让管理员知道自定义提示词后面会自动接上什么
+    data['fixed_suffix'] = {'review': REVIEW_OUTPUT_FORMAT, 'verification': VERIFICATION_FORMAT}
+    data['effort_levels'] = list(ai_options.EFFORT_LEVELS)
+    return http_utils.ok(data)
+
+
+@routes.put('/api/ai-options')
+async def update_ai_options(request):
+    data = await http_utils.read_json(request)
+    try:
+        await ai_options.update_options(data)
+    except ValueError as exc:
+        return http_utils.fail(str(exc))
+    http_utils.audit(request, 'ai_options.update', ','.join(sorted(data.keys())))
+    return await get_ai_options(request)
 
 
 @routes.put('/api/ai-settings')

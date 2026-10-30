@@ -230,6 +230,7 @@ textarea.input { resize: vertical; min-height: 72px; }
 }
 .switch input:checked + .slider::before { transform: translateX(16px); }
 .switch input:disabled + .slider { opacity: 0.5; }
+.switch input:focus-visible + .slider { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
 
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th {
@@ -458,16 +459,31 @@ pre.result {
   }
   .nav::-webkit-scrollbar { display: none; }
   .nav a { white-space: nowrap; margin-bottom: 0; padding: 6px 10px; font-size: 13px; }
-  .nav .group, .greet, .sidebar-foot { display: none; }
+  .nav .group, .greet, .sidebar-foot .credit { display: none; }
+  .sidebar-foot { display: flex; justify-content: flex-end; padding: 4px 14px 8px; border-top: 0; }
+  .sidebar-foot button { width: auto; padding: 4px 12px; }
   .credit.main-credit { display: block; }
   .ai-grid, .ai-grid.three { grid-template-columns: 1fr; }
   .ai-grid .span-2 { grid-column: auto; }
   .setting-row { align-items: flex-start; }
-  .topbar { position: static; padding: 12px 16px; }
+  .topbar { position: relative; padding: 12px 16px; }
   .topbar h2 { white-space: nowrap; }
   .content { padding: 16px 14px 32px; }
   .chat-layout { grid-template-columns: 1fr; height: auto; min-height: 0; }
   .conv-list { max-height: 260px; }
   .chat-panel { height: 68vh; min-height: 420px; }
   .msg .msg-col { max-width: 86%; }
+}
+
+@media (max-width: 600px) {
+  .params-table, .params-table tbody { display: block; }
+  .params-table thead {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+  .params-table tr { display: block; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+  .params-table td { display: grid; grid-template-columns: 105px minmax(0, 1fr); align-items: center; gap: 8px; border: 0; }
+  .params-table td:first-child { display: block; white-space: nowrap; }
+  .params-table td[data-label]::before { content: attr(data-label); color: var(--text-dim); font-size: 12px; }
+  .params-table .input { min-width: 0; }
 }

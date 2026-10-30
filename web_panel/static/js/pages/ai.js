@@ -340,7 +340,7 @@ export default {
         const models = {};
         for (const [key, input] of Object.entries(inputs)) {
           const value = input.value.trim();
-          if (value) models[key] = value;
+          models[key] = value;
         }
         saveButton.disabled = true;
         try {
@@ -371,6 +371,8 @@ export default {
 /* ---------------- 功能开关 ---------------- */
 
 function settingRow(title, hint, control) {
+  const input = control.querySelector('input');
+  if (input) input.setAttribute('aria-label', title);
   return el('div', { class: 'setting-row' },
     el('div', { class: 'setting-text' },
       el('div', { class: 'setting-title' }, title),
@@ -445,12 +447,15 @@ function renderParams(options, data) {
     effort.value = current.effort;
     const maxTokens = el('input', { class: 'input', type: 'number', min: '16', placeholder: '默认', value: current.max_tokens });
     const timeout = el('input', { class: 'input', type: 'number', min: '3', max: '600', placeholder: `默认 ${current.default_timeout}`, value: current.timeout });
+    effort.setAttribute('aria-label', `${name}思考等级`);
+    maxTokens.setAttribute('aria-label', `${name}最大输出 token`);
+    timeout.setAttribute('aria-label', `${name}超时（秒）`);
     rows[feature] = { effort, maxTokens, timeout };
     return el('tr', {},
       el('td', {}, el('strong', {}, name)),
-      el('td', {}, effort),
-      el('td', {}, maxTokens),
-      el('td', {}, timeout),
+      el('td', { dataset: { label: '思考等级' } }, effort),
+      el('td', { dataset: { label: '最大输出 token' } }, maxTokens),
+      el('td', { dataset: { label: '超时（秒）' } }, timeout),
     );
   });
 

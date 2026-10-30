@@ -696,8 +696,12 @@ async def put_ai_settings(request):
     if body.get('provider'):
         STORE['ai']['provider'] = body['provider']
     for key, value in (body.get('models') or {}).items():
-        if key in all_model_setting_keys() and value:
-            STORE['ai']['models'][key] = value
+        if key in all_model_setting_keys():
+            value = str(value or '').strip()
+            if value:
+                STORE['ai']['models'][key] = value
+            else:
+                STORE['ai']['models'].pop(key, None)
     return _ok(_ai_settings_payload())
 
 

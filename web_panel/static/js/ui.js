@@ -140,7 +140,18 @@ export function textInput({ value = '', placeholder = '', type = 'text', onEnter
 
 export function switchBox({ checked = false, disabled = false, onChange } = {}) {
   const input = el('input', { type: 'checkbox', checked, disabled });
-  if (onChange) input.addEventListener('change', () => onChange(input.checked));
+  if (onChange) input.addEventListener('change', async () => {
+    const next = input.checked;
+    input.disabled = true;
+    try {
+      if (await onChange(next) === false) input.checked = !next;
+    } catch (err) {
+      input.checked = !next;
+      toast(err.message, 'error');
+    } finally {
+      input.disabled = disabled;
+    }
+  });
   return el('label', { class: 'switch' }, input, el('span', { class: 'slider' }));
 }
 

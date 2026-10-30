@@ -126,6 +126,38 @@ async def _flow(tmp_path):
             response = await client.get(path)
             assert response.status == 200, f'{path} -> {response.status}'
 
+        # 清空某个用途的模型应删除覆盖，其他用途与协议仍保持不变。
+        for provider in ('gemini', 'openai', 'anthropic'):
+            filter_key = f'{provider}_model_filter'
+            reply_key = f'{provider}_model_autoreply'
+            response = await client.put(
+                '/api/ai-settings',
+                json={'models': {filter_key: 'custom-filter', reply_key: 'custom-reply'}},
+                headers=PANEL_HEADERS,
+            )
+            assert response.status == 200
+            response = await client.put(
+                '/api/ai-settings', json={'models': {filter_key: '  '}}, headers=PANEL_HEADERS,
+            )
+            assert response.status == 200
+            models = (await response.json())['data']['models']
+            assert models[filter_key] == ''
+            assert await db.get_setting(filter_key) is None
+            assert models[reply_key] == 'custom-reply'
+
+        # 非法键不能导致同一请求中的提供商或合法模型先被写入。
+        original_provider = await db.get_setting('ai_provider')
+        response = await client.put(
+            '/api/ai-settings',
+            json={'provider': 'openai', 'models': {
+                'gemini_model_autoreply': 'should-not-save', 'unknown_model': 'invalid',
+            }},
+            headers=PANEL_HEADERS,
+        )
+        assert response.status == 400
+        assert await db.get_setting('ai_provider') == original_provider
+        assert await db.get_setting('gemini_model_autoreply') == 'custom-reply'
+
         # 广播：此时库里没有任何用户，应当拒绝
         response = await client.post('/api/broadcast', json={'text': 'hello'}, headers=PANEL_HEADERS)
         assert response.status == 400

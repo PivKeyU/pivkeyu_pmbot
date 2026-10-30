@@ -135,8 +135,10 @@ function buildItem(item, onChange) {
       const updated = await api.put(`/api/config/${encodeURIComponent(item.key)}`, { value: rawValue });
       toast(`已保存 ${item.label}${item.restart ? '（重启后生效）' : ''}`, 'ok');
       onChange(updated);
+      return true;
     } catch (err) {
       toast(err.message, 'error');
+      return false;
     }
   }
 

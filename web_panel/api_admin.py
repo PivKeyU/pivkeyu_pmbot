@@ -453,7 +453,6 @@ async def update_ai_settings(request):
     provider = data.get('provider')
     if provider is not None:
         provider = _read_provider(provider)
-        await db.set_setting('ai_provider', provider, f'当前使用的AI提供商 ({_provider_list_hint()})')
 
     models = data.get('models') or {}
     if not isinstance(models, dict):
@@ -461,10 +460,15 @@ async def update_ai_settings(request):
     for key, value in models.items():
         if key not in AI_MODEL_KEYS:
             return http_utils.fail(f'未知模型配置项: {key}')
+
+    if provider is not None:
+        await db.set_setting('ai_provider', provider, f'当前使用的AI提供商 ({_provider_list_hint()})')
+    for key, value in models.items():
         value = str(value or '').strip()
-        if not value:
-            return http_utils.fail(f'{key} 不能为空')
-        await db.set_setting(key, value)
+        if value:
+            await db.set_setting(key, value)
+        else:
+            await db.delete_setting(key)
 
     http_utils.audit(request, 'ai_settings.update', f'provider={provider} 模型数={len(models)}')
     return await get_ai_settings(request)

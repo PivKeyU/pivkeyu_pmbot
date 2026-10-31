@@ -102,7 +102,7 @@ export function table({ columns, rows, empty = '暂无数据', rowKey }) {
   }
   const thead = el('thead', {}, el('tr', {}, columns.map((col) => el('th', { class: col.className || '' }, col.title))));
   const tbody = el('tbody', {}, rows.map((row, index) => el('tr', { dataset: rowKey ? { key: rowKey(row) } : {} },
-    columns.map((col) => el('td', { class: col.className || '' }, col.render ? col.render(row, index) : row[col.key])),
+    columns.map((col) => el('td', { class: col.className || '', dataset: { label: col.title || '' } }, col.render ? col.render(row, index) : row[col.key])),
   )));
   return el('div', { class: 'table-wrap' }, el('table', { class: 'table' }, thead, tbody));
 }

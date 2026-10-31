@@ -2,7 +2,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from .command_handler import (
     start, help_command, block, unblock, blacklist, stats, inbox, getid, autoreply,
     panel, exempt, group, broadcast, spamrules, tgmon, webmon, monitor_status, updatebot,
-    unverify, verify,
+    unverify, verify, miniapp,
 )
 from .user_handler import handle_message, handle_edited_private_message
 from .callback_handler import handle_callback
@@ -56,6 +56,8 @@ def register_handlers(app: Application):
         app.add_handler(CommandHandler("block", block, filters=_command_filters()))
         app.add_handler(CommandHandler("unblock", unblock, filters=_command_filters()))
         app.add_handler(CommandHandler("panel", panel, filters=_command_filters()))
+        # Web App 按钮只能发在私聊里
+        app.add_handler(CommandHandler("app", miniapp, filters=_command_filters(filters.ChatType.PRIVATE)))
         app.add_handler(CommandHandler("blacklist", blacklist, filters=_command_filters()))
         app.add_handler(CommandHandler("stats", stats, filters=_command_filters()))
         app.add_handler(CommandHandler("inbox", inbox, filters=_command_filters()))

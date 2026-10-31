@@ -1,6 +1,6 @@
 /* 配置中心：环境变量类配置的分组展示、保存（热生效）与重置。 */
 
-import { api } from '../api.js';
+import { api, isMiniApp } from '../api.js';
 import { el, clear, spinner, toast, badge, switchBox, selectInput } from '../ui.js';
 
 const SOURCE_LABEL = {
@@ -186,7 +186,8 @@ export default {
         return;
       }
       clear(container);
-      container.appendChild(passwordCard());
+      // Mini App 没有改密接口，面板密码只能在网页版修改
+      if (!isMiniApp) container.appendChild(passwordCard());
 
       const byCategory = new Map();
       for (const item of data.items) {

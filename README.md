@@ -290,6 +290,37 @@ WEB_PANEL_PASSWORD=           # 留空 = 使用网页初始化；也可在此预
 > [!IMPORTANT]
 > 远程部署请先在 `.env` 预设强密码，再通过 HTTPS 反向代理（Nginx / Caddy）提供访问，并按需开启 `WEB_PANEL_TRUST_PROXY=true`。不要把未设置密码的初始化页面开放给不可信网络。
 
+### Telegram Mini App（Turnstile 验证与手机管理）
+
+Mini App 挂在面板的 `/miniapp/` 路径下，和面板共用端口与反向代理，提供两个入口：
+
+- **人机验证**：`VERIFICATION_MODE=turnstile` 时，新用户点按钮打开 Cloudflare Turnstile，通过后自动补发验证前的消息。打不开时可以在聊天里点「打不开？换普通验证题」，回到图片或文字题
+- **手机管理页**：管理员私聊机器人发 `/app` 打开，免密码，包含概览、用户/黑名单、配置中心、AI 设置、回复与关键词、广播与分组、RSS、消息监控、网页监控、网络工具和机器人更新
+
+启用步骤：
+
+1. 确认面板已经能通过 HTTPS 域名访问。现有反向代理转发整个域名时不用改；只转发部分路径时要补上 `/miniapp/`
+2. 在 Cloudflare 后台创建 Turnstile 组件，主机名填面板域名
+3. 在 `.env` 里配置后重启：
+
+```env
+MINIAPP_PUBLIC_URL=https://panel.example.com/miniapp
+TURNSTILE_SITE_KEY=<Site Key>
+TURNSTILE_SECRET_KEY=<Secret Key>
+VERIFICATION_MODE=turnstile
+```
+
+需要 `WEB_PANEL_ENABLED=true`。Mini App 和面板登录页在同一个域名下，公网部署时要设置强密码并开启 `WEB_PANEL_TRUST_PROXY=true`。
+
+安全边界：
+
+- `/miniapp/api/` 下只注册 `web_panel/miniapp.py` 里 `ALLOWED_ROUTES` 列出的接口，密码登录、首次设密、修改面板密码和会话回复都不在这个路径下
+- 手机管理页能改 API Key 和 Token、发广播、管理 SSH 服务器、更新机器人，权限与网页版接近。**Telegram 账号等于管理入口，请给 `ADMIN_IDS` 里的账号开启两步验证**
+- 把自己移出 `ADMIN_IDS` 后会立即失去手机管理权限，需要回网页版恢复
+- 经 Cloudflare 代理时，单次请求约 100 秒没有响应就会超时。NextTrace、安装工具这类耗时操作可能显示失败，但服务器上的任务仍在运行，以实际结果为准
+- 身份来自 Telegram 签名的 `initData`，一小时内有效；只有 `ADMIN_IDS` 里的用户能拿到管理会话，且每次请求都会重新检查
+- Turnstile 加载失败或校验服务不可用不计入验证失败次数
+
 ### 配置热生效的原理
 
 Web 面板修改 `.env` 类配置时，会写入 SQLite 的 `settings` 表作为**覆盖层**（优先于 `.env`），并通过 `config.apply_override()` 直接更新运行中的配置。因此：
@@ -755,7 +786,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
 | `VERIFICATION_ENABLED` | ❌ | `true` | 是否启用新用户人机验证 |
-| `VERIFICATION_MODE` | ❌ | `random` | 验证方式：`random` 每次随机出图片验证码或文字题，`text` 只出文字题（AI 出题，失败时用本地题库与程序化题目），`image` 只出本地生成的图片验证码 |
+| `VERIFICATION_MODE` | ❌ | `random` | 验证方式：`random` 每次随机出图片验证码或文字题，`text` 只出文字题（AI 出题，失败时用本地题库与程序化题目），`image` 只出本地生成的图片验证码，`turnstile` 使用 Mini App 里的 Cloudflare Turnstile（配置不完整时退回 `random`） |
 | `AUTO_UNBLOCK_ENABLED` | ❌ | `true` | 是否启用黑名单用户 AI 挑战自助解封 |
 | `DATABASE_PATH` | ❌ | `./data/bot.db` | SQLite 数据库路径（容器内路径通常无需修改） |
 | `MAX_WORKERS` | ❌ | `5` | 消息队列 Worker 数量。**预留配置，当前代码未使用** |
@@ -849,6 +880,9 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | `WEB_PANEL_PASSWORD` | ❌ | 空 | 面板密码；留空 = 首次访问时在网页上初始化（15 分钟窗口），也可在此预设 |
 | `WEB_PANEL_PASSWORD_SHA256` | ❌ | 空 | 密码的 SHA256 摘要（64 位十六进制），设置后优先于明文密码；登录后更改密码由面板自动维护 |
 | `WEB_PANEL_TRUST_PROXY` | ❌ | `false` | 经 Nginx/Caddy 反代时设 `true`，登录限速按 `X-Forwarded-For` 识别来源 |
+| `MINIAPP_PUBLIC_URL` | ❌ | 空 | 面板的 HTTPS 地址加 `/miniapp`，留空则不启用 Mini App |
+| `TURNSTILE_SITE_KEY` | ❌ | 空 | Cloudflare Turnstile Site Key |
+| `TURNSTILE_SECRET_KEY` | ❌ | 空 | Cloudflare Turnstile Secret Key |
 
 ### 🔑 获取必要信息
 

@@ -24,9 +24,25 @@ def setup(app) -> None:
     app.bot_data.setdefault('web_panel_enabled', True)
 
 
+def _mount_miniapp(app, web_app, http_session) -> None:
+    if not config.MINIAPP_PUBLIC_URL:
+        return
+    if not config.MINIAPP_PUBLIC_URL.startswith('https://'):
+        logger.warning('MINIAPP_PUBLIC_URL 必须以 https:// 开头，Mini App 不会启动。')
+        return
+
+    from .miniapp import create_app as create_miniapp
+    from .server import MINIAPP_PREFIX
+
+    web_app.add_subapp(MINIAPP_PREFIX, create_miniapp(app, http_session))
+    logger.info('Mini App 已挂载到面板路径 %s', MINIAPP_PREFIX)
+
+
 async def start(app) -> None:
     if not config.WEB_PANEL_ENABLED:
         logger.info('Web 面板未启用（WEB_PANEL_ENABLED=false）')
+        if config.MINIAPP_PUBLIC_URL:
+            logger.warning('Mini App 挂在 Web 面板下，面板未启用时不会启动。')
         return
 
     from . import auth
@@ -43,6 +59,7 @@ async def start(app) -> None:
 
     http_session = aiohttp.ClientSession()
     web_app = create_app(app.bot, http_session)
+    _mount_miniapp(app, web_app, http_session)
     runner = web.AppRunner(web_app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, config.WEB_PANEL_HOST, config.WEB_PANEL_PORT)

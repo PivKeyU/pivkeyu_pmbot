@@ -107,6 +107,90 @@ async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, th
         )
     return sent
 
+
+async def deliver_pending_update(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """验证通过后补发暂存的那条消息；没有暂存消息时返回 False。"""
+    if 'pending_update' not in context.user_data:
+        return False
+
+    pending_update = context.user_data.pop('pending_update')
+    message = pending_update.message
+    image_bytes = None
+
+    if message.photo:
+        photo_file = await message.photo[-1].get_file()
+        image_bytes = await photo_file.download_as_bytearray()
+    elif message.sticker and not message.sticker.is_animated and not message.sticker.is_video:
+        sticker_file = await message.sticker.get_file()
+        sticker_bytes = await sticker_file.download_as_bytearray()
+        image_bytes = await sticker_to_image(sticker_bytes)
+
+    should_forward = True
+    if message.video or message.animation:
+        pass
+    else:
+        analyzing_message = await context.bot.send_message(
+            chat_id=message.chat_id,
+            text=copy_text.scan_message(copy_text.address(await db.is_admin(user_id))),
+            reply_to_message_id=message.message_id
+        )
+        analysis_result = await gemini_service.analyze_message(message, image_bytes)
+        if analysis_result.get("is_spam"):
+            should_forward = False
+            media_type = None
+            media_file_id = None
+            if message.photo:
+                media_type = "photo"
+                media_file_id = message.photo[-1].file_id
+            elif message.sticker:
+                media_type = "sticker"
+                media_file_id = message.sticker.file_id
+
+            await db.save_filtered_message(
+                user_id=user_id,
+                message_id=message.message_id,
+                content=message.text or message.caption,
+                reason=analysis_result.get("reason"),
+                media_type=media_type,
+                media_file_id=media_file_id,
+            )
+            reason = analysis_result.get("reason", "暂时没有写明理由")
+            await analyzing_message.edit_text(
+                copy_text.msg_blocked(reason),
+                reply_markup=await moderation.blocked_reply_markup(reason),
+            )
+        else:
+            await analyzing_message.delete()
+
+    if should_forward:
+        thread_id, is_new = await get_or_create_thread(pending_update, context)
+        if not thread_id:
+            await pending_update.message.reply_text(copy_text.topic_create_failed(copy_text.address(await db.is_admin(user_id))))
+            return True
+
+        try:
+            if not is_new:
+                await _resend_message(pending_update, context, thread_id)
+        except BadRequest as e:
+            if "Message thread not found" in e.message:
+                await db.update_user_thread_id(user_id, None)
+                await db.update_user_verification(user_id, False)
+
+                context.user_data['pending_update'] = pending_update
+                prompt = await create_verification(user_id)
+
+                # 会客厅被关掉后重新验证：装饰落在首行（那句话）末尾，
+                # 不去碰下面接的命令/题目文本
+                full_message = copy_text.with_deco_head(
+                    f"{copy_text.THREAD_CLOSED_REVERIFY}{prompt.text}", 'ERROR')
+
+                await send_verification_prompt(pending_update.message, prompt, full_message)
+            else:
+                print(f"发送消息时发生未知错误: {e}")
+                await pending_update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user_id))))
+    return True
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from network_test.handlers import handle_message as network_handle_message
     handled = await network_handle_message(update, context)

@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import ipaddress
 import logging
 import re
+import socket
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -28,6 +30,8 @@ except Exception:  # pragma: no cover - optional dependency until requirements a
 logger = logging.getLogger(__name__)
 
 WEB_MONITOR_JOB_KEY = "web_monitor_job"
+MAX_REDIRECTS = 5
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 pivkeyu-bot/1.0"
@@ -125,13 +129,35 @@ def _extract_items(html_text: str, monitor: dict) -> list[WebItem]:
     return items
 
 
+async def _assert_public_url(url: str) -> None:
+    """拒绝内网、回环等非公网地址，防止监控地址被用来探测服务器内部服务。"""
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"网页监控地址不合法: {url}")
+    loop = asyncio.get_running_loop()
+    infos = await loop.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        address = getattr(address, "ipv4_mapped", None) or address
+        if not address.is_global:
+            raise ValueError(f"网页监控不允许访问内网地址: {parsed.hostname}")
+
+
 async def _fetch_html(url: str) -> str:
     timeout = aiohttp.ClientTimeout(total=20)
     headers = {"User-Agent": DEFAULT_UA}
     async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        async with session.get(url) as response:
-            response.raise_for_status()
-            return await response.text()
+        # 手动跟随重定向：公网地址跳到内网时，每一跳都要重新检查
+        for _ in range(MAX_REDIRECTS + 1):
+            await _assert_public_url(url)
+            async with session.get(url, allow_redirects=False) as response:
+                location = response.headers.get("Location")
+                if response.status in REDIRECT_STATUSES and location:
+                    url = urljoin(str(response.url), location)
+                    continue
+                response.raise_for_status()
+                return await response.text()
+    raise ValueError(f"网页监控重定向次数过多: {url}")
 
 
 def _build_notification(monitor: dict, item: WebItem, reasons: list[str], hits: list[str]) -> str:

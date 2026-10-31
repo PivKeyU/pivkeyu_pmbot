@@ -91,9 +91,19 @@ META = [
     },
     {
         'key': 'VERIFICATION_MODE', 'type': 'enum', 'category': 'security',
-        'label': '验证方式', 'hint': 'random = 每次随机出图片验证码或文字题；text = 只出文字题；image = 只出图片验证码',
+        'label': '验证方式', 'hint': 'random = 每次随机出图片验证码或文字题；text = 只出文字题；image = 只出图片验证码；turnstile = Mini App 里的 Cloudflare 人机验证（需配置公网地址和 Turnstile 密钥，否则退回 random）',
         'default': 'random', 'restart': False,
-        'options': ['random', 'text', 'image'],
+        'options': ['random', 'text', 'image', 'turnstile'],
+    },
+    {
+        'key': 'TURNSTILE_SITE_KEY', 'type': 'str', 'category': 'security',
+        'label': 'Turnstile Site Key', 'hint': 'Cloudflare 后台创建 Turnstile 组件后获得，可公开',
+        'default': '', 'restart': False,
+    },
+    {
+        'key': 'TURNSTILE_SECRET_KEY', 'type': 'str', 'category': 'security',
+        'label': 'Turnstile Secret Key', 'hint': '只在服务端校验时使用',
+        'default': '', 'restart': False, 'secret': True,
     },
     {
         'key': 'AUTO_UNBLOCK_ENABLED', 'type': 'bool', 'category': 'security',
@@ -228,6 +238,11 @@ META = [
         'key': 'WEB_PANEL_TRUST_PROXY', 'type': 'bool', 'category': 'web',
         'label': '信任反向代理', 'hint': '经 Nginx/Caddy 反代时开启，登录限速按 X-Forwarded-For 识别来源',
         'default': 'false', 'restart': False,
+    },
+    {
+        'key': 'MINIAPP_PUBLIC_URL', 'type': 'str', 'category': 'web',
+        'label': 'Mini App 公网地址', 'hint': '填面板的 https 地址加 /miniapp，例如 https://panel.example.com/miniapp；留空则不启用 Mini App',
+        'default': '', 'restart': True,
     },
 ]
 

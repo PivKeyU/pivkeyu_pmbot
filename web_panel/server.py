@@ -16,6 +16,8 @@ PANEL_HEADER_VALUE = 'PMBotPanel'
 # 自守卫的公开接口：登录自有限速，/api/me 只读，/api/setup 只在初始化窗口内可用
 PUBLIC_API_PATHS = {'/api/login', '/api/me', '/api/setup'}
 WRITE_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+MINIAPP_PREFIX = '/miniapp/'
+MINIAPP_API_PREFIX = f'{MINIAPP_PREFIX}api/'
 
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; img-src 'self' data:; media-src 'self'; "
@@ -30,7 +32,7 @@ async def error_middleware(request, handler):
         return await handler(request)
     except web.HTTPException as exc:
         # API 一律回 JSON，避免前端解析 HTML 报错页
-        if request.path.startswith('/api/'):
+        if request.path.startswith(('/api/', MINIAPP_API_PREFIX)):
             return http_utils.fail(exc.reason or '请求失败', status=exc.status)
         raise
     except (ValueError, KeyError) as exc:
@@ -44,7 +46,9 @@ async def error_middleware(request, handler):
 async def security_headers_middleware(request, handler):
     response = await handler(request)
     response.headers.setdefault('X-Content-Type-Options', 'nosniff')
-    response.headers.setdefault('X-Frame-Options', 'DENY')
+    # 网页版 Telegram 用 iframe 嵌入 Mini App，它的 CSP 已限定只允许 Telegram 嵌入
+    if not request.path.startswith(MINIAPP_PREFIX):
+        response.headers.setdefault('X-Frame-Options', 'DENY')
     response.headers.setdefault('Referrer-Policy', 'no-referrer')
     response.headers.setdefault('Content-Security-Policy', CONTENT_SECURITY_POLICY)
     if request.path.startswith(VERSIONED_STATIC_PREFIX):
@@ -103,14 +107,14 @@ def compute_asset_version(static_dir: Path = STATIC_DIR) -> str:
     return digest.hexdigest()[:10]
 
 
-def render_index(version: str, static_dir: Path = STATIC_DIR):
-    """把 index.html 里的 /static/ 换成带版本号的路径。JS 模块之间用相对路径互相引用，
+def render_index(version: str, static_dir: Path = STATIC_DIR, page: str = 'index.html', base: str = '/'):
+    """把入口页里的 /static/ 换成带版本号的路径。JS 模块之间用相对路径互相引用，
     所以入口带上版本号后，整棵模块树都会从新地址加载，浏览器不可能混用新旧文件。"""
-    index_path = static_dir / 'index.html'
+    index_path = static_dir / page
     if not index_path.exists():
         return None
     html = index_path.read_text(encoding='utf-8')
-    return html.replace('"/static/', f'"{VERSIONED_STATIC_PREFIX}{version}/')
+    return html.replace('"/static/', f'"{base.rstrip("/")}{VERSIONED_STATIC_PREFIX}{version}/')
 
 
 def make_index_handler(version: str):
@@ -129,7 +133,7 @@ def create_app(bot, http_session) -> web.Application:
     )
     app[keys.BOT_KEY] = bot
     app[keys.HTTP_SESSION_KEY] = http_session
-    app[keys.BROADCAST_TASKS_KEY] = set()
+    app[keys.BROADCAST_TASKS_KEY] = keys.BROADCAST_TASKS
     app.add_routes(api_auth.routes)
     app.add_routes(api_overview.routes)
     app.add_routes(api_config.routes)

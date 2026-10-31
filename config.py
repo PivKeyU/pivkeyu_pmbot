@@ -50,8 +50,11 @@ class Config:
     ENABLE_AI_FILTER = os.getenv('ENABLE_AI_FILTER', 'true').lower() == 'true'
     
     VERIFICATION_ENABLED = os.getenv('VERIFICATION_ENABLED', 'true').lower() == 'true'
-    # 首次验证方式：random（图片 / 文字随机）、text（常识文字题）、image（图片验证码）
+    # 首次验证方式：random（图片 / 文字随机）、text（常识文字题）、image（图片验证码）、
+    # turnstile（Mini App 里的 Cloudflare Turnstile，未配置完整时退回 random）
     VERIFICATION_MODE = os.getenv('VERIFICATION_MODE', 'random').strip().lower()
+    TURNSTILE_SITE_KEY = os.getenv('TURNSTILE_SITE_KEY', '').strip()
+    TURNSTILE_SECRET_KEY = os.getenv('TURNSTILE_SECRET_KEY', '').strip()
     AUTO_UNBLOCK_ENABLED = os.getenv('AUTO_UNBLOCK_ENABLED', 'true').lower() == 'true'
     
     DATABASE_PATH = os.getenv('DATABASE_PATH', './data/bot.db')
@@ -86,6 +89,9 @@ class Config:
     WEB_PANEL_PASSWORD = os.getenv('WEB_PANEL_PASSWORD', '').strip()
     WEB_PANEL_PASSWORD_SHA256 = os.getenv('WEB_PANEL_PASSWORD_SHA256', '').strip().lower()
     WEB_PANEL_TRUST_PROXY = os.getenv('WEB_PANEL_TRUST_PROXY', 'false').lower() == 'true'
+
+    # Mini App 挂在面板的 /miniapp/ 路径下，只带白名单接口；留空公网地址则不启动
+    MINIAPP_PUBLIC_URL = os.getenv('MINIAPP_PUBLIC_URL', '').strip().rstrip('/')
 
     # 镜像更新：services/image_update.py 直接读 os.environ，
     # 这里登记一份让面板能统一管理（覆盖时会同步写入 os.environ）

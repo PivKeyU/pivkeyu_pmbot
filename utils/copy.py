@@ -1017,7 +1017,15 @@ def getid_group(display_name: str, chat_id: int) -> str:
 
 VERIFY_INVITE = '来做个人家的小验证嘛。答对了才放客人进去哦：'
 
-VERIFY_INVITE_PENDING = '客人还有一个小验证没做完，先点选答案再继续发消息嘛。'
+VERIFY_INVITE_PENDING = '客人还有一个小验证没做完，先做完再继续发消息嘛。'
+
+VERIFY_TURNSTILE_INVITE = '来做个人家的小验证嘛。点下面的按钮，确认客人是真人就好：'
+
+VERIFY_TURNSTILE_PASSED = '验证通过啦，女仆为客人开门。'
+
+BTN_VERIFY_TURNSTILE = '点我验证'
+
+BTN_VERIFY_FALLBACK = '打不开？换普通验证题'
 
 VERIFY_WRONG = '答案不对哦，客人还有 {remaining} 次机会。'
 

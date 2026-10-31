@@ -1,11 +1,12 @@
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import ContextTypes
 from telegram.helpers import escape_markdown
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
+from services.verification import miniapp_url
 from services import broadcast as broadcast_service, moderation, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
 from config import config
@@ -232,6 +233,17 @@ async def getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
     
     await update.message.reply_text(message, parse_mode='Markdown')
+
+@admin_only
+async def miniapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = miniapp_url()
+    if not url:
+        await update.message.reply_text(
+            copy_text.with_deco('Mini App 还没启用，请先配置 https 开头的 MINIAPP_PUBLIC_URL。', 'ERROR'))
+        return
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton('打开手机管理页', web_app=WebAppInfo(url=url))]])
+    await update.message.reply_text('主人，手机管理页准备好了：', reply_markup=keyboard)
+
 
 @admin_only
 async def panel(update: Update, context: ContextTypes.DEFAULT_TYPE):

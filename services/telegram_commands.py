@@ -29,6 +29,7 @@ COMMON_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
 
 ADMIN_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
     ("help", "查看女仆小手册"),
+    ("app", "打开手机管理页"),
     ("block", "记入黑名单"),
     ("unblock", "移出黑名单"),
     ("panel", "打开女仆长面板"),

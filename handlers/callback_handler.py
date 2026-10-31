@@ -6,16 +6,14 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
-from services.verification import verify_answer, create_verification, send_verification_prompt
+from services.verification import verify_answer, fallback_verification
 from services import moderation
 from services.thread_manager import ensure_user_thread
-from services.gemini_service import gemini_service
 from database import models as db
-from utils.media_converter import sticker_to_image
-from services.thread_manager import get_or_create_thread, build_user_info_card_keyboard
+from services.thread_manager import build_user_info_card_keyboard
 from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
 from services import image_update
-from .user_handler import _resend_message
+from .user_handler import deliver_pending_update
 from config import config
 from rss import data_manager as rss_data_manager, settings as rss_settings
 from rss import enable_feature as rss_enable_feature, disable_feature as rss_disable_feature
@@ -586,6 +584,14 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             await answer_callback(copy_text.with_deco("请回复女仆刚发的那条消息，告诉女仆要暂停多久。", 'ASK'))
         return
 
+    if data == "verify_fallback":
+        prompt = await fallback_verification(user_id)
+        if prompt is None:
+            await _show_verification_result(query, copy_text.with_deco("小验证已经过期或不见啦，请客人重新来一次。", 'ERROR'))
+            return
+        await _show_next_verification(query, prompt, prompt.text)
+        return
+
     if data.startswith("verify_"):
         answer = data.split("_", 1)[1]
         success, message, is_banned, new_prompt = await verify_answer(user_id, answer)
@@ -601,83 +607,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         await _show_verification_result(query, message)
 
         if success:
-            if 'pending_update' in context.user_data:
-                pending_update = context.user_data.pop('pending_update')
-                message = pending_update.message
-                image_bytes = None
-
-                if message.photo:
-                    photo_file = await message.photo[-1].get_file()
-                    image_bytes = await photo_file.download_as_bytearray()
-                elif message.sticker and not message.sticker.is_animated and not message.sticker.is_video:
-                    sticker_file = await message.sticker.get_file()
-                    sticker_bytes = await sticker_file.download_as_bytearray()
-                    image_bytes = await sticker_to_image(sticker_bytes)
-
-                should_forward = True
-                if message.video or message.animation:
-                    pass
-                else:
-                    analyzing_message = await context.bot.send_message(
-                        chat_id=message.chat_id,
-                        text=copy_text.scan_message(copy_text.address(await db.is_admin(user_id))),
-                        reply_to_message_id=message.message_id
-                    )
-                    analysis_result = await gemini_service.analyze_message(message, image_bytes)
-                    if analysis_result.get("is_spam"):
-                        should_forward = False
-                        media_type = None
-                        media_file_id = None
-                        if message.photo:
-                            media_type = "photo"
-                            media_file_id = message.photo[-1].file_id
-                        elif message.sticker:
-                            media_type = "sticker"
-                            media_file_id = message.sticker.file_id
-
-                        await db.save_filtered_message(
-                            user_id=user_id,
-                            message_id=message.message_id,
-                            content=message.text or message.caption,
-                            reason=analysis_result.get("reason"),
-                            media_type=media_type,
-                            media_file_id=media_file_id,
-                        )
-                        reason = analysis_result.get("reason", "暂时没有写明理由")
-                        await analyzing_message.edit_text(
-                            copy_text.msg_blocked(reason),
-                            reply_markup=await moderation.blocked_reply_markup(reason),
-                        )
-                    else:
-                        await analyzing_message.delete()
-
-                if should_forward:
-                    thread_id, is_new = await get_or_create_thread(pending_update, context)
-                    if not thread_id:
-                        await pending_update.message.reply_text(copy_text.topic_create_failed(copy_text.address(await db.is_admin(user_id))))
-                        return
-                    
-                    try:
-                        if not is_new:
-                            await _resend_message(pending_update, context, thread_id)
-                    except BadRequest as e:
-                        if "Message thread not found" in e.message:
-                            await db.update_user_thread_id(user_id, None)
-                            await db.update_user_verification(user_id, False)
-                            
-                            context.user_data['pending_update'] = pending_update
-                            prompt = await create_verification(user_id)
-                            
-                            # 会客厅被关掉后重新验证：装饰落在首行（那句话）末尾，
-                            # 不去碰下面接的命令/题目文本
-                            full_message = copy_text.with_deco_head(
-                                f"{copy_text.THREAD_CLOSED_REVERIFY}{prompt.text}", 'ERROR')
-
-                            await send_verification_prompt(pending_update.message, prompt, full_message)
-                        else:
-                            print(f"发送消息时发生未知错误: {e}")
-                            await pending_update.message.reply_text(copy_text.delivery_failed(copy_text.address(await db.is_admin(user_id))))
-            else:
+            if not await deliver_pending_update(context, user_id):
                 await query.message.reply_text(
                     copy_text.with_deco("门已经打开啦，客人现在可以发送消息。", 'OK')
                 )

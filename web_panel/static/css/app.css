@@ -487,3 +487,51 @@ pre.result {
   .params-table td[data-label]::before { content: attr(data-label); color: var(--text-dim); font-size: 12px; }
   .params-table .input { min-width: 0; }
 }
+
+/* ---------- Telegram Mini App ---------- */
+
+.miniapp-shell { min-height: 100vh; padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+.miniapp .topbar { position: sticky; top: 0; z-index: 20; padding: 10px 14px; }
+.miniapp .content { padding: 12px 12px 20px; }
+.miniapp-tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: flex; overflow-x: auto; scrollbar-width: none;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--surface); border-top: 1px solid var(--border);
+}
+.miniapp-tabs::-webkit-scrollbar { display: none; }
+.miniapp-tabs a {
+  flex: 1 0 62px; display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 7px 0 6px; color: var(--text-dim); font-size: 11px; text-decoration: none;
+}
+.miniapp-tabs a.active { color: var(--accent-strong); font-weight: 600; }
+.miniapp-tabs .tab-icon { font-size: 19px; line-height: 1.1; }
+.miniapp .login-wrap { padding: 16px; box-sizing: border-box; }
+.miniapp .login-card { width: 100%; max-width: 360px; padding: 24px 16px; box-sizing: border-box; }
+.turnstile-slot { display: flex; justify-content: center; min-height: 70px; margin-top: 12px; overflow: hidden; }
+
+/* 手机上把表格排成卡片：每行一张，单元格标题来自 data-label */
+.miniapp .table-wrap { overflow-x: visible; }
+.miniapp .table, .miniapp .table tbody { display: block; }
+.miniapp .table thead {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+.miniapp .table tr {
+  display: block; margin-bottom: 10px; padding: 8px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+}
+.miniapp .table tr:hover td { background: transparent; }
+.miniapp .table td {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 6px 0; border-bottom: 1px dashed #f2e4d4; text-align: right; overflow-wrap: anywhere;
+}
+.miniapp .table td:last-child { border-bottom: none; }
+.miniapp .table td:empty { display: none; }
+.miniapp .table td::before {
+  content: attr(data-label); flex: 0 0 auto; color: var(--text-dim); font-size: 12px; text-align: left;
+}
+.miniapp .table td[data-label=""]::before { content: none; }
+.miniapp .table td[data-label=""] { justify-content: flex-end; }
+.miniapp .table .actions { white-space: normal; }
+.miniapp .modal-mask { padding-bottom: env(safe-area-inset-bottom); }

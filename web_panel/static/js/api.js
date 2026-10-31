@@ -3,6 +3,14 @@
 const PANEL_HEADER = 'PMBotPanel';
 
 let unauthorizedHandler = null;
+let miniAppToken = '';
+
+// Mini App 页面的 body 带 miniapp 类；页面据此隐藏这个端口上没有开放的功能
+export const isMiniApp = document.body.classList.contains('miniapp');
+
+export function setMiniAppToken(token) {
+  miniAppToken = token;
+}
 
 export class ApiError extends Error {
   constructor(message, status) {
@@ -20,8 +28,9 @@ async function request(method, path, body) {
   const headers = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') headers['X-Requested-With'] = PANEL_HEADER;
+  if (miniAppToken) headers['X-MiniApp-Token'] = miniAppToken;
 
-  const response = await fetch(path, {
+  const response = await fetch(`${isMiniApp ? '/miniapp' : ''}${path}`, {
     method,
     headers,
     credentials: 'same-origin',

@@ -18,8 +18,11 @@ from rss import settings as rss_settings
 from rss.handlers import ensure_user_data, is_valid_url
 from config import config
 from services import broadcast as broadcast_service
-from services import image_update, restart, safe_update
-from services.ai_providers import AI_FEATURES, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, model_setting_key
+from services import auto_update, image_update, restart, safe_update
+from services.ai_providers import (
+    AI_FEATURES, DECISION_PROTOCOLS, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, is_decision_model,
+    model_setting_key,
+)
 from services import ai_options
 from services.ai_service import (
     AUTOREPLY_PERSONALITY_MAX_CHARS, REVIEW_OUTPUT_FORMAT, VERIFICATION_FORMAT, ai_service, provider_credentials,
@@ -373,6 +376,9 @@ async def get_ai_settings(request):
         'provider': provider,
         'models': models,
         'providers': providers,
+        'decision_protocols': [
+            {'id': protocol, **meta} for protocol, meta in DECISION_PROTOCOLS.items()
+        ],
         # 兼容旧前端：按协议给出是否已配置 Key 与当前地址
         'keys': {
             **{f'{p["id"]}_configured': p['configured'] for p in providers},
@@ -428,6 +434,21 @@ async def test_ai_connection(request):
     return http_utils.ok({'provider': provider, 'feature': feature, **result})
 
 
+@routes.post('/api/ai-decision-test')
+async def test_decision_connection(request):
+    try:
+        result = await ai_service.test_decision()
+    except ValueError as exc:
+        return http_utils.fail(str(exc))
+    except asyncio.TimeoutError:
+        return http_utils.fail('连接超时，请检查 Base URL 和网络', status=502)
+    except Exception as exc:
+        logger.warning('决策审查连接测试失败: %s', exc)
+        return http_utils.fail(f'连接失败：{str(exc)[:300]}', status=502)
+    http_utils.audit(request, 'ai_settings.decision_test', f'{result["protocol"]} model={result["model"]}')
+    return http_utils.ok(result)
+
+
 @routes.get('/api/ai-options')
 async def get_ai_options(request):
     data = await ai_options.dump_options()
@@ -461,6 +482,8 @@ async def update_ai_settings(request):
     for key, value in models.items():
         if key not in AI_MODEL_KEYS:
             return http_utils.fail(f'未知模型配置项: {key}')
+        if is_decision_model(value):
+            return http_utils.fail(f'{value} 是决策模型，不支持聊天接口，请在「决策审查」里配置')
 
     if provider is not None:
         await db.set_setting('ai_provider', provider, f'当前使用的AI提供商 ({_provider_list_hint()})')
@@ -1066,6 +1089,21 @@ async def image_update_apply(request):
         return http_utils.fail(message)
     http_utils.audit(request, 'update.image_apply', message[:120])
     return http_utils.ok({'message': message})
+
+
+@routes.get('/api/update/auto')
+async def get_auto_update(request):
+    return http_utils.ok(await auto_update.describe())
+
+
+@routes.put('/api/update/auto')
+async def update_auto_update(request):
+    data = await http_utils.read_json(request)
+    if not isinstance(data.get('consented'), bool):
+        return http_utils.fail('consented 需要是布尔值')
+    await auto_update.update_settings(data['consented'], str(data.get('time') or ''), data.get('utc_offset_minutes'))
+    http_utils.audit(request, 'update.auto_settings', f'consented={data["consented"]} time={data.get("time")}')
+    return http_utils.ok(await auto_update.describe())
 
 
 @routes.post('/api/restart')

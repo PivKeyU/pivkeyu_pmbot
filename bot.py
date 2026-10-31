@@ -6,7 +6,7 @@ from handlers import register_handlers
 from rss import setup as setup_rss
 from database.db_manager import DatabaseManager
 from services.telegram_commands import register_bot_commands
-from services import restart, tg_monitor, web_monitor
+from services import auto_update, restart, tg_monitor, web_monitor
 import web_panel
 from utils import about
 
@@ -55,6 +55,7 @@ def main():
     register_handlers(app)
     setup_rss(app)
     web_monitor.setup(app)
+    auto_update.setup(app)
     web_panel.setup(app)
 
     logging.info(about.startup_banner())

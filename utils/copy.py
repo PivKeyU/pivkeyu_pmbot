@@ -1033,6 +1033,34 @@ MINIAPP_READY = '主人，手机管理页准备好了：'
 
 BTN_MINIAPP_OPEN = '打开手机管理页'
 
+BTN_MINIAPP_MENU = '管理面板'
+
+DECISION_REASONS = {
+    'ad': '疑似广告或推广内容。',
+    'scam': '疑似诈骗或钓鱼内容。',
+    'abuse': '疑似辱骂、骚扰或人身攻击。',
+    'adult': '疑似色情或低俗内容。',
+    'illegal': '疑似违法违规内容。',
+    'other': '内容违反审查规则。',
+}
+
+DECISION_SAFE_REASON = '内容未发现违规。'
+
+DECISION_REFUSED_REASON = '内容审查失败，可能包含不当内容。'
+
+AUTO_UPDATE_FOUND_NEEDS_CONSENT = '发现新版本啦。主人还没有同意自动更新，可以在面板「网络与更新」里手动更新，或者开启自动更新。'
+
+AUTO_UPDATE_STARTING = '到设定的时间啦，女仆开始自动更新，机器人和面板会短暂断开。'
+
+
+def auto_update_found_scheduled(update_time: str) -> str:
+    return f'发现新版本啦，女仆会在 {update_time} 自动更新。'
+
+
+def auto_update_failed(detail: str) -> str:
+    return f'自动更新没有成功：{detail}\n女仆今天不再重试，主人可以在面板里手动更新。'
+
+
 RESTART_CHECKING = '女仆先确认一下 Bot Token，稍等一下下。'
 
 RESTART_ACCEPTED = 'Bot Token 没问题，女仆这就重启，很快回来。'

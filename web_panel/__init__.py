@@ -27,15 +27,16 @@ def setup(app) -> None:
 def _mount_miniapp(app, web_app, http_session) -> None:
     if not config.MINIAPP_PUBLIC_URL:
         return
-    if not config.MINIAPP_PUBLIC_URL.startswith('https://'):
+
+    from services.verification import miniapp_url
+    from .miniapp import mount
+
+    if not miniapp_url():
         logger.warning('MINIAPP_PUBLIC_URL 必须以 https:// 开头，Mini App 不会启动。')
         return
 
-    from .miniapp import create_app as create_miniapp
-    from .server import MINIAPP_PREFIX
-
-    web_app.add_subapp(MINIAPP_PREFIX, create_miniapp(app, http_session))
-    logger.info('Mini App 已挂载到面板路径 %s', MINIAPP_PREFIX)
+    mount(web_app, app, http_session)
+    logger.info('Mini App 已挂载，入口地址: %s', miniapp_url())
 
 
 async def start(app) -> None:

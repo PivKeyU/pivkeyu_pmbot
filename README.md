@@ -295,7 +295,7 @@ WEB_PANEL_PASSWORD=           # 留空 = 使用网页初始化；也可在此预
 Mini App 挂在面板的 `/miniapp/` 路径下，和面板共用端口与反向代理，提供两个入口：
 
 - **人机验证**：`VERIFICATION_MODE=turnstile` 时，新用户点按钮打开 Cloudflare Turnstile，通过后自动补发验证前的消息。打不开时可以在聊天里点「打不开？换普通验证题」，回到图片或文字题
-- **手机管理页**：管理员私聊机器人发 `/app` 打开，免密码，包含概览、用户/黑名单、配置中心、AI 设置、回复与关键词、广播与分组、RSS、消息监控、网页监控、网络工具和机器人更新
+- **手机管理页**：管理员点聊天框左下角的「管理面板」菜单按钮打开，也可以私聊机器人发 `/app`，免密码，包含概览、用户/黑名单、配置中心、AI 设置、回复与关键词、广播与分组、RSS、消息监控、网页监控、网络工具和机器人更新
 
 启用步骤：
 
@@ -310,7 +310,7 @@ TURNSTILE_SECRET_KEY=<Secret Key>
 VERIFICATION_MODE=turnstile
 ```
 
-需要 `WEB_PANEL_ENABLED=true`。Mini App 和面板登录页在同一个域名下，公网部署时要设置强密码并开启 `WEB_PANEL_TRUST_PROXY=true`。
+需要 `WEB_PANEL_ENABLED=true`。管理员要先和机器人对话过，重启后才能看到菜单按钮；普通用户不显示这个按钮，只有需要验证时才会收到验证按钮。Mini App 和面板登录页在同一个域名下，公网部署时要设置强密码并开启 `WEB_PANEL_TRUST_PROXY=true`。
 
 安全边界：
 
@@ -751,6 +751,17 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 >
 > 面板中的「检查镜像更新」即使未配置 token 也能查看状态，但「确认更新」会提示没配口令。镜像更新的配置详见 `.env.example` 与 [watchtower/README.md](watchtower/README.md)。
 
+### ⏰ 自动更新
+
+机器人启动时和每 6 小时检测一次新版本，发现后通知管理员，概览页也会提示。
+
+默认只检测和提醒，**不会自动更新**。在「网络与更新 → 更新部署」打开「自动更新」并确认同意后才生效，同时可以设定每天的更新时间和时区，默认 UTC+8 的 04:00。
+
+- Docker 部署由 Watchtower 拉取新镜像并重建容器，需要配置 `WATCHTOWER_HTTP_API_TOKEN`；源码部署执行 `ff-only` 更新后重启
+- 只在设定时间起的 1 小时内更新。错过就等第二天，不会在白天突然重建容器
+- 有广播正在发送时会等待，每天最多尝试一次，失败时通知管理员
+- 可以随时关闭，关闭后立即停止自动更新
+
 ### 🔁 重启机器人
 
 管理员可以发 `/restart`，或在网页版、Mini App 的「配置中心」点「重启机器人」。重启前会用当前保存的 `BOT_TOKEN` 向 Telegram 验证，Token 无效或连不上 Telegram 时拒绝重启；有广播正在发送时也会拒绝。
@@ -769,6 +780,36 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 ## 🔧 配置参考
 
 所有配置通过 `.env` 文件加载（项目使用 `python-dotenv`）。以下变量与 `config.py` / `.env.example` 逐项核对列出，请按需填写。完整示例见 [.env.example](.env.example)。
+
+### 🎯 决策审查
+
+内容审查可以改用只做判断的决策模型，服务商、API Key 和 Base URL 都独立于聊天模型。比如聊天用 Gemini，审查用 Inception 或第三方中转。
+
+代码按**接口格式**适配，不内置任何地址。官方地址只是面板里的快速填入选项，第三方中转选它兼容的格式，再填自己的地址和模型名就行。
+
+| 接口格式 | `DECISION_PROTOCOL` | 默认路径 | 官方示例 |
+| :--- | :--- | :--- | :--- |
+| Inception | `inception` | `/decisions` | `https://api.inceptionlabs.ai/v1`，`mercury-decide` |
+| OpenAI | `openai` | `/decisions` | `https://api.openai.com/v1`，`gpt-6-luna` |
+| System One（Jev） | `system_one` | `/systemone` | `https://api.typesafe.ai/v1`，`jev-latest` |
+| Cloudflare Workers AI | `workers_ai` | `/ai/run/@cf/cloudflare/模型` | `https://api.cloudflare.com/client/v4/accounts/<账号ID>`，`clef` 或 `clef-flash` |
+
+| 变量 | 必填 | 默认值 | 说明 |
+| :--- | :---: | :--- | :--- |
+| `DECISION_PROTOCOL` | ❌ | `off` | `off` 继续用聊天模型审查，其余值见上表 |
+| `DECISION_API_KEY` | 启用时必填 | 空 | 决策服务的 API Key |
+| `DECISION_BASE_URL` | 启用时必填 | 空 | 官方地址或第三方中转地址 |
+| `DECISION_MODEL` | 启用时必填 | 空 | 模型名以服务商为准，中转的名字可能带前缀 |
+| `DECISION_PATH` | ❌ | 空 | 中转服务路径不同时才需要填 |
+| `DECISION_THRESHOLD` | ❌ | `50` | 违规概率达到这个百分比就拦截 |
+
+也可以在「AI 设置 → 决策审查」里配置和测试，改完立即生效。
+
+- 审查规则继续使用「提示词」页的内容
+- 决策模型不写解释，拦截理由来自广告、诈骗、辱骂、色情、违法、其他六个固定类别
+- 决策接口出错或 10 秒内没有结果时，退回聊天模型再审一次，所以聊天协议的内容审查模型要填真实的聊天模型。两边都失败时消息会放行
+- `mercury-decide`、`clef`、`clef-flash`、`jev-*` 不支持聊天接口，不能填在聊天模型里
+- System One 格式只接受 PNG 和 JPEG，Workers AI 格式只接受 PNG、JPEG 和 WebP，其他图片会退回聊天模型审查
 
 ### 🤖 Bot / 管理员（必填）
 

@@ -70,6 +70,7 @@ ALLOWED_ROUTES = {
     ('PUT', '/api/ai-settings'),
     ('GET', '/api/ai-models'),
     ('POST', '/api/ai-test'),
+    ('POST', '/api/ai-decision-test'),
     ('GET', '/api/ai-options'),
     ('PUT', '/api/ai-options'),
     # 回复与关键词
@@ -127,6 +128,8 @@ ALLOWED_ROUTES = {
     ('GET', '/api/update/image'),
     ('POST', '/api/update/image'),
     ('POST', '/api/restart'),
+    ('GET', '/api/update/auto'),
+    ('PUT', '/api/update/auto'),
 }
 
 # 网页版 Telegram 用 iframe 嵌入 Mini App，所以这里不能沿用面板的 frame-ancestors 'none'
@@ -311,6 +314,16 @@ def _add_allowed_routes(app, route_tables) -> None:
         for route in table:
             if (route.method, route.path) in ALLOWED_ROUTES:
                 app.router.add_route(route.method, route.path, route.handler, **route.kwargs)
+
+
+def mount(web_app, application, http_session) -> None:
+    """挂到面板下。子应用只匹配 /miniapp/ 开头的路径，不带斜杠的入口要单独跳转。"""
+    async def redirect_to_miniapp(request):
+        query = f'?{request.query_string}' if request.query_string else ''
+        raise web.HTTPFound(f'{MINIAPP_PREFIX}{query}')
+
+    web_app.router.add_get(MINIAPP_PREFIX.rstrip('/'), redirect_to_miniapp)
+    web_app.add_subapp(MINIAPP_PREFIX, create_app(application, http_session))
 
 
 def create_app(application, http_session) -> web.Application:

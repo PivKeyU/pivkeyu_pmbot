@@ -20,7 +20,7 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 
 import config_meta
-from services.ai_providers import AI_FEATURES, PROVIDERS, all_model_setting_keys, model_setting_key
+from services.ai_providers import AI_FEATURES, DECISION_PROTOCOLS, PROVIDERS, all_model_setting_keys, model_setting_key
 
 STATIC_DIR = Path(__file__).parent / 'static'
 
@@ -663,7 +663,8 @@ def _ai_settings_payload():
             'model_keys': {f: model_setting_key(provider_type, f) for f in AI_FEATURES},
             'default_models': meta['default_models'],
         })
-    return {**STORE['ai'], 'providers': providers}
+    decision_protocols = [{'id': protocol, **meta} for protocol, meta in DECISION_PROTOCOLS.items()]
+    return {**STORE['ai'], 'providers': providers, 'decision_protocols': decision_protocols}
 
 
 @routes.get('/api/ai-settings')
@@ -688,6 +689,11 @@ async def ai_test(request):
         return web.json_response({'ok': False, 'error': '未知提供商'}, status=400)
     model = body.get('model') or PROVIDERS[provider]['default_models']['autoreply']
     return _ok({'provider': provider, 'model': model, 'latency_ms': 321, 'reply': 'OK（预览模式模拟回复）'})
+
+
+@routes.post('/api/ai-decision-test')
+async def ai_decision_test(request):
+    return _ok({'protocol': 'inception', 'model': 'mercury-decide', 'latency_ms': 150, 'probability': 0.02})
 
 
 @routes.put('/api/ai-settings')
@@ -988,6 +994,28 @@ async def image_status(request):
 @routes.post('/api/update/image')
 async def image_apply(request):
     return _ok({'message': '（预览）已触发 Watchtower 更新，容器即将重建。'})
+
+
+AUTO_UPDATE_PREVIEW = {
+    'settings': {'consented': False, 'consented_at': None, 'time': '04:00', 'utc_offset_minutes': 480},
+    'state': {'update_available': True, 'last_checked_at': 1793000000, 'version': 'sha256:deadbeef'},
+    'mode': 'image',
+    'watchtower_ready': True,
+    'next_update_at': None,
+}
+
+
+@routes.get('/api/update/auto')
+async def auto_update_get(request):
+    return _ok(AUTO_UPDATE_PREVIEW)
+
+
+@routes.put('/api/update/auto')
+async def auto_update_put(request):
+    body = await request.json()
+    AUTO_UPDATE_PREVIEW['settings'].update(
+        consented=body['consented'], time=body['time'], utc_offset_minutes=body['utc_offset_minutes'])
+    return _ok(AUTO_UPDATE_PREVIEW)
 
 
 @routes.post('/api/restart')

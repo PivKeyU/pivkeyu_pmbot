@@ -8,6 +8,63 @@ Web 面板、Telegram 面板、配置中心与本地预览服务器都从这里�
 # 并挂进 PROVIDER_CLASSES。
 AI_FEATURES = ('filter', 'verification', 'autoreply')
 
+# 只做判断的决策模型：不支持聊天补全，不能填在上面三项功能的聊天模型里，
+# 要在「决策审查」里单独配置（services/decision_review.py）
+DECISION_MODELS = ('mercury-decide', 'clef', 'clef-flash')
+DECISION_MODEL_PREFIXES = ('jev-',)
+
+# 决策接口格式。Base URL 和模型由管理员填写，代码不内置默认地址：
+# 第三方中转只要沿用某种格式就能用。presets 只是面板里的快速填入选项。
+# 新增一种：在这里登记一项 + 在 services/decision_review.py 写适配器并挂进 ADAPTERS。
+DECISION_PROTOCOLS = {
+    'inception': {
+        'label': 'Inception 格式（/decisions，state + noul）',
+        'presets': [
+            {'label': 'Inception 官方', 'url': 'https://api.inceptionlabs.ai/v1', 'model': 'mercury-decide'},
+        ],
+    },
+    'openai': {
+        'label': 'OpenAI 格式（/decisions，input + predicate）',
+        'presets': [
+            {'label': 'OpenAI 官方', 'url': 'https://api.openai.com/v1', 'model': 'gpt-6-luna'},
+        ],
+    },
+    'system_one': {
+        'label': 'System One 格式（/systemone，Jev 同款）',
+        'presets': [
+            {'label': 'TypeSafe 官方', 'url': 'https://api.typesafe.ai/v1', 'model': 'jev-latest'},
+        ],
+    },
+    'workers_ai': {
+        'label': 'Cloudflare Workers AI 格式（/ai/run/模型）',
+        'presets': [
+            {
+                'label': 'Cloudflare 官方（把 <账号ID> 换成你的）',
+                'url': 'https://api.cloudflare.com/client/v4/accounts/<账号ID>',
+                'model': 'clef-flash',
+            },
+        ],
+    },
+}
+
+PROVIDERS = {
+    'inception': {
+        'label': 'Inception Mercury',
+        'base_url': 'https://api.inceptionlabs.ai/v1',
+        'default_model': 'mercury-decide',
+    },
+    'openai': {
+        'label': 'OpenAI Decisions',
+        'base_url': 'https://api.openai.com/v1',
+        'default_model': 'gpt-6-luna',
+    },
+    'typesafe': {
+        'label': 'TypeSafe Jev',
+        'base_url': 'https://api.typesafe.ai/v1',
+        'default_model': 'jev-latest',
+    },
+}
+
 PROVIDERS = {
     'gemini': {
         'label': 'Google Gemini',
@@ -48,6 +105,7 @@ PROVIDERS = {
             {'label': 'xAI · Grok', 'url': 'https://api.x.ai/v1'},
             {'label': 'Groq', 'url': 'https://api.groq.com/openai/v1'},
             {'label': 'Mistral', 'url': 'https://api.mistral.ai/v1'},
+            {'label': 'Inception · Mercury', 'url': 'https://api.inceptionlabs.ai/v1'},
             {'label': 'Ollama（本机）', 'url': 'http://localhost:11434/v1'},
             {'label': 'Ollama（Docker 访问宿主机）', 'url': 'http://host.docker.internal:11434/v1'},
             {'label': 'LM Studio（本机）', 'url': 'http://localhost:1234/v1'},
@@ -74,6 +132,12 @@ PROVIDERS = {
 }
 
 PROVIDER_IDS = tuple(PROVIDERS)
+
+
+def is_decision_model(model: str) -> bool:
+    # 经中转服务时模型名可能带厂商前缀，例如 inception/mercury-decide
+    name = str(model or '').strip().lower().rsplit('/', 1)[-1]
+    return name in DECISION_MODELS or name.startswith(DECISION_MODEL_PREFIXES)
 
 
 def model_setting_key(provider_type: str, feature: str) -> str:

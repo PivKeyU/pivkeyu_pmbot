@@ -83,6 +83,38 @@ META = [
         'default': 'true', 'restart': False,
     },
 
+    {
+        'key': 'DECISION_PROTOCOL', 'type': 'enum', 'category': 'ai',
+        'label': '决策审查接口格式', 'hint': '内容审查改用只做判断的决策模型；第三方中转选它兼容的格式，off 表示继续用聊天模型审查',
+        'default': 'off', 'restart': False,
+        'options': ['off', 'inception', 'openai', 'system_one', 'workers_ai'],
+    },
+    {
+        'key': 'DECISION_API_KEY', 'type': 'str', 'category': 'ai',
+        'label': '决策审查 API Key', 'hint': '决策服务的密钥，和聊天模型的 Key 分开',
+        'default': '', 'restart': False, 'secret': True,
+    },
+    {
+        'key': 'DECISION_BASE_URL', 'type': 'str', 'category': 'ai',
+        'label': '决策审查 Base URL', 'hint': '官方地址或第三方中转地址都可以，必填',
+        'default': '', 'restart': False,
+    },
+    {
+        'key': 'DECISION_PATH', 'type': 'str', 'category': 'ai',
+        'label': '决策审查接口路径', 'hint': '留空使用接口格式的默认路径；中转服务路径不同时才需要填',
+        'default': '', 'restart': False,
+    },
+    {
+        'key': 'DECISION_MODEL', 'type': 'str', 'category': 'ai',
+        'label': '决策审查模型', 'hint': '模型名以服务商为准，第三方中转的名字可能带前缀，必填',
+        'default': '', 'restart': False,
+    },
+    {
+        'key': 'DECISION_THRESHOLD', 'type': 'int', 'category': 'ai',
+        'label': '决策审查阈值（%）', 'hint': '违规概率达到这个值就拦截；调高可减少误杀',
+        'default': '50', 'restart': False, 'min': 1, 'max': 99,
+    },
+
     # --- 安全与验证 ---
     {
         'key': 'VERIFICATION_ENABLED', 'type': 'bool', 'category': 'security',

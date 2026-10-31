@@ -5,6 +5,7 @@ from google.genai import Client as GeminiClient
 from google.genai import types
 from openai import AsyncOpenAI
 import asyncio
+import base64
 import inspect
 import json
 import re
@@ -165,7 +166,8 @@ VERIFICATION_CAPTCHA_PROMPT = DEFAULT_VERIFICATION_PROMPT + "\n" + VERIFICATION_
 
 
 # 提供商注册表在纯数据模块里，Web 面板预览服务器也能直接引用
-from services.ai_providers import PROVIDERS, model_setting_key  # noqa: E402
+from services.ai_providers import DECISION_PROTOCOLS, PROVIDERS, model_setting_key  # noqa: E402
+from services import decision_review  # noqa: E402
 
 
 def provider_credentials(provider_type: str):
@@ -190,6 +192,9 @@ REVIEW_OUTPUT_FORMAT = "\n".join([
 # 兼容旧引用：默认审查规则 + 固定格式
 CONTENT_REVIEW_SYSTEM_PROMPT = DEFAULT_REVIEW_PROMPT + "\n\n" + REVIEW_OUTPUT_FORMAT
 
+
+# 决策模型以快为长处，超时后退回聊天模型，不让用户久等
+DECISION_TIMEOUT_SECONDS = 10
 
 # 连通性测试用的极短提示
 PING_PROMPT = '这是一次连通性测试，请只回复两个字母：OK'
@@ -251,6 +256,21 @@ def _truncate(text: str, limit: int) -> str:
     return text
 
 
+def _decision_image(image_bytes: bytes) -> decision_review.DecisionImage:
+    return decision_review.DecisionImage(
+        _sniff_image_media_type(image_bytes),
+        base64.b64encode(image_bytes).decode('utf-8'),
+    )
+
+
+def _image_data_url(image_bytes: bytes) -> str:
+    return _decision_image(image_bytes).data_url
+
+
+def _review_text(text: str, max_chars) -> str:
+    return _truncate(text, max_chars) or '（用户只发送了图片，请审查图片内容）'
+
+
 def _analysis_failed(provider_label: str, detail) -> dict:
     # 审查失败时明确标记（reason 前缀 + analysis_failed 字段），避免静默放行
     return {
@@ -303,7 +323,7 @@ class AIProvider(ABC):
             response_text = await self._complete(CompletionRequest(
                 model=await self.model_for('filter'),
                 system=f"{policy}\n\n{REVIEW_OUTPUT_FORMAT}",
-                user_text=_truncate(text, options.max_input_chars) or '（用户只发送了图片，请审查图片内容）',
+                user_text=_review_text(text, options.max_input_chars),
                 image_bytes=image_bytes,
                 json_mode=True,
                 options=options,
@@ -494,12 +514,9 @@ class OpenAIProvider(AIProvider):
 
     async def complete(self, request: CompletionRequest) -> str:
         if request.image_bytes:
-            import base64
-            image_b64 = base64.b64encode(request.image_bytes).decode('utf-8')
             user_content = [
                 {"type": "text", "text": request.user_text},
-                {"type": "image_url", "image_url": {
-                    "url": f"data:{_sniff_image_media_type(request.image_bytes)};base64,{image_b64}"}},
+                {"type": "image_url", "image_url": {"url": _image_data_url(request.image_bytes)}},
             ]
         else:
             user_content = request.user_text
@@ -655,6 +672,26 @@ def close_clients() -> None:
     _provider_cache.clear()
 
 
+def _get_decision_client() -> Optional[decision_review.DecisionClient]:
+    """决策审查配置完整时返回客户端；格式、Key、地址或模型缺一项都返回 None。"""
+    protocol = config.DECISION_PROTOCOL
+    api_key = config.DECISION_API_KEY
+    base_url = config.DECISION_BASE_URL
+    path = config.DECISION_PATH
+    if protocol not in DECISION_PROTOCOLS or not (api_key and base_url and config.DECISION_MODEL):
+        return None
+    cached = _provider_cache.get('decision')
+    if cached is not None and (cached.protocol, cached.api_key, cached.base_url, cached.path) == (
+        protocol, api_key, base_url, path,
+    ):
+        return cached
+    if cached is not None:
+        _close_provider(cached)
+    cached = decision_review.DecisionClient(protocol, api_key, base_url, path)
+    _provider_cache['decision'] = cached
+    return cached
+
+
 class AIService:
     _instance = None
     
@@ -687,12 +724,37 @@ class AIService:
         if not config.ENABLE_AI_FILTER:
              return {"is_spam": False, "reason": "AI filter disabled"}
         
+        text = message.text or message.caption or ""
+        decision_client = _get_decision_client()
+        decision_error = None
+        if decision_client and (text or image_bytes):
+            try:
+                return await self._review_with_decision(decision_client, text, image_bytes)
+            except Exception as e:
+                # 决策接口出错时退回聊天模型再审一次，两边都失败才走审查失败逻辑
+                decision_error = e or '超时'
+                print(f"决策审查失败，退回聊天模型: {type(e).__name__}: {e}")
+
         provider = await self.get_provider()
         if not provider:
-             return {"is_spam": False, "reason": "No AI provider configured"}
-        
-        text = message.text or message.caption or ""
+            if decision_error:
+                return _analysis_failed('决策审查', decision_error)
+            return {"is_spam": False, "reason": "No AI provider configured"}
+
         return await provider.analyze_message(text, image_bytes)
+
+    async def _review_with_decision(self, client, text: str, image_bytes: bytes = None) -> dict:
+        options = await ai_options.get_generation_options('filter', await self.get_current_provider_type())
+        result = await asyncio.wait_for(
+            client.ask(
+                config.DECISION_MODEL,
+                await ai_options.get_prompt('review'),
+                _review_text(text, options.max_input_chars),
+                _decision_image(image_bytes) if image_bytes else None,
+            ),
+            timeout=DECISION_TIMEOUT_SECONDS,
+        )
+        return decision_review.to_review(result, config.DECISION_THRESHOLD / 100)
 
     async def generate_verification_challenge(self) -> dict:
         provider = await self.get_provider()
@@ -740,5 +802,24 @@ class AIService:
             'latency_ms': int((time.monotonic() - started) * 1000),
             'reply': (reply or '')[:200],
         }
+
+    async def test_decision(self) -> dict:
+        """用已保存的决策审查配置发一次真实判断，返回模型、耗时与违规概率。"""
+        client = _get_decision_client()
+        if not client:
+            raise ValueError('请先填写接口格式、API Key、Base URL 和模型')
+        model = config.DECISION_MODEL
+        started = time.monotonic()
+        result = await asyncio.wait_for(
+            client.ask(model, await ai_options.get_prompt('review'), PING_PROMPT),
+            timeout=DECISION_TIMEOUT_SECONDS,
+        )
+        return {
+            'protocol': client.protocol,
+            'model': model,
+            'latency_ms': int((time.monotonic() - started) * 1000),
+            'probability': result.probability,
+        }
+
 
 ai_service = AIService()

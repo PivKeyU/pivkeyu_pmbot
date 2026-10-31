@@ -36,7 +36,7 @@ def _cleanup_expired_verifications() -> None:
 
 def miniapp_url() -> str:
     """Mini App 入口地址；Telegram 只接受 https，其他写法一律视为未配置。"""
-    url = str(getattr(config, 'MINIAPP_PUBLIC_URL', '') or '')
+    url = str(getattr(config, 'MINIAPP_PUBLIC_URL', '') or '').strip().rstrip('/')
     if not url.startswith('https://'):
         return ''
     # Mini App 挂在面板的 /miniapp/ 下，只填面板域名时补全路径，避免按钮打开登录页

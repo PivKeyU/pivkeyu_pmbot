@@ -3,6 +3,7 @@
  * - 提供商与模型：协议切换、API Key / Base URL、按用途分模型、连接测试
  * - 功能开关：AI 内容审查、自动回复、误杀申诉按钮、AI 自动撤销验证
  * - 生成参数：思考等级、最大输出 token、超时、输入截断、额外请求参数
+ * - 决策审查：内容审查改用独立服务商的决策模型
  * - 提示词：审查规则、出题规则、自动回复人格.md
  *
  * 协议列表、Base URL 预设、默认模型全部来自后端 services/ai_providers.py，这里不写死任何提供商。
@@ -22,6 +23,7 @@ const CUSTOM_PRESET = '__custom__';
 
 const SECTIONS = [
   ['providers', '提供商与模型'],
+  ['decision', '决策审查'],
   ['switches', '功能开关'],
   ['params', '生成参数'],
   ['prompts', '提示词'],
@@ -93,11 +95,13 @@ export default {
         },
       }, label))));
 
+      const configByKey = Object.fromEntries(configItems.items.map((item) => [item.key, item]));
       if (activeSection === 'providers') {
         container.appendChild(renderProviderPicker(data));
         container.appendChild(renderProviderEditor(data));
+      } else if (activeSection === 'decision') {
+        container.appendChild(renderDecision(data.decision_protocols || [], configByKey, load));
       } else if (activeSection === 'switches') {
-        const configByKey = Object.fromEntries(configItems.items.map((item) => [item.key, item]));
         container.appendChild(renderSwitches(options, autoreply, configByKey));
       } else if (activeSection === 'params') {
         container.appendChild(renderParams(options, data));
@@ -433,6 +437,111 @@ function renderSwitches(options, autoreply, configByKey) {
     el('div', { class: 'row', style: { alignItems: 'center', margin: '4px 0 0', paddingLeft: '2px' } },
       el('span', { class: 'small' }, '规则：'), windowInput, el('span', { class: 'small' }, '小时内被拦'),
       thresholdInput, el('span', { class: 'small' }, '次就撤销'), saveRevoke),
+  );
+}
+
+/* ---------------- 决策审查 ---------------- */
+
+function renderDecision(protocols, configByKey, reload) {
+  const item = (key) => configByKey[key] || {};
+  const protocolSelect = el('select', { class: 'input' },
+    el('option', { value: 'off' }, '不启用（继续用聊天模型审查）'),
+    protocols.map((protocol) => el('option', { value: protocol.id }, protocol.label)));
+  protocolSelect.value = item('DECISION_PROTOCOL').value || 'off';
+
+  const keyItem = item('DECISION_API_KEY');
+  const keyInput = el('input', {
+    class: 'input',
+    type: 'password',
+    autocomplete: 'off',
+    placeholder: keyItem.has_value ? `已保存：${keyItem.value}（留空则不修改）` : '粘贴决策服务的 API Key',
+  });
+  const baseInput = el('input', {
+    class: 'input', value: item('DECISION_BASE_URL').value || '', placeholder: '官方地址或第三方中转地址',
+  });
+  const pathInput = el('input', {
+    class: 'input', value: item('DECISION_PATH').value || '', placeholder: '留空使用接口格式的默认路径',
+  });
+  const modelInput = el('input', {
+    class: 'input', value: item('DECISION_MODEL').value || '', placeholder: '以服务商提供的模型名为准',
+  });
+  const thresholdInput = el('input', {
+    class: 'input', type: 'number', min: '1', max: '99', value: item('DECISION_THRESHOLD').value || '50',
+  });
+
+  // 官方地址只是快速填入，选了之后地址和模型仍然可以随意改
+  const presetSelect = el('select', { class: 'input' });
+  const fillPresets = () => {
+    clear(presetSelect);
+    presetSelect.appendChild(el('option', { value: '' }, '手动填写（第三方中转）'));
+    const protocol = protocols.find((p) => p.id === protocolSelect.value);
+    (protocol ? protocol.presets : []).forEach((preset, index) => {
+      presetSelect.appendChild(el('option', { value: String(index) }, preset.label));
+    });
+  };
+  presetSelect.addEventListener('change', () => {
+    const protocol = protocols.find((p) => p.id === protocolSelect.value);
+    const preset = protocol && protocol.presets[Number(presetSelect.value)];
+    if (!preset || presetSelect.value === '') return;
+    baseInput.value = preset.url;
+    modelInput.value = preset.model;
+  });
+  protocolSelect.addEventListener('change', fillPresets);
+  fillPresets();
+
+  const saveAll = async () => {
+    const key = keyInput.value.trim();
+    const protocol = protocolSelect.value;
+    if (protocol !== 'off' && (!baseInput.value.trim() || !modelInput.value.trim())) {
+      throw new Error('请填写 Base URL 和模型');
+    }
+    if (key) await api.put('/api/config/DECISION_API_KEY', { value: key });
+    await api.put('/api/config/DECISION_BASE_URL', { value: baseInput.value.trim().replace(/\/+$/, '') });
+    await api.put('/api/config/DECISION_PATH', { value: pathInput.value.trim() });
+    await api.put('/api/config/DECISION_MODEL', { value: modelInput.value.trim() });
+    await api.put('/api/config/DECISION_THRESHOLD', { value: thresholdInput.value });
+    await api.put('/api/config/DECISION_PROTOCOL', { value: protocol });
+  };
+
+  const testResult = el('div', { class: 'test-result muted small' });
+  const saveButton = el('button', { class: 'btn primary' }, '保存');
+  const testButton = el('button', { class: 'btn' }, '保存并测试');
+  saveButton.addEventListener('click', async () => {
+    if (await guarded(saveAll, '决策审查设置已保存')) await reload();
+  });
+  testButton.addEventListener('click', async () => {
+    testButton.disabled = true;
+    testResult.className = 'test-result muted small';
+    testResult.textContent = '正在发送一次测试判断……';
+    try {
+      await saveAll();
+      const result = await api.post('/api/ai-decision-test');
+      testResult.className = 'test-result ok small';
+      testResult.textContent = `连接成功 · 模型 ${result.model} · 耗时 ${result.latency_ms} ms · 测试消息违规概率 ${(result.probability * 100).toFixed(1)}%`;
+    } catch (err) {
+      testResult.className = 'test-result error small';
+      testResult.textContent = err.message;
+    } finally {
+      testButton.disabled = false;
+    }
+  });
+
+  return el('div', { class: 'card' },
+    el('h3', {}, '决策审查', el('span', { class: 'sub' }, '改完立即生效')),
+    el('div', { class: 'muted small', style: { marginBottom: '14px' } },
+      '内容审查改用只做判断的决策模型，服务商和聊天模型相互独立。官方或第三方中转都可以：选它兼容的接口格式，再填地址和模型。审查规则继续用「提示词」页的内容，决策模型出错或超时会退回聊天模型再审一次。'),
+    el('div', { class: 'ai-grid' },
+      el('div', { class: 'field' }, el('label', {}, '接口格式'), protocolSelect),
+      el('div', { class: 'field' }, el('label', {}, '快速填入'), presetSelect),
+      el('div', { class: 'field span-2' }, el('label', {}, 'API Key'), keyInput),
+      el('div', { class: 'field span-2' }, el('label', {}, 'Base URL'), baseInput),
+      el('div', { class: 'field span-2' }, el('label', {}, '接口路径（可选）'), pathInput),
+      el('div', { class: 'field' }, el('label', {}, '模型'), modelInput),
+      el('div', { class: 'field' }, el('label', {}, '拦截阈值（%）'), thresholdInput),
+    ),
+    el('div', { class: 'muted small', style: { marginBottom: '10px' } }, '违规概率达到阈值就拦截，调高可以减少误杀。决策模型不写解释，拦截理由来自固定类别。'),
+    el('div', { class: 'row', style: { alignItems: 'center' } }, saveButton, testButton),
+    testResult,
   );
 }
 

@@ -46,6 +46,15 @@ class Config:
 
     ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
     ANTHROPIC_BASE_URL = (os.getenv('ANTHROPIC_BASE_URL') or '').strip() or None
+
+    # 决策审查：独立于聊天模型的服务商，只用于内容审查；off 表示不启用。
+    # 地址和模型都要自己填，官方或第三方中转都可以
+    DECISION_PROTOCOL = os.getenv('DECISION_PROTOCOL', 'off').strip().lower()
+    DECISION_API_KEY = os.getenv('DECISION_API_KEY', '').strip()
+    DECISION_BASE_URL = os.getenv('DECISION_BASE_URL', '').strip().rstrip('/')
+    DECISION_PATH = os.getenv('DECISION_PATH', '').strip()
+    DECISION_MODEL = os.getenv('DECISION_MODEL', '').strip()
+    DECISION_THRESHOLD = int(os.getenv('DECISION_THRESHOLD', '50'))
     
     ENABLE_AI_FILTER = os.getenv('ENABLE_AI_FILTER', 'true').lower() == 'true'
     

@@ -1,7 +1,7 @@
 /* 系统工具：SSH 网络测试（Ping / NextTrace）与更新（Git / 镜像）。 */
 
 import { api } from '../api.js';
-import { el, clear, spinner, toast, badge, confirmDialog, table, fmtTime } from '../ui.js';
+import { el, clear, spinner, toast, badge, confirmDialog, table, fmtTime, switchBox } from '../ui.js';
 
 const state = { tab: 'network' };
 
@@ -208,15 +208,109 @@ function statusRows(pairs) {
   );
 }
 
+function utcLabel(minutes) {
+  const sign = minutes < 0 ? '-' : '+';
+  const absolute = Math.abs(minutes);
+  const rest = absolute % 60;
+  return `UTC${sign}${Math.floor(absolute / 60)}${rest ? `:${String(rest).padStart(2, '0')}` : ''}`;
+}
+
+async function renderAutoUpdate(card) {
+  card.appendChild(spinner());
+  let data;
+  try {
+    data = await api.get('/api/update/auto');
+  } catch (err) {
+    clear(card);
+    card.appendChild(el('div', {}, `自动更新状态获取失败：${err.message}`));
+    return;
+  }
+  clear(card);
+
+  const { settings, state: updateState } = data;
+  const timeInput = el('input', { class: 'input', type: 'time', value: settings.time, style: { width: '130px' } });
+  const offsetSelect = el('select', { class: 'input', style: { width: '130px' } });
+  const offsets = new Set([settings.utc_offset_minutes, -new Date().getTimezoneOffset()]);
+  for (let hour = -12; hour <= 14; hour += 1) offsets.add(hour * 60);
+  [...offsets].sort((a, b) => a - b).forEach((minutes) => {
+    offsetSelect.appendChild(el('option', { value: String(minutes) }, utcLabel(minutes)));
+  });
+  offsetSelect.value = String(settings.utc_offset_minutes);
+
+  const save = async (consented) => {
+    await api.put('/api/update/auto', {
+      consented,
+      time: timeInput.value,
+      utc_offset_minutes: Number(offsetSelect.value),
+    });
+    clear(card);
+    await renderAutoUpdate(card);
+  };
+
+  const consentSwitch = switchBox({
+    checked: settings.consented,
+    onChange: async (checked) => {
+      if (checked) {
+        const confirmed = await confirmDialog({
+          title: '同意自动更新',
+          message: `同意后，发现新版本时机器人会在每天 ${timeInput.value}（${utcLabel(Number(offsetSelect.value))}）自动更新，更新期间机器人和面板会短暂断开。你可以随时关闭。确定同意吗？`,
+          confirmText: '同意自动更新',
+          danger: false,
+        });
+        if (!confirmed) return false;
+      }
+      await save(checked);
+      toast(checked ? '已同意自动更新' : '已关闭自动更新', 'ok');
+      return true;
+    },
+  });
+
+  const saveButton = el('button', {
+    class: 'btn sm primary',
+    onClick: async () => {
+      try {
+        await save(settings.consented);
+        toast('更新时间已保存', 'ok');
+      } catch (err) { toast(err.message, 'error'); }
+    },
+  }, '保存时间');
+
+  card.appendChild(el('div', { class: 'card-head' },
+    el('h3', {}, '自动更新', el('span', { class: 'sub' }, '启动时和每 6 小时检测一次')),
+    consentSwitch,
+  ));
+  card.appendChild(el('div', { class: 'muted small', style: { marginBottom: '10px' } },
+    settings.consented
+      ? `已于 ${fmtTime(settings.consented_at)} 同意。发现新版本后会在设定时间起的 1 小时内自动更新。`
+      : '还没有同意，机器人只检测新版本并提醒，不会自动更新。'));
+  card.appendChild(el('div', { class: 'row', style: { alignItems: 'center' } },
+    el('span', { class: 'small' }, '每天'), timeInput, offsetSelect, saveButton));
+  if (data.mode === 'image' && !data.watchtower_ready) {
+    card.appendChild(el('div', { style: { marginTop: '8px' } },
+      badge('还没配置 WATCHTOWER_HTTP_API_TOKEN，镜像无法自动更新', 'warn')));
+  }
+  card.appendChild(statusRows([
+    ['更新方式', data.mode === 'image' ? 'Watchtower 拉取镜像' : 'Git 更新后重启'],
+    ['最近检测', updateState.last_checked_at ? fmtTime(updateState.last_checked_at) : '-'],
+    ['检测结果', !updateState.last_checked_at ? '尚未检测' : (updateState.error || (updateState.update_available ? '发现新版本' : '已是最新'))],
+    ['下次更新窗口', data.next_update_at ? fmtTime(data.next_update_at) : '-'],
+    ['上次自动更新', updateState.last_attempt_at ? `${fmtTime(updateState.last_attempt_at)}（${updateState.last_result === 'ok' ? '已触发' : (updateState.last_result || '无需更新')}）` : '-'],
+  ]));
+}
+
 async function renderUpdate(container) {
   container.appendChild(el('div', { class: 'card' }, spinner()));
 
   async function load() {
     clear(container);
+    const autoCard = el('div', { class: 'card' });
     const gitCard = el('div', { class: 'card' });
     const imageCard = el('div', { class: 'card' });
+    container.appendChild(autoCard);
     container.appendChild(gitCard);
     container.appendChild(imageCard);
+
+    renderAutoUpdate(autoCard);
 
     /* --- Git --- */
     gitCard.appendChild(spinner());

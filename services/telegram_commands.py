@@ -5,10 +5,16 @@ from telegram import (
     BotCommand,
     BotCommandScopeAllGroupChats,
     BotCommandScopeAllPrivateChats,
+    MenuButtonDefault,
+    MenuButtonWebApp,
+    WebAppInfo,
 )
+from telegram.error import TelegramError
 from telegram.ext import Application
 
 from config import config
+from services.verification import miniapp_url
+from utils import copy as copy_text
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +136,21 @@ def get_group_chat_commands() -> list[BotCommand]:
     return _to_bot_commands(commands)
 
 
+async def register_miniapp_menu(app: Application) -> None:
+    """给管理员的聊天框设置 Mini App 菜单按钮；地址清空后恢复默认按钮。"""
+    url = miniapp_url()
+    menu_button = (
+        MenuButtonWebApp(text=copy_text.BTN_MINIAPP_MENU, web_app=WebAppInfo(url=url))
+        if url else MenuButtonDefault()
+    )
+    for admin_id in config.ADMIN_IDS:
+        try:
+            await app.bot.set_chat_menu_button(chat_id=admin_id, menu_button=menu_button)
+        except TelegramError as exc:
+            # 最常见的原因是这位管理员还没和机器人说过话，不影响启动
+            logger.warning("设置 Mini App 菜单按钮失败 admin_id=%s: %s", admin_id, exc)
+
+
 async def register_bot_commands(app: Application) -> None:
     private_commands = get_private_chat_commands()
     group_commands = get_group_chat_commands()
@@ -148,3 +169,4 @@ async def register_bot_commands(app: Application) -> None:
         len(private_commands),
         len(group_commands),
     )
+    await register_miniapp_menu(app)

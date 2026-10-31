@@ -34,8 +34,12 @@ export default {
 
     async function refresh() {
       let data;
+      let autoUpdate = null;
       try {
-        data = await api.get('/api/overview');
+        [data, autoUpdate] = await Promise.all([
+          api.get('/api/overview'),
+          api.get('/api/update/auto').catch(() => null),
+        ]);
       } catch (err) {
         toast(err.message, 'error');
         return;
@@ -61,6 +65,19 @@ export default {
       clear(container);
       container.appendChild(body);
       clear(body);
+
+      if (autoUpdate && autoUpdate.state.update_available) {
+        const { settings } = autoUpdate;
+        body.appendChild(el('div', { class: 'card' },
+          el('div', { class: 'card-head' },
+            el('h3', {}, '发现新版本'),
+            el('a', { class: 'btn sm primary', href: '#/tools' }, '查看更新'),
+          ),
+          el('div', { class: 'muted small' }, settings.consented
+            ? `将在 ${settings.time} 自动更新。`
+            : '还没有同意自动更新，可以手动更新，也可以到「网络与更新」开启自动更新。'),
+        ));
+      }
 
       body.appendChild(el('div', { class: 'stat-grid' }, cards.map(([label, value]) => statCard(label, value))));
 

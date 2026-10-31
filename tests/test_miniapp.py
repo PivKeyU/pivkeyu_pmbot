@@ -13,11 +13,13 @@ from urllib.parse import urlencode
 import aiohttp
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from telegram import MenuButtonDefault, MenuButtonWebApp
+from telegram.error import BadRequest
 
 from config import config
 from database import models as db
 from database.db_manager import DatabaseManager
-from services import verification, web_monitor
+from services import telegram_commands, verification, web_monitor
 from web_panel import api_admin, api_config, api_overview, keys, miniapp
 from web_panel.server import MINIAPP_API_PREFIX, MINIAPP_PREFIX, create_app as create_panel_app
 
@@ -80,7 +82,7 @@ async def _with_client(tmp_path, scenario):
     application = StubApplication()
     http_session = aiohttp.ClientSession()
     panel_app = create_panel_app(application.bot, http_session)
-    panel_app.add_subapp(MINIAPP_PREFIX, miniapp.create_app(application, http_session))
+    miniapp.mount(panel_app, application, http_session)
     client = TestClient(TestServer(panel_app))
     await client.start_server()
     try:
@@ -181,6 +183,52 @@ def test_miniapp_url_appends_mount_path(patched_config, monkeypatch):
     assert verification.miniapp_url() == 'https://panel.example.com/miniapp/'
     monkeypatch.setattr(config, 'MINIAPP_PUBLIC_URL', 'https://panel.example.com/miniapp')
     assert verification.miniapp_url() == 'https://panel.example.com/miniapp/'
+
+
+def test_miniapp_url_tolerates_trailing_slash(patched_config, monkeypatch):
+    for value in ('https://panel.example.com/miniapp/', 'https://panel.example.com/', ' https://panel.example.com/miniapp '):
+        monkeypatch.setattr(config, 'MINIAPP_PUBLIC_URL', value)
+        assert verification.miniapp_url() == 'https://panel.example.com/miniapp/'
+
+
+def test_entry_without_trailing_slash_redirects(tmp_path, patched_config):
+    async def scenario(client, application):
+        response = await client.get('/miniapp?startapp=1', allow_redirects=False)
+        assert response.status == 302
+        assert response.headers['Location'] == '/miniapp/?startapp=1'
+
+        response = await client.get('/miniapp')
+        assert response.status == 200
+        assert 'class="miniapp"' in await response.text()
+
+    asyncio.run(_with_client(tmp_path, scenario))
+
+
+def _menu_app(calls, failing=()):
+    async def set_chat_menu_button(chat_id, menu_button):
+        if chat_id in failing:
+            raise BadRequest('chat not found')
+        calls.append((chat_id, menu_button))
+
+    return SimpleNamespace(bot=SimpleNamespace(set_chat_menu_button=set_chat_menu_button))
+
+
+def test_admins_get_miniapp_menu_button(patched_config, monkeypatch):
+    monkeypatch.setattr(config, 'ADMIN_IDS', [ADMIN_ID, 333])
+    calls = []
+    # 有管理员还没和机器人对话时，其余管理员不受影响
+    asyncio.run(telegram_commands.register_miniapp_menu(_menu_app(calls, failing={ADMIN_ID})))
+
+    assert [chat_id for chat_id, _ in calls] == [333]
+    assert isinstance(calls[0][1], MenuButtonWebApp)
+    assert calls[0][1].web_app.url == f'{PUBLIC_URL}/'
+
+
+def test_menu_button_resets_when_url_removed(patched_config, monkeypatch):
+    monkeypatch.setattr(config, 'MINIAPP_PUBLIC_URL', '')
+    calls = []
+    asyncio.run(telegram_commands.register_miniapp_menu(_menu_app(calls)))
+    assert isinstance(calls[0][1], MenuButtonDefault)
 
 
 def test_broadcast_lock_is_shared_with_panel():

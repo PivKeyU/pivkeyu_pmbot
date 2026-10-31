@@ -2,7 +2,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 from .command_handler import (
     start, help_command, block, unblock, blacklist, stats, inbox, getid, autoreply,
     panel, exempt, group, broadcast, spamrules, tgmon, webmon, monitor_status, updatebot,
-    unverify, verify, miniapp,
+    unverify, verify, miniapp, restart_bot,
 )
 from .user_handler import handle_message, handle_edited_private_message
 from .callback_handler import handle_callback
@@ -73,6 +73,7 @@ def register_handlers(app: Application):
         app.add_handler(CommandHandler("webmon", webmon, filters=_command_filters()))
         app.add_handler(CommandHandler("monitor_status", monitor_status, filters=_command_filters()))
         app.add_handler(CommandHandler("updatebot", updatebot, filters=_command_filters()))
+        app.add_handler(CommandHandler("restart", restart_bot, filters=_command_filters()))
         
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & filters.Chat(chat_id=config.FORUM_GROUP_ID) & filters.REPLY & ~filters.COMMAND,

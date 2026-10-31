@@ -126,6 +126,7 @@ ALLOWED_ROUTES = {
     ('POST', '/api/update/git/rollback'),
     ('GET', '/api/update/image'),
     ('POST', '/api/update/image'),
+    ('POST', '/api/restart'),
 }
 
 # 网页版 Telegram 用 iframe 嵌入 Mini App，所以这里不能沿用面板的 frame-ancestors 'none'
@@ -299,6 +300,7 @@ async def auth_middleware(request, handler):
     # 每次都重新判断，管理员被移除后已打开的页面立即失效
     if not await db.is_admin(user_id):
         return http_utils.fail('没有管理权限', status=403)
+    request[keys.MINIAPP_USER_KEY] = user_id
     if request.method in WRITE_METHODS:
         logger.info('Mini App 操作 user_id=%s %s %s', user_id, request.method, path)
     return await handler(request)

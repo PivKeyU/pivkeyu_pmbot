@@ -1027,6 +1027,26 @@ BTN_VERIFY_TURNSTILE = '点我验证'
 
 BTN_VERIFY_FALLBACK = '打不开？换普通验证题'
 
+MINIAPP_NOT_READY = 'Mini App 还没启用，请先配置 https 开头的 MINIAPP_PUBLIC_URL。'
+
+MINIAPP_READY = '主人，手机管理页准备好了：'
+
+BTN_MINIAPP_OPEN = '打开手机管理页'
+
+RESTART_CHECKING = '女仆先确认一下 Bot Token，稍等一下下。'
+
+RESTART_ACCEPTED = 'Bot Token 没问题，女仆这就重启，很快回来。'
+
+RESTART_DONE = '女仆回来啦，重启完成。'
+
+RESTART_BAD_TOKEN = '保存的 Bot Token 没有通过 Telegram 验证，已取消重启，请先改对。'
+
+RESTART_TOKEN_UNREACHABLE = '暂时连不上 Telegram，无法确认 Bot Token，已取消重启。'
+
+RESTART_BROADCAST_RUNNING = '广播还在发送，等发完再重启吧。'
+
+RESTART_IN_PROGRESS = '已经在重启了，请稍等。'
+
 VERIFY_WRONG = '答案不对哦，客人还有 {remaining} 次机会。'
 
 VERIFY_WRONG_AGAIN = '哼，又错啦…才不是女仆没说清楚。客人还有 {remaining} 次机会，好好想嘛。'

@@ -7,7 +7,7 @@ from telegram.helpers import escape_markdown
 from database import models as db
 from services.blacklist import block_user, unblock_user, get_blacklist_keyboard
 from services.verification import miniapp_url
-from services import broadcast as broadcast_service, moderation, safe_update, spam_filter, tg_monitor, web_monitor
+from services import broadcast as broadcast_service, moderation, restart, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
 from config import config
 from utils import copy as copy_text
@@ -59,6 +59,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- `/webmon` - 管理网页关键词/变化监控\n"
         "- `/monitor_status` - 查看监听与 RSS 运行状态\n"
         "- `/updatebot` - 安全检查/更新/回滚本地代码\n"
+        "- `/restart` - 验证 Bot Token 后重启机器人\n"
     )
     
     await update.message.reply_text(
@@ -238,11 +239,21 @@ async def getid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def miniapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = miniapp_url()
     if not url:
-        await update.message.reply_text(
-            copy_text.with_deco('Mini App 还没启用，请先配置 https 开头的 MINIAPP_PUBLIC_URL。', 'ERROR'))
+        await update.message.reply_text(copy_text.with_deco(copy_text.MINIAPP_NOT_READY, 'ERROR'))
         return
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton('打开手机管理页', web_app=WebAppInfo(url=url))]])
-    await update.message.reply_text('主人，手机管理页准备好了：', reply_markup=keyboard)
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_MINIAPP_OPEN, web_app=WebAppInfo(url=url))]])
+    await update.message.reply_text(copy_text.MINIAPP_READY, reply_markup=keyboard)
+
+
+@admin_only
+async def restart_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(copy_text.with_deco(copy_text.RESTART_CHECKING, 'ASK'))
+    try:
+        await restart.request_restart(context.application, [update.effective_chat.id])
+    except restart.RestartRefused as exc:
+        await update.message.reply_text(copy_text.with_deco(str(exc), 'ERROR'))
+        return
+    await update.message.reply_text(copy_text.with_deco(copy_text.RESTART_ACCEPTED, 'OK'))
 
 
 @admin_only

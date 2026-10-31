@@ -747,9 +747,18 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | Git 更新 | 仓库部署，服务器上有 git 工作区 | `/updatebot status` → `/updatebot apply` | 本地工作区干净、远端可快进 |
 | 镜像更新 | 机器人跑在 Docker 里，服务器上**没有 git 仓库**（例如镜像由 CI 构建后直接拉取） | `/panel` → 检查镜像更新 → 确认更新 | `WATCHTOWER_HTTP_API_URL` + `WATCHTOWER_HTTP_API_TOKEN` + Watchtower 容器 |
 
-> `/updatebot apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新；更新完成后需按部署方式重启 Bot。
+> `/updatebot apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新；更新完成后发 `/restart` 重启 Bot。
 >
 > 面板中的「检查镜像更新」即使未配置 token 也能查看状态，但「确认更新」会提示没配口令。镜像更新的配置详见 `.env.example` 与 [watchtower/README.md](watchtower/README.md)。
+
+### 🔁 重启机器人
+
+管理员可以发 `/restart`，或在网页版、Mini App 的「配置中心」点「重启机器人」。重启前会用当前保存的 `BOT_TOKEN` 向 Telegram 验证，Token 无效或连不上 Telegram 时拒绝重启；有广播正在发送时也会拒绝。
+
+重启通过替换当前进程完成，Docker 和源码部署都能用，完成后机器人会通知发起人。网页版和 Mini App 的登录状态保存在内存里，重启后要重新打开或登录。
+
+> [!WARNING]
+> 预检只覆盖 `BOT_TOKEN`。其他配置错误仍可能导致启动失败，此时机器人和面板都打不开，需要回服务器修复。
 
 ### 🎛️ 女仆长面板 /panel
 
@@ -961,6 +970,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | `/webmon` | 管理网页监控 |
 | `/monitor_status` | 查看监听状态 |
 | `/updatebot` | 安全更新机器人（git 部署）；面板中还提供「检查镜像更新 / 确认更新」（Docker 部署，经 Watchtower HTTP API 触发） |
+| `/restart` | 验证 Bot Token 后重启机器人 |
 
 ### 📰 RSS 命令
 

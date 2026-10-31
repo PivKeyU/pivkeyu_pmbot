@@ -16,8 +16,9 @@ from database import models as db
 from rss import data_manager as rss_data
 from rss import settings as rss_settings
 from rss.handlers import ensure_user_data, is_valid_url
+from config import config
 from services import broadcast as broadcast_service
-from services import image_update, safe_update
+from services import image_update, restart, safe_update
 from services.ai_providers import AI_FEATURES, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, model_setting_key
 from services import ai_options
 from services.ai_service import (
@@ -1065,3 +1066,19 @@ async def image_update_apply(request):
         return http_utils.fail(message)
     http_utils.audit(request, 'update.image_apply', message[:120])
     return http_utils.ok({'message': message})
+
+
+@routes.post('/api/restart')
+async def restart_bot(request):
+    application = request.app.get(keys.APPLICATION_KEY)
+    if application is None:
+        return http_utils.fail('当前运行方式不支持重启', status=409)
+
+    # Mini App 里知道是谁点的，网页版只有密码登录，通知全部管理员
+    user_id = request.get(keys.MINIAPP_USER_KEY)
+    try:
+        await restart.request_restart(application, [user_id] if user_id else list(config.ADMIN_IDS))
+    except restart.RestartRefused as exc:
+        return http_utils.fail(str(exc), status=409)
+    http_utils.audit(request, 'bot.restart')
+    return http_utils.ok({'restarting': True})

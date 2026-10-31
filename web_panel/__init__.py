@@ -58,7 +58,7 @@ async def start(app) -> None:
         )
 
     http_session = aiohttp.ClientSession()
-    web_app = create_app(app.bot, http_session)
+    web_app = create_app(app.bot, http_session, app)
     _mount_miniapp(app, web_app, http_session)
     runner = web.AppRunner(web_app, access_log=None)
     await runner.setup()

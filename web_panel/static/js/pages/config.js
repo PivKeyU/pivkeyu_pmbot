@@ -1,7 +1,7 @@
 /* 配置中心：环境变量类配置的分组展示、保存（热生效）与重置。 */
 
 import { api, isMiniApp } from '../api.js';
-import { el, clear, spinner, toast, badge, switchBox, selectInput } from '../ui.js';
+import { el, clear, spinner, toast, badge, switchBox, selectInput, confirmDialog, withLoading } from '../ui.js';
 
 const SOURCE_LABEL = {
   override: ['面板覆盖', 'accent'],
@@ -10,6 +10,29 @@ const SOURCE_LABEL = {
 };
 
 const PASSWORD_CONFIG_KEYS = new Set(['WEB_PANEL_PASSWORD', 'WEB_PANEL_PASSWORD_SHA256']);
+
+function restartCard() {
+  const button = el('button', { class: 'btn primary' }, '重启机器人');
+  button.addEventListener('click', async () => {
+    const confirmed = await confirmDialog({
+      title: '重启机器人',
+      message: '会先验证保存的 Bot Token，通过后才重启。重启时机器人和面板会短暂断开，之后需要重新登录。确定继续吗？',
+      confirmText: '重启',
+    });
+    if (!confirmed) return;
+    try {
+      await withLoading(button, () => api.post('/api/restart'));
+      toast('正在重启，请稍后重新打开页面', 'ok', 8000);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  });
+  return el('div', { class: 'card' },
+    el('h3', {}, '重启机器人'),
+    el('div', { class: 'muted small', style: { marginBottom: '10px' } }, '标了「需重启」的配置，保存后点这里生效。'),
+    button,
+  );
+}
 
 function passwordCard() {
   const currentPassword = el('input', {
@@ -172,7 +195,7 @@ function buildItem(item, onChange) {
 
 export default {
   title: '配置中心',
-  hint: '改完立即生效；标「需重启」的项在进程重启后生效',
+  hint: '改完立即生效；标「需重启」的项重启机器人后生效',
   render(container) {
     container.appendChild(spinner());
 
@@ -186,6 +209,7 @@ export default {
         return;
       }
       clear(container);
+      container.appendChild(restartCard());
       // Mini App 没有改密接口，面板密码只能在网页版修改
       if (!isMiniApp) container.appendChild(passwordCard());
 

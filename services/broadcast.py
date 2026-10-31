@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass
+from functools import wraps
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -23,6 +24,26 @@ class BroadcastResult:
     success: int
     failed: int
     group_name: Optional[str] = None
+
+
+_active_broadcasts = 0
+
+
+def is_running() -> bool:
+    return _active_broadcasts > 0
+
+
+def _tracked(func):
+    """统计进行中的广播，命令和面板发起的都算在内，重启前据此判断能否中断。"""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        global _active_broadcasts
+        _active_broadcasts += 1
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            _active_broadcasts -= 1
+    return wrapper
 
 
 def normalize_group_name(name: str) -> str:
@@ -137,6 +158,7 @@ async def build_user_group_keyboard(user_id: int) -> tuple[str, InlineKeyboardMa
     return "\n".join(lines), InlineKeyboardMarkup(keyboard)
 
 
+@_tracked
 async def send_text_broadcast(
     context: ContextTypes.DEFAULT_TYPE,
     recipients: list[dict],
@@ -270,6 +292,7 @@ async def _send_message_mirror(context: ContextTypes.DEFAULT_TYPE, recipient: di
         return None
 
 
+@_tracked
 async def send_message_broadcast(
     context: ContextTypes.DEFAULT_TYPE,
     recipients: list[dict],

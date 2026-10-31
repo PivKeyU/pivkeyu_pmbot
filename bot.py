@@ -6,7 +6,7 @@ from handlers import register_handlers
 from rss import setup as setup_rss
 from database.db_manager import DatabaseManager
 from services.telegram_commands import register_bot_commands
-from services import tg_monitor, web_monitor
+from services import restart, tg_monitor, web_monitor
 import web_panel
 from utils import about
 
@@ -18,6 +18,7 @@ async def post_init(app: Application):
     await register_bot_commands(app)
     await tg_monitor.start_user_session_listener(app)
     await web_panel.start(app)
+    await restart.announce_restart(app)
 async def post_shutdown(app: Application):
     from services.ai_service import close_clients
     close_clients()
@@ -59,6 +60,7 @@ def main():
     logging.info(about.startup_banner())
     logging.info("Bot启动中...")
     app.run_polling()
+    restart.exec_if_requested()
 
 if __name__ == '__main__':
     try:

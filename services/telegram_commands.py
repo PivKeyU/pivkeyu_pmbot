@@ -48,6 +48,7 @@ ADMIN_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
     ("webmon", "管理网页监控"),
     ("monitor_status", "查看监听状态"),
     ("updatebot", "安全更新机器人"),
+    ("restart", "重启机器人"),
 )
 
 RSS_PRIVATE_COMMANDS: tuple[CommandSpec, ...] = (
@@ -94,6 +95,7 @@ ADMIN_GROUP_COMMANDS: tuple[CommandSpec, ...] = (
     ("webmon", "管理网页监控"),
     ("monitor_status", "查看监听状态"),
     ("updatebot", "安全更新机器人"),
+    ("restart", "重启机器人"),
 )
 
 

@@ -990,6 +990,11 @@ async def image_apply(request):
     return _ok({'message': '（预览）已触发 Watchtower 更新，容器即将重建。'})
 
 
+@routes.post('/api/restart')
+async def restart_bot(request):
+    return _ok({'restarting': True})
+
+
 # --------------------------------------------------------------------------- #
 # WebSocket：模拟实时新消息
 # --------------------------------------------------------------------------- #

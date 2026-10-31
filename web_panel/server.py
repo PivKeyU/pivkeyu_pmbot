@@ -126,12 +126,14 @@ def make_index_handler(version: str):
     return index_handler
 
 
-def create_app(bot, http_session) -> web.Application:
+def create_app(bot, http_session, application=None) -> web.Application:
     app = web.Application(
         middlewares=[error_middleware, security_headers_middleware, auth_middleware],
         client_max_size=1024 * 1024,
     )
     app[keys.BOT_KEY] = bot
+    if application is not None:
+        app[keys.APPLICATION_KEY] = application
     app[keys.HTTP_SESSION_KEY] = http_session
     app[keys.BROADCAST_TASKS_KEY] = keys.BROADCAST_TASKS
     app.add_routes(api_auth.routes)

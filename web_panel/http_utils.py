@@ -9,6 +9,8 @@ from aiohttp import web
 
 logger = logging.getLogger(__name__)
 
+SEARCH_MAX_CHARS = 100
+
 
 def ok(data=None, **extra):
     payload = {'ok': True}
@@ -49,6 +51,10 @@ def pagination(request, default_per=20, max_per=100):
     page = get_int(request, 'page', 1, minimum=1) or 1
     per_page = get_int(request, 'per_page', default_per, minimum=1, maximum=max_per) or default_per
     return page, per_page, (page - 1) * per_page
+
+
+def search_query(request):
+    return (request.query.get('q') or '').strip()[:SEARCH_MAX_CHARS] or None
 
 
 def page_payload(items, total, page, per_page):

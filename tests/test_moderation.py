@@ -208,8 +208,26 @@ async def _moderation_flow(tmp_path):
         assert await db.is_exempted(900)
         assert (await db.get_review_appeal(appeal['id']))['status'] == 'approved'
         assert any('3 小时' in m['text'] for m in bot.sent if m['chat_id'] == 900)
-        # 话题里那条申请消息被改成处理结果、按钮收起
-        assert bot.edited and bot.edited[-1]['reply_markup'] is None
+        # 话题里那条申请消息被改成处理结果，只留下取消免审查的按钮
+        buttons = [b.callback_data for row in bot.edited[-1]['reply_markup'].inline_keyboard for b in row]
+        assert buttons == [f"appeal_resume:{appeal['id']}"]
+
+        # 取消免审查：立即恢复审查、按钮收起；再点一次提示已经结束
+        approved = await db.get_review_appeal(appeal['id'])
+        assert await moderation.cancel_pause_from_topic(bot, approved, 'TG 话题') is True
+        assert not await db.is_exempted(900)
+        assert bot.edited[-1]['reply_markup'] is None
+        assert await moderation.cancel_pause_from_topic(bot, approved, 'TG 话题') is False
+
+        # 取消待处理的申请：关闭话题按钮，不通知用户
+        second = await db.create_review_appeal(900, 'AI: 广告')
+        await db.set_review_appeal_topic_message(second, 7001)
+        notified = len([m for m in bot.sent if m['chat_id'] == 900])
+        assert await moderation.cancel_appeal(bot, 900, 10001, 'TG 话题') is True
+        assert (await db.get_review_appeal(second))['status'] == 'cancelled'
+        assert bot.edited[-1]['message_id'] == 7001 and bot.edited[-1]['reply_markup'] is None
+        assert len([m for m in bot.sent if m['chat_id'] == 900]) == notified
+        assert await moderation.cancel_appeal(bot, 900, 10001, 'TG 话题') is False
 
         # 普通话题回复不受影响
         normal = SimpleNamespace(reply_to_message=SimpleNamespace(message_id=1), from_user=SimpleNamespace(id=10001))
@@ -294,6 +312,35 @@ async def _panel_flow(tmp_path):
         item = (await (await client.get('/api/conversations')).json())['data']['items'][0]
         assert item['pending_appeal'] == 1
         assert (await client.post('/api/conversations/901/appeal/reject', headers=PANEL_HEADERS)).status == 200
+
+        # 用户管理里的申请列表：批准、拒绝、取消都要有待处理的申请
+        for method, path in (
+            (client.post, '/api/review-appeals/901/approve'),
+            (client.post, '/api/review-appeals/901/reject'),
+            (client.delete, '/api/review-appeals/901'),
+        ):
+            response = await method(path, json={'minutes': '2h'}, headers=PANEL_HEADERS)
+            assert response.status == 400
+            assert '待处理' in (await response.json())['error']
+
+        await db.save_filtered_message(901, 9, '被拦下的话', 'AI: 广告')
+        await db.create_review_appeal(901, 'AI: 广告')
+        listing = (await (await client.get('/api/review-appeals')).json())['data']
+        assert listing['total'] == 1 and listing['items'][0]['blocked_content'] == '被拦下的话'
+        assert (await (await client.get('/api/review-appeals?q=nobody')).json())['data']['total'] == 0
+        response = await client.post('/api/review-appeals/901/approve', json={'minutes': 'abc'}, headers=PANEL_HEADERS)
+        assert response.status == 400
+        response = await client.post('/api/review-appeals/901/approve', json={'minutes': '2h'}, headers=PANEL_HEADERS)
+        assert (await response.json())['data']['duration_text'] == '2 小时'
+        assert await db.is_exempted(901)
+
+        # 取消免审查
+        assert (await client.delete('/api/exemptions/901', headers=PANEL_HEADERS)).status == 200
+        assert not await db.is_exempted(901)
+
+        await db.create_review_appeal(901, 'AI: 广告')
+        assert (await client.delete('/api/review-appeals/901', headers=PANEL_HEADERS)).status == 200
+        assert await db.get_pending_review_appeal(901) is None
 
         # AI 参数接口
         response = await client.put('/api/ai-options', json={'features': {'filter': {'effort': 'off'}}}, headers=PANEL_HEADERS)

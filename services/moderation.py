@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from telegram import ForceReply, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
 from config import config
 from database import models as db
@@ -20,6 +20,9 @@ from utils import copy as copy_text
 from web_panel import events as panel_events
 
 logger = logging.getLogger(__name__)
+
+EXEMPTION_PRUNE_JOB_KEY = 'exemption_prune_job'
+EXEMPTION_PRUNE_SECONDS = 3600
 
 # 话题里的快捷时长按钮（分钟）
 APPEAL_PRESETS = ((30, '30 分钟'), (120, '2 小时'), (1440, '1 天'))
@@ -134,6 +137,112 @@ async def restore_verification(user_id: int) -> bool:
     return True
 
 
+async def revoke_all_verifications() -> int:
+    """收回全部用户的验证结果（管理员除外），下次发消息时都要重新验证。"""
+    from services import verification
+
+    count = await db.revoke_all_verifications(config.ADMIN_IDS)
+    verification.pending_verifications.clear()
+    panel_events.publish('user_status', change='all_unverified')
+    return count
+
+
+async def revoke_all_exemptions() -> int:
+    """取消全部免审查权限，所有人的消息立即恢复 AI 审查。"""
+    count = await db.clear_all_exemptions()
+    panel_events.publish('user_status', change='all_review_resumed')
+    return count
+
+
+async def _prune_exemptions_job(context) -> None:
+    count = await db.prune_expired_exemptions()
+    if count:
+        logger.info('已清理 %s 张过期通行证', count)
+
+
+def setup(app) -> None:
+    job = app.bot_data.get(EXEMPTION_PRUNE_JOB_KEY)
+    if job:
+        job.schedule_removal()
+    app.bot_data[EXEMPTION_PRUNE_JOB_KEY] = app.job_queue.run_repeating(
+        _prune_exemptions_job, interval=EXEMPTION_PRUNE_SECONDS, first=60, name='exemption_prune',
+    )
+
+
+async def _send_released(bot, row: dict, thread_id: int):
+    lines = ['📤 管理员放行的消息']
+    if row.get('forward_source'):
+        lines.append(f"转发自：{row['forward_source']}")
+    if row.get('content'):
+        lines.append(row['content'])
+    text = '\n'.join(lines)
+    target = {'chat_id': config.FORUM_GROUP_ID, 'message_thread_id': thread_id}
+    if row.get('media_type') == 'photo' and row.get('media_file_id'):
+        return await bot.send_photo(photo=row['media_file_id'], caption=text[:1024], **target)
+    if row.get('media_type') == 'sticker' and row.get('media_file_id'):
+        await bot.send_message(text=text, **target)
+        return await bot.send_sticker(sticker=row['media_file_id'], **target)
+    return await bot.send_message(text=text[:4096], **target)
+
+
+async def release_filtered(bot, filtered_id: int) -> Optional[dict]:
+    """把拦截篮里的消息补发到用户话题，并移出拦截篮。记录不存在返回 None。"""
+    from services.thread_manager import ensure_user_thread
+
+    row = await db.get_filtered_message(filtered_id)
+    if not row:
+        return None
+    user = await db.get_user(row['user_id'])
+    if not user:
+        raise ValueError('这条消息的用户已经不存在')
+
+    thread_id = await ensure_user_thread(bot, user)
+    if not thread_id:
+        raise ValueError('没能打开这个用户的话题，请确认论坛群配置')
+    try:
+        sent = await _send_released(bot, row, thread_id)
+    except BadRequest as exc:
+        if 'not found' not in str(exc).lower():
+            raise ValueError(f'补发失败：{exc}')
+        # 话题被删过：重建一次
+        await db.update_user_thread_id(user['user_id'], None)
+        user['thread_id'] = None
+        thread_id = await ensure_user_thread(bot, user)
+        if not thread_id:
+            raise ValueError('话题已失效，重建也失败了')
+        sent = await _send_released(bot, row, thread_id)
+    except TelegramError as exc:
+        raise ValueError(f'补发失败：{exc}')
+
+    await db.save_message_mapping(
+        user_id=user['user_id'],
+        source_chat_id=user['user_id'],
+        source_message_id=row['message_id'],
+        dest_chat_id=config.FORUM_GROUP_ID,
+        dest_message_id=sent.message_id,
+        direction='user_to_admin',
+        thread_id=thread_id,
+    )
+    await db.save_message(
+        user_id=user['user_id'],
+        message_id=row['message_id'],
+        content=row.get('content') or '',
+        direction='user_to_admin',
+        media_type=row.get('media_type'),
+        media_file_id=row.get('media_file_id'),
+        dest_message_id=sent.message_id,
+        thread_id=thread_id,
+        forward_source=row.get('forward_source'),
+    )
+    await db.delete_filtered_message(filtered_id)
+    panel_events.publish(
+        'message', user_id=user['user_id'], direction='user_to_admin',
+        preview=(row.get('content') or '')[:120] or f"[{row.get('media_type') or '媒体'}]",
+        message_id=row['message_id'], media_type=row.get('media_type'),
+    )
+    return row
+
+
 async def maybe_auto_revoke(bot, user_id: int) -> bool:
     """AI 判定违规后调用：开启了「AI 自动撤销验证」且窗口内违规次数达标时，收回验证结果。"""
     enabled, threshold, window_hours = await ai_options.auto_revoke_settings()
@@ -179,8 +288,13 @@ def _appeal_admin_keyboard(appeal_id: int) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton('自定义时长', callback_data=f'appeal_custom:{appeal_id}'),
             InlineKeyboardButton('拒绝', callback_data=f'appeal_no:{appeal_id}'),
+            InlineKeyboardButton('取消申请', callback_data=f'appeal_cancel:{appeal_id}'),
         ],
     ])
+
+
+def _appeal_resume_keyboard(appeal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton('取消免审查', callback_data=f'appeal_resume:{appeal_id}')]])
 
 
 def _parse_db_time(value) -> Optional[datetime]:
@@ -231,16 +345,27 @@ async def create_appeal(bot, user_id: int, ensure_thread) -> tuple:
     return True, copy_text.with_deco('申请已经交给管理员啦，处理好之后女仆会第一时间告诉客人。', 'OK')
 
 
-async def _close_topic_appeal_message(bot, appeal: Optional[dict], text: str) -> None:
+async def _close_topic_appeal_message(bot, appeal: Optional[dict], text: str, reply_markup=None) -> None:
     if not appeal or not appeal.get('topic_message_id') or not config.FORUM_GROUP_ID:
         return
     try:
         await bot.edit_message_text(
             chat_id=config.FORUM_GROUP_ID, message_id=appeal['topic_message_id'],
-            text=text, reply_markup=None,
+            text=text, reply_markup=reply_markup,
         )
     except TelegramError as exc:
         logger.info('更新申请消息失败（可能已被删除或内容未变）: %s', exc)
+
+
+def pause_minutes(data: dict) -> Optional[int]:
+    """从接口请求体取暂停时长：permanent=true 返回 None，填错抛 ValueError。"""
+    if data.get('permanent'):
+        return None
+    raw = str(data.get('minutes') or data.get('duration') or '').strip()
+    minutes = parse_duration(raw)
+    if minutes is None:
+        raise ValueError('请填写暂停时长，例如 30、3h、2d')
+    return minutes
 
 
 async def grant_review_pause(bot, user_id: int, minutes: Optional[int], granted_by: int, source: str) -> dict:
@@ -261,7 +386,8 @@ async def grant_review_pause(bot, user_id: int, minutes: Optional[int], granted_
     await db.resolve_review_appeals(user_id, 'approved', granted_by, minutes)
     duration = format_duration(minutes)
     await _close_topic_appeal_message(bot, pending, copy_text.with_deco(
-        f'已为 {_user_label(user)} 暂停审查 {duration}（{source}处理）。', 'OK'))
+        f'已为 {_user_label(user)} 暂停审查 {duration}（{source}处理）。', 'OK'),
+        _appeal_resume_keyboard(pending['id']) if pending else None)
     await _notify_user(bot, user_id, copy_text.with_deco(
         f'管理员已经为客人暂停审查 {duration}，现在可以直接把消息交给女仆啦。', 'OK'))
     panel_events.publish('user_status', user_id=user_id, change='review_paused')
@@ -271,6 +397,30 @@ async def grant_review_pause(bot, user_id: int, minutes: Optional[int], granted_
 async def resume_review(user_id: int) -> None:
     await db.remove_exemption(user_id)
     panel_events.publish('user_status', user_id=user_id, change='review_resumed')
+
+
+async def cancel_appeal(bot, user_id: int, handled_by: int, source: str) -> bool:
+    """取消待处理的申请：不批准也不拒绝，不通知用户。"""
+    user = await db.get_user(user_id)
+    pending = await db.get_pending_review_appeal(user_id)
+    if not user or not pending:
+        return False
+    await db.resolve_review_appeals(user_id, 'cancelled', handled_by)
+    await _close_topic_appeal_message(bot, pending, copy_text.with_deco(
+        f'已取消 {_user_label(user)} 的暂停审查申请（{source}处理）。', 'OK'))
+    panel_events.publish('user_status', user_id=user_id, change='appeal_cancelled')
+    return True
+
+
+async def cancel_pause_from_topic(bot, appeal: dict, source: str) -> bool:
+    """话题里点了「取消免审查」。没有生效中的暂停时返回 False。"""
+    active = await db.is_exempted(appeal['user_id'])
+    if active:
+        await resume_review(appeal['user_id'])
+    user = await db.get_user(appeal['user_id'])
+    text = f'已取消 {_user_label(user)} 的免审查（{source}处理）。' if active else '这次免审查已经结束啦。'
+    await _close_topic_appeal_message(bot, appeal, copy_text.with_deco(text, 'OK'))
+    return active
 
 
 async def reject_appeal(bot, user_id: int, handled_by: int, source: str) -> bool:

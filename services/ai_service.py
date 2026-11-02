@@ -804,20 +804,25 @@ class AIService:
         }
 
     async def test_decision(self) -> dict:
-        """用已保存的决策审查配置发一次真实判断，返回模型、耗时与违规概率。"""
+        """连发两次真实判断：保存配置会重建客户端，第一次要新建连接，第二次才接近日常耗时。"""
         client = _get_decision_client()
         if not client:
             raise ValueError('请先填写接口格式、API Key、Base URL 和模型')
         model = config.DECISION_MODEL
-        started = time.monotonic()
-        result = await asyncio.wait_for(
-            client.ask(model, await ai_options.get_prompt('review'), PING_PROMPT),
-            timeout=DECISION_TIMEOUT_SECONDS,
-        )
+        policy = await ai_options.get_prompt('review')
+
+        async def timed_ask():
+            started = time.monotonic()
+            result = await asyncio.wait_for(client.ask(model, policy, PING_PROMPT), timeout=DECISION_TIMEOUT_SECONDS)
+            return result, int((time.monotonic() - started) * 1000)
+
+        _, first_latency_ms = await timed_ask()
+        result, latency_ms = await timed_ask()
         return {
             'protocol': client.protocol,
             'model': model,
-            'latency_ms': int((time.monotonic() - started) * 1000),
+            'first_latency_ms': first_latency_ms,
+            'latency_ms': latency_ms,
             'probability': result.probability,
         }
 

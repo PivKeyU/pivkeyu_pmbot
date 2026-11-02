@@ -9,6 +9,9 @@ from . import http_utils
 routes = web.RouteTableDef()
 
 
+MONITOR_CATEGORIES = {'rss', 'web', 'tg_monitor'}
+
+
 @routes.get('/api/overview')
 async def overview(request):
     data = {
@@ -24,10 +27,15 @@ async def overview(request):
             'filtered_messages': await db.get_filtered_messages_count(),
             'pending_topics': await db.count_pending_reply_topics(),
             'exemptions': await db.get_exemptions_count(),
+            'pending_appeals': await db.get_pending_review_appeals_count(),
             'messages': await db.get_message_stats(),
         },
         'runtime_status': await db.get_runtime_statuses(limit=50),
     }
+    data['stats']['failing_monitors'] = sum(
+        1 for row in data['runtime_status']
+        if row.get('consecutive_failures') and row.get('category') in MONITOR_CATEGORIES
+    )
     return http_utils.ok(data)
 
 

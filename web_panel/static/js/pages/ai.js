@@ -517,7 +517,7 @@ function renderDecision(protocols, configByKey, reload) {
       await saveAll();
       const result = await api.post('/api/ai-decision-test');
       testResult.className = 'test-result ok small';
-      testResult.textContent = `连接成功 · 模型 ${result.model} · 耗时 ${result.latency_ms} ms · 测试消息违规概率 ${(result.probability * 100).toFixed(1)}%`;
+      testResult.textContent = `连接成功 · 模型 ${result.model} · 首次连接 ${result.first_latency_ms} ms · 复用连接 ${result.latency_ms} ms · 测试消息违规概率 ${(result.probability * 100).toFixed(1)}%`;
     } catch (err) {
       testResult.className = 'test-result error small';
       testResult.textContent = err.message;

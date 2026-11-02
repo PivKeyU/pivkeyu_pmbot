@@ -1,6 +1,6 @@
 /* 仪表盘：统计概览与定时任务运行状态。 */
 
-import { api } from '../api.js';
+import { api, isMiniApp } from '../api.js';
 import { el, clear, spinner, table, fmtTime, fmtRelative, badge, toast } from '../ui.js';
 
 const CATEGORY_LABELS = {
@@ -76,6 +76,18 @@ export default {
           el('div', { class: 'muted small' }, settings.consented
             ? `将在 ${settings.time} 自动更新。`
             : '还没有同意自动更新，可以手动更新，也可以到「网络与更新」开启自动更新。'),
+        ));
+      }
+
+      const todos = [
+        stats.pending_appeals ? [`${stats.pending_appeals} 条暂停审查申请`, '#/users'] : null,
+        stats.pending_topics && !isMiniApp ? [`${stats.pending_topics} 个话题待回复`, '#/conversations'] : null,
+        stats.failing_monitors ? [`${stats.failing_monitors} 个监控运行失败`, '#/feeds'] : null,
+      ].filter(Boolean);
+      if (todos.length) {
+        body.appendChild(el('div', { class: 'card' },
+          el('div', { class: 'card-head' }, el('h3', {}, '待办')),
+          el('div', { class: 'row' }, todos.map(([text, href]) => el('a', { class: 'btn sm', href }, text))),
         ));
       }
 

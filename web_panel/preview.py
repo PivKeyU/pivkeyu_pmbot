@@ -110,7 +110,17 @@ STORE = {
     'web_monitors': [
         {'id': 1, 'name': '新番表', 'url': 'https://example.com/anime', 'keywords': ['更新'],
          'interval_seconds': 300, 'enabled': True, 'item_selector': 'article', 'title_selector': 'h2',
-         'link_selector': 'a', 'price_selector': '', 'stock_selector': '', 'last_checked_at': _now()},
+         'link_selector': 'a', 'price_selector': '', 'stock_selector': '', 'last_checked_at': _now(),
+         'notify_telegram': True, 'notify_chat_ids': '', 'last_error': ''},
+        {'id': 2, 'name': '限定手办', 'url': 'https://shop.example.com/item/42', 'keywords': [],
+         'interval_seconds': 300, 'enabled': True, 'monitor_type': 'stock', 'product_keyword': '',
+         'price_selector': '', 'stock_selector': '', 'in_stock_words': '', 'out_of_stock_words': '',
+         'notify_telegram': True, 'notify_chat_ids': '', 'last_error': '', 'last_checked_at': _now(),
+         'stock_state': 'out', 'stock_price': '¥ 299', 'stock_title': '限定手办 第二弹'},
+    ],
+    'monitor_events': [
+        {'id': 1, 'source': 'web', 'monitor_name': '新番表', 'title': '第三集更新', 'link': 'https://example.com/anime',
+         'detail': '新条目', 'pushed_count': 1, 'created_at': _now()},
     ],
     'exemptions': [
         {'user_id': 100001, 'first_name': '星野梦美', 'username': 'yumemi', 'is_permanent': True,
@@ -223,6 +233,7 @@ async def overview(request):
         'bot': {'id': 42, 'username': 'pivkeyu_maid', 'forum_group_id': -1001234567890},
         'stats': {'total_users': 128, 'verified_users': 96, 'blocked_users': 3,
                   'filtered_messages': 12, 'pending_topics': 4, 'exemptions': 2,
+                  'pending_appeals': len(PREVIEW_STATE['appeals']), 'failing_monitors': 1,
                   'messages': {'total': 8421, 'today': 57}},
         'runtime_status': [
             {'name': 'RSS 订阅抓取', 'category': 'rss', 'last_run_at': _now(), 'last_success_at': _now(),
@@ -306,6 +317,8 @@ PREVIEW_STATE = {
     'appeals': {100002: {'id': 1, 'user_id': 100002, 'status': 'pending',
                          'blocked_reason': '疑似广告推广', 'created_at': _now()}},
     'ai_options': {},
+    'profiles': {100001: {'note': '老朋友，常问菜单', 'tags': ['老客户']}},
+    'stock_runs': 0,
 }
 
 
@@ -424,17 +437,120 @@ async def media(request):
 # 用户管理
 # --------------------------------------------------------------------------- #
 
+def _query(request):
+    return (request.query.get('q') or '').strip().lower()
+
+
+def _hits(rows, query, *keys):
+    if not query:
+        return rows
+    return [row for row in rows if any(query in str(row.get(key) or '').lower() for key in keys)]
+
+
+def _user_hit(user, query):
+    """用户发出或被拦下的最新一条命中消息。"""
+    sent = [{'matched_content': m['content'], 'matched_source': 'message', 'matched_reason': None,
+             'matched_at': m['created_at']}
+            for m in STORE['messages'].get(user['user_id'], [])
+            if m['direction'] == 'user_to_admin' and query in (m['content'] or '').lower()]
+    blocked = [{'matched_content': f['content'], 'matched_source': 'filtered', 'matched_reason': f['reason'],
+                'matched_at': f['filtered_at']}
+               for f in STORE['filtered']
+               if f['user_id'] == user['user_id'] and query in (f['content'] or '').lower()]
+    hits = sent + blocked
+    return {**hits[-1], 'match_count': len(hits)} if hits else None
+
+
 @routes.get('/api/users')
 async def users(request):
-    items = [{'user_id': u['user_id'], 'first_name': u['first_name'], 'username': u['username'],
-              'is_blacklisted': u['blacklisted'], 'spam_count': 3 if u['blacklisted'] else 0}
-             for u in STORE['users']]
+    query = _query(request)
+    items = []
+    for u in STORE['users']:
+        profile = PREVIEW_STATE['profiles'].get(u['user_id'], {})
+        item = {'user_id': u['user_id'], 'first_name': u['first_name'], 'username': u['username'],
+                'note': profile.get('note'), 'tags': profile.get('tags', []),
+                'is_blacklisted': u['blacklisted'], 'spam_count': 3 if u['blacklisted'] else 0,
+                'has_conversation': u['is_verified'], 'exempted': u['user_id'] in PREVIEW_STATE['paused'],
+                'pending_appeal': u['user_id'] in PREVIEW_STATE['appeals']}
+        hit = _user_hit(u, query) if query else None
+        if query and not hit and not _hits([u], query.lstrip('@'), 'user_id', 'username', 'first_name'):
+            continue
+        items.append({**item, **(hit or {})})
     return _ok(_page(items))
+
+
+@routes.get('/api/moderation/summary')
+async def moderation_summary(request):
+    return _ok({'verified_users': sum(1 for u in STORE['users'] if u['is_verified']),
+                'exemptions': len(STORE['exemptions']), 'pending_appeals': len(PREVIEW_STATE['appeals'])})
+
+
+@routes.post('/api/moderation/revoke-all')
+async def revoke_all(request):
+    body = await request.json()
+    if body.get('target') == 'verification':
+        count = sum(1 for u in STORE['users'] if u['is_verified'])
+        for user in STORE['users']:
+            user['is_verified'] = False
+    else:
+        count = len(STORE['exemptions'])
+        STORE['exemptions'] = []
+        PREVIEW_STATE['paused'].clear()
+    return _ok({'count': count})
+
+
+@routes.put('/api/users/{user_id}/profile')
+async def user_profile(request):
+    body = await request.json()
+    tags = [tag.strip() for tag in str(body.get('tags') or '').split(',') if tag.strip()]
+    PREVIEW_STATE['profiles'][int(request.match_info['user_id'])] = {'note': body.get('note') or '', 'tags': tags}
+    return _ok({})
+
+
+@routes.get('/api/users/{user_id}/timeline')
+async def user_timeline(request):
+    user_id = int(request.match_info['user_id'])
+    items = [{'content': m['content'], 'media_type': m['media_type'], 'direction': m['direction'],
+              'forward_source': None, 'reason': None, 'kind': 'message', 'created_at': m['created_at']}
+             for m in STORE['messages'].get(user_id, [])]
+    items += [{'content': f['content'], 'media_type': None, 'direction': 'user_to_admin',
+               'forward_source': f.get('forward_source'), 'reason': f['reason'], 'kind': 'filtered',
+               'created_at': f['filtered_at']}
+              for f in STORE['filtered'] if f['user_id'] == user_id]
+    groups = [name for name, members in STORE['group_members'].items() if user_id in members]
+    return _ok({'items': items, 'groups': groups})
+
+
+@routes.get('/api/user-tags')
+async def user_tags(request):
+    return _ok({'items': sorted({tag for p in PREVIEW_STATE['profiles'].values() for tag in p['tags']})})
+
+
+@routes.post('/api/filtered/{message_id}/release')
+async def release_filtered(request):
+    mid = int(request.match_info['message_id'])
+    STORE['filtered'] = [f for f in STORE['filtered'] if f['id'] != mid]
+    return _ok({})
+
+
+@routes.post('/api/user-groups/bulk-add')
+async def bulk_add(request):
+    body = await request.json()
+    added = 0
+    for name in body['groups']:
+        members = STORE['group_members'].setdefault(name, [])
+        for user_id in body['user_ids']:
+            if user_id not in members:
+                members.append(user_id)
+                added += 1
+    for group in STORE['groups']:
+        group['member_count'] = len(STORE['group_members'].get(group['name'], []))
+    return _ok({'added': added, 'skipped': len(body['groups']) * len(body['user_ids']) - added})
 
 
 @routes.get('/api/blacklist')
 async def blacklist(request):
-    return _ok(_page(STORE['blacklist']))
+    return _ok(_page(_hits(STORE['blacklist'], _query(request), 'user_id', 'username', 'first_name', 'reason')))
 
 
 @routes.post('/api/blacklist')
@@ -456,7 +572,37 @@ async def remove_blacklist(request):
 
 @routes.get('/api/exemptions')
 async def exemptions(request):
-    return _ok(_page(STORE['exemptions']))
+    rows = _hits(STORE['exemptions'], _query(request), 'user_id', 'username', 'first_name', 'reason')
+    return _ok(_page([{**row, 'is_active': True} for row in rows]))
+
+
+@routes.get('/api/review-appeals')
+async def review_appeals(request):
+    rows = []
+    for user_id, appeal in PREVIEW_STATE['appeals'].items():
+        user = _user_by_id(user_id)
+        rows.append({**appeal, 'first_name': user['first_name'], 'username': user['username'],
+                     'blocked_content': '这条消息被 AI 拦下了（预览）'})
+    return _ok(_page(_hits(rows, _query(request), 'user_id', 'username', 'first_name')))
+
+
+@routes.post('/api/review-appeals/{user_id}/approve')
+async def approve_appeal(request):
+    from services.moderation import format_duration
+
+    user_id = int(request.match_info['user_id'])
+    body = await request.json()
+    minutes = None if body.get('permanent') else int(body.get('minutes') or 0)
+    PREVIEW_STATE['paused'][user_id] = minutes
+    PREVIEW_STATE['appeals'].pop(user_id, None)
+    return _ok({'minutes': minutes, 'duration_text': format_duration(minutes)})
+
+
+@routes.post('/api/review-appeals/{user_id}/reject')
+@routes.delete('/api/review-appeals/{user_id}')
+async def close_appeal(request):
+    PREVIEW_STATE['appeals'].pop(int(request.match_info['user_id']), None)
+    return _ok({})
 
 
 @routes.post('/api/exemptions')
@@ -474,12 +620,13 @@ async def add_exemption(request):
 async def remove_exemption(request):
     uid = int(request.match_info['user_id'])
     STORE['exemptions'] = [e for e in STORE['exemptions'] if e['user_id'] != uid]
+    PREVIEW_STATE['paused'].pop(uid, None)
     return _ok()
 
 
 @routes.get('/api/filtered')
 async def filtered(request):
-    return _ok(_page(STORE['filtered']))
+    return _ok(_page(_hits(STORE['filtered'], _query(request), 'user_id', 'username', 'first_name', 'reason', 'content')))
 
 
 @routes.delete('/api/filtered/{message_id}')
@@ -693,7 +840,7 @@ async def ai_test(request):
 
 @routes.post('/api/ai-decision-test')
 async def ai_decision_test(request):
-    return _ok({'protocol': 'inception', 'model': 'mercury-decide', 'latency_ms': 150, 'probability': 0.02})
+    return _ok({'protocol': 'inception', 'model': 'mercury-decide', 'first_latency_ms': 480, 'latency_ms': 150, 'probability': 0.02})
 
 
 @routes.put('/api/ai-settings')
@@ -891,7 +1038,37 @@ async def tg_discovered(request):
 
 @routes.get('/api/web-monitors')
 async def web_monitors(request):
-    return _ok({'items': STORE['web_monitors']})
+    monitor_type = request.query.get('type') or 'page'
+    return _ok({'items': [m for m in STORE['web_monitors'] if m.get('monitor_type', 'page') == monitor_type]})
+
+
+@routes.post('/api/web-monitors/preview')
+async def web_preview(request):
+    return _ok({'state': 'out', 'title': '示例商品（预览）', 'price': '¥ 199', 'evidence': '页面文字「售罄」'})
+
+
+@routes.post('/api/web-monitors/{mid}/run')
+async def web_run(request):
+    mid = int(request.match_info['mid'])
+    for monitor in STORE['web_monitors']:
+        if monitor['id'] == mid and monitor.get('monitor_type') == 'stock':
+            monitor['stock_state'] = 'in'
+            STORE['monitor_events'].insert(0, {'id': len(STORE['monitor_events']) + 1, 'source': 'stock',
+                                               'monitor_name': monitor['name'], 'title': '已补货', 'link': monitor['url'],
+                                               'detail': '页面文字「有货」', 'pushed_count': 1, 'created_at': _now()})
+            return _ok({'sent': 1, 'error': ''})
+    return _ok({'sent': 0, 'error': ''})
+
+
+@routes.get('/api/monitor-events')
+async def monitor_events(request):
+    source = request.query.get('source')
+    return _ok(_page([e for e in STORE['monitor_events'] if not source or e['source'] == source]))
+
+
+@routes.post('/api/monitor-push-test')
+async def monitor_push_test(request):
+    return _ok({'sent': 1, 'total': 1})
 
 
 @routes.post('/api/web-monitors')

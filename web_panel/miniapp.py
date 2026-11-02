@@ -42,7 +42,9 @@ TURNSTILE_VERIFY_URL = 'https://challenges.cloudflare.com/turnstile/v0/siteverif
 TURNSTILE_ACTION = 'verify'
 TURNSTILE_TIMEOUT_SECONDS = 10
 WRITE_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
-PUBLIC_API_PATHS = {f'{MINIAPP_API_PREFIX}session', f'{MINIAPP_API_PREFIX}verify'}
+PUBLIC_API_PATHS = {
+    f'{MINIAPP_API_PREFIX}session', f'{MINIAPP_API_PREFIX}verify', f'{MINIAPP_API_PREFIX}verify/fallback',
+}
 VERSIONED_ASSET_PREFIX = f'{MINIAPP_PREFIX.rstrip("/")}{VERSIONED_STATIC_PREFIX}'
 
 # 手机管理页用到的接口（方法, 路由模板），没有列出的一律不注册
@@ -58,6 +60,16 @@ ALLOWED_ROUTES = {
     ('GET', '/api/exemptions'),
     ('POST', '/api/exemptions'),
     ('DELETE', '/api/exemptions/{user_id}'),
+    ('GET', '/api/moderation/summary'),
+    ('POST', '/api/moderation/revoke-all'),
+    ('PUT', '/api/users/{user_id}/profile'),
+    ('GET', '/api/users/{user_id}/timeline'),
+    ('GET', '/api/user-tags'),
+    ('POST', '/api/filtered/{message_id}/release'),
+    ('GET', '/api/review-appeals'),
+    ('POST', '/api/review-appeals/{user_id}/approve'),
+    ('POST', '/api/review-appeals/{user_id}/reject'),
+    ('DELETE', '/api/review-appeals/{user_id}'),
     ('GET', '/api/filtered'),
     ('DELETE', '/api/filtered'),
     ('DELETE', '/api/filtered/{message_id}'),
@@ -105,9 +117,14 @@ ALLOWED_ROUTES = {
     ('POST', '/api/web-monitors'),
     ('PUT', '/api/web-monitors/{monitor_id}'),
     ('DELETE', '/api/web-monitors/{monitor_id}'),
+    ('POST', '/api/web-monitors/preview'),
+    ('POST', '/api/web-monitors/{monitor_id}/run'),
+    ('GET', '/api/monitor-events'),
+    ('POST', '/api/monitor-push-test'),
     # 广播与用户分组
     ('GET', '/api/user-groups'),
     ('POST', '/api/user-groups'),
+    ('POST', '/api/user-groups/bulk-add'),
     ('DELETE', '/api/user-groups/{name}'),
     ('GET', '/api/user-groups/{name}/members'),
     ('POST', '/api/user-groups/{name}/members'),
@@ -277,6 +294,40 @@ async def verify(request):
     application = request.app[keys.APPLICATION_KEY]
     application.create_task(_finish_verification(application, user_id, session))
     return http_utils.ok({'verified': True})
+
+
+async def _send_fallback_question(application, user_id: int, message_id, prompt) -> None:
+    """人机验证没通过：收起聊天里的验证按钮，把普通验证题发过去。"""
+    bot = application.bot
+    notice = copy_text.with_deco(copy_text.VERIFY_TURNSTILE_FAILED, 'ASK')
+    try:
+        if message_id:
+            await bot.edit_message_text(chat_id=user_id, message_id=message_id, text=notice)
+        if prompt.image:
+            await bot.send_photo(chat_id=user_id, photo=prompt.image, caption=prompt.text, reply_markup=prompt.keyboard)
+        else:
+            await bot.send_message(chat_id=user_id, text=prompt.text, reply_markup=prompt.keyboard)
+    except Exception:
+        logger.warning('发送普通验证题失败 user_id=%s', user_id, exc_info=True)
+
+
+@routes.post('/api/verify/fallback')
+async def verify_fallback(request):
+    """人机验证加载失败或没通过时由页面调用，换成聊天里的普通验证题。"""
+    data = await http_utils.read_json(request)
+    user = _read_user(request, data)
+    if not user:
+        return http_utils.fail('身份校验失败，请从 Telegram 重新打开', status=401)
+
+    user_id = user['id']
+    message_id = verification.pending_verifications.get(user_id, {}).get('message_id')
+    prompt = await verification.fallback_verification(user_id)
+    if prompt is None:
+        return http_utils.fail('小验证已经过期，请回到聊天重新发送消息', status=410, code='expired')
+
+    application = request.app[keys.APPLICATION_KEY]
+    application.create_task(_send_fallback_question(application, user_id, message_id, prompt))
+    return http_utils.ok({'fallback': True})
 
 
 @web.middleware

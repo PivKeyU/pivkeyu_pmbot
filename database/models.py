@@ -128,7 +128,7 @@ async def _ensure_messages_dest_column(db):
     await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(dest_message_id)')
 
 
-async def save_message(user_id: int, message_id: int, content: str, direction: str, media_type: str = None, media_file_id: str = None, dest_message_id: int = None, thread_id: int = None):
+async def save_message(user_id: int, message_id: int, content: str, direction: str, media_type: str = None, media_file_id: str = None, dest_message_id: int = None, thread_id: int = None, forward_source: str = None):
     """保存一条消息记录。
 
     message_id 为用户私聊侧消息 id；dest_message_id 为论坛侧消息 id
@@ -138,9 +138,11 @@ async def save_message(user_id: int, message_id: int, content: str, direction: s
         await _ensure_messages_dest_column(db)
         await db.execute('''
             INSERT INTO messages
-            (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id))
+            (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id,
+             forward_source, is_forwarded)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id,
+              forward_source, 1 if forward_source else 0))
         await db.commit()
 
 async def _prune_filtered_messages(db) -> int:
@@ -201,14 +203,14 @@ async def prune_filtered_messages() -> int:
     return deleted
 
 
-async def save_filtered_message(user_id: int, message_id: int, content: str, reason: str, media_type: str = None, media_file_id: str = None):
+async def save_filtered_message(user_id: int, message_id: int, content: str, reason: str, media_type: str = None, media_file_id: str = None, forward_source: str = None):
     global _filtered_writes_since_prune
     async with db_manager.get_connection() as db:
         await db.execute('''
             INSERT INTO filtered_messages
-            (user_id, message_id, content, reason, media_type, media_file_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (user_id, message_id, content, reason, media_type, media_file_id))
+            (user_id, message_id, content, reason, media_type, media_file_id, forward_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (user_id, message_id, content, reason, media_type, media_file_id, forward_source))
         # 机会性清理：每 _FILTERED_PRUNE_EVERY 次插入顺手清理一次，防止拦截
         # 消息篮单调增长。清理与插入共用同一个事务与连接（不多占池连接）。
         # 清理只是家务活，不能让它连累业务：调用方（handlers/user_handler.py）
@@ -235,30 +237,72 @@ async def get_latest_filtered_message(user_id: int):
             return dict(zip(cols, row))
 
 
-async def get_filtered_messages(limit: int = 20, offset: int = 0):
+def _like(query: str) -> str:
+    """用户输入里的 % 和 _ 按字面匹配。"""
+    escaped = query.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{escaped}%'
+
+
+_LIKE_SQL = "LIKE ? ESCAPE '\\'"
+_USER_MATCH_SQL = f"""(
+    CAST(u.user_id AS TEXT) {_LIKE_SQL}
+    OR u.username {_LIKE_SQL}
+    OR COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '') {_LIKE_SQL}
+    OR COALESCE(u.note, '') {_LIKE_SQL}
+    OR COALESCE(u.tags, '') {_LIKE_SQL}
+)"""
+# datetime() 同时认识面板写入的空格格式和 TG 写入的 ISO 格式，直接比字符串会算错
+_EXEMPTION_ACTIVE_SQL = "(e.is_permanent = 1 OR datetime(e.expires_at) > datetime('now'))"
+
+
+def _user_match_params(query: str) -> list:
+    return [_like(query), _like(query.lstrip('@')), _like(query), _like(query), _like(query)]
+
+
+def _filtered_match(query: str) -> tuple:
+    if not query:
+        return '', []
+    return (
+        f'WHERE fm.content {_LIKE_SQL} OR fm.reason {_LIKE_SQL} OR fm.forward_source {_LIKE_SQL} OR {_USER_MATCH_SQL}',
+        [_like(query), _like(query), _like(query), *_user_match_params(query)],
+    )
+
+
+async def get_filtered_messages(limit: int = 20, offset: int = 0, query: str = None):
+    where_sql, params = _filtered_match(query)
     async with db_manager.get_connection() as db:
-        async with db.execute('''
+        async with db.execute(f'''
             SELECT fm.*, u.first_name, u.username
             FROM filtered_messages fm
             JOIN users u ON fm.user_id = u.user_id
+            {where_sql}
             -- filtered_at 只有秒级精度（CURRENT_TIMESTAMP），而拦截往往是同一秒内
             -- 连着好几条。此时只按 filtered_at 排序结果不确定，SQLite 实测会把
             -- 【最早】插入的排到最前，管理员看到的「最新拦截」反而是旧的。
             -- 加上单调递增的 id 作为决定性 tie-breaker 才可靠。
             ORDER BY fm.filtered_at DESC, fm.id DESC
             LIMIT ? OFFSET ?
-        ''', (limit, offset)) as cursor:
+        ''', (*params, limit, offset)) as cursor:
             rows = await cursor.fetchall()
             if not rows:
                 return []
             cols = [description[0] for description in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
-async def get_filtered_messages_count() -> int:
+async def get_filtered_messages_count(query: str = None) -> int:
+    where_sql, params = _filtered_match(query)
+    sql = f'SELECT COUNT(*) FROM filtered_messages fm JOIN users u ON fm.user_id = u.user_id {where_sql}'
     async with db_manager.get_connection() as db:
-        async with db.execute('SELECT COUNT(*) FROM filtered_messages') as cursor:
+        async with db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+
+async def get_filtered_message(filtered_id: int):
+    async with db_manager.get_connection() as db:
+        async with db.execute('SELECT * FROM filtered_messages WHERE id = ?', (filtered_id,)) as cursor:
+            row = await cursor.fetchone()
+            return _row_to_dict(cursor, row) if row else None
 
 
 async def delete_filtered_message(message_id: int) -> bool:
@@ -326,24 +370,38 @@ async def get_blacklist():
             cols = [description[0] for description in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
-async def get_blacklist_paginated(limit: int = 5, offset: int = 0):
+def _reason_match(alias: str, query: str) -> tuple:
+    """黑名单 / 通行证共用的搜索条件：理由或用户信息。"""
+    if not query:
+        return '', []
+    return (
+        f'WHERE {alias}.reason {_LIKE_SQL} OR {_USER_MATCH_SQL}',
+        [_like(query), *_user_match_params(query)],
+    )
+
+
+async def get_blacklist_paginated(limit: int = 5, offset: int = 0, query: str = None):
+    where_sql, params = _reason_match('b', query)
     async with db_manager.get_connection() as db:
-        async with db.execute('''
+        async with db.execute(f'''
             SELECT b.user_id, u.first_name, u.username, b.reason, b.blocked_at
             FROM blacklist b
             LEFT JOIN users u ON b.user_id = u.user_id
+            {where_sql}
             ORDER BY b.blocked_at DESC
             LIMIT ? OFFSET ?
-        ''', (limit, offset)) as cursor:
+        ''', (*params, limit, offset)) as cursor:
             rows = await cursor.fetchall()
             if not rows:
                 return []
             cols = [description[0] for description in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
-async def get_blacklist_count() -> int:
+async def get_blacklist_count(query: str = None) -> int:
+    where_sql, params = _reason_match('b', query)
+    sql = f'SELECT COUNT(*) FROM blacklist b LEFT JOIN users u ON b.user_id = u.user_id {where_sql}'
     async with db_manager.get_connection() as db:
-        async with db.execute('SELECT COUNT(*) FROM blacklist') as cursor:
+        async with db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -362,9 +420,40 @@ async def set_user_blacklist_strikes(user_id: int, strikes: int):
 async def is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
-async def get_total_users_count() -> int:
+def _user_search(query: str) -> tuple:
+    """用户搜索，返回 (JOIN 子句, WHERE 子句, 按顺序的参数)。
+
+    资料命中，或者发过 / 被拦下过包含关键词的消息都算。只看用户发出的内容，这样搜到的
+    就是消息来源；管理员回复和广播会让所有收件人都命中。每个用户保留最新一条命中的
+    消息（SQLite 里 MAX 的同行列取自最大值所在行）。
+    """
+    if not query:
+        return '', '', []
+    join_sql = f'''
+        LEFT JOIN (
+            SELECT user_id, content AS matched_content, reason AS matched_reason,
+                   forward_source AS matched_forward,
+                   source AS matched_source, MAX(matched_at) AS matched_at, COUNT(*) AS match_count
+            FROM (
+                SELECT user_id, content, NULL AS reason, forward_source, 'message' AS source, created_at AS matched_at
+                FROM messages
+                WHERE direction = 'user_to_admin' AND (content {_LIKE_SQL} OR forward_source {_LIKE_SQL})
+                UNION ALL
+                SELECT user_id, content, reason, forward_source, 'filtered' AS source, filtered_at AS matched_at
+                FROM filtered_messages
+                WHERE content {_LIKE_SQL} OR forward_source {_LIKE_SQL}
+            )
+            GROUP BY user_id
+        ) hit ON hit.user_id = u.user_id
+    '''
+    where_sql = f'WHERE hit.user_id IS NOT NULL OR {_USER_MATCH_SQL}'
+    return join_sql, where_sql, [*[_like(query)] * 4, *_user_match_params(query)]
+
+
+async def get_total_users_count(query: str = None) -> int:
+    join_sql, where_sql, params = _user_search(query)
     async with db_manager.get_connection() as db:
-        async with db.execute('SELECT COUNT(*) FROM users') as cursor:
+        async with db.execute(f'SELECT COUNT(*) FROM users u {join_sql} {where_sql}', params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -466,7 +555,7 @@ async def get_conversation_history(user_id: int, limit: int = 50, offset: int = 
     async with db_manager.get_connection() as db:
         async with db.execute('''
             SELECT id, message_id, thread_id, content, media_type, media_file_id,
-                   direction, dest_message_id, created_at
+                   direction, dest_message_id, forward_source, created_at
             FROM messages
             WHERE user_id = ?
             ORDER BY id DESC
@@ -490,14 +579,32 @@ async def get_user_spam_count(user_id: int) -> int:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
-async def get_all_users_paginated(limit: int = 5, offset: int = 0):
+async def get_all_users_paginated(limit: int = 5, offset: int = 0, query: str = None):
+    join_sql, where_sql, params = _user_search(query)
+    hit_columns = ''
+    order_sql = 'u.created_at DESC'
+    if query:
+        hit_columns = (
+            'hit.matched_content, hit.matched_reason, hit.matched_forward, '
+            'hit.matched_source, hit.matched_at, hit.match_count,'
+        )
+        order_sql = '(hit.matched_at IS NULL) ASC, hit.matched_at DESC, u.created_at DESC'
     async with db_manager.get_connection() as db:
-        async with db.execute('''
-            SELECT 
+        async with db.execute(f'''
+            SELECT
                 u.user_id,
                 u.first_name,
+                u.last_name,
                 u.username,
                 u.is_blacklisted,
+                u.note,
+                u.tags,
+                {hit_columns}
+                {_CONVERSATION_VISIBLE_SQL} AS has_conversation,
+                EXISTS(SELECT 1 FROM exemptions e
+                       WHERE e.user_id = u.user_id AND {_EXEMPTION_ACTIVE_SQL}) AS exempted,
+                EXISTS(SELECT 1 FROM review_appeals ra
+                       WHERE ra.user_id = u.user_id AND ra.status = 'pending') AS pending_appeal,
                 COALESCE(spam_count.count, 0) as spam_count
             FROM users u
             LEFT JOIN (
@@ -505,14 +612,126 @@ async def get_all_users_paginated(limit: int = 5, offset: int = 0):
                 FROM filtered_messages
                 GROUP BY user_id
             ) spam_count ON u.user_id = spam_count.user_id
-            ORDER BY u.created_at DESC
+            {join_sql}
+            {where_sql}
+            ORDER BY {order_sql}
             LIMIT ? OFFSET ?
-        ''', (limit, offset)) as cursor:
+        ''', (*params, limit, offset)) as cursor:
             rows = await cursor.fetchall()
             if not rows:
                 return []
             cols = [description[0] for description in cursor.description]
-            return [dict(zip(cols, row)) for row in rows]
+            items = [dict(zip(cols, row)) for row in rows]
+            for item in items:
+                item['tags'] = _decode_list(item.get('tags'))
+            return items
+
+
+async def update_user_profile(user_id: int, note: str, tags: list) -> bool:
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute(
+            'UPDATE users SET note = ?, tags = ? WHERE user_id = ?',
+            (note or None, _encode_list(tags) if tags else None, user_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_all_user_tags() -> list:
+    async with db_manager.get_connection() as db:
+        async with db.execute('SELECT tags FROM users WHERE tags IS NOT NULL') as cursor:
+            rows = await cursor.fetchall()
+    return sorted({tag for row in rows for tag in _decode_list(row[0])})
+
+
+async def get_user_timeline(user_id: int, limit: int = 300) -> list:
+    """用户的消息记录（含被拦下的），按时间正序。只读展示用。"""
+    async with db_manager.get_connection() as db:
+        async with db.execute('''
+            SELECT * FROM (
+                SELECT id, content, media_type, direction, forward_source, NULL AS reason,
+                       'message' AS kind, created_at
+                FROM messages WHERE user_id = ?
+                UNION ALL
+                SELECT id, content, media_type, 'user_to_admin' AS direction, forward_source, reason,
+                       'filtered' AS kind, filtered_at AS created_at
+                FROM filtered_messages WHERE user_id = ?
+            )
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+        ''', (user_id, user_id, limit)) as cursor:
+            rows = await cursor.fetchall()
+            cols = [description[0] for description in cursor.description]
+            return [dict(zip(cols, row)) for row in rows][::-1]
+
+
+async def revoke_all_verifications(exclude_ids) -> int:
+    """收回所有人的验证结果，返回实际收回的人数。"""
+    exclude_ids = list(exclude_ids) or [0]
+    placeholders = ','.join('?' * len(exclude_ids))
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute(
+            f'UPDATE users SET is_verified = 0 WHERE is_verified = 1 AND user_id NOT IN ({placeholders})',
+            exclude_ids,
+        )
+        await db.commit()
+        return cursor.rowcount or 0
+
+
+async def clear_all_exemptions() -> int:
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute('DELETE FROM exemptions')
+        await db.commit()
+        return cursor.rowcount or 0
+
+
+async def prune_expired_exemptions() -> int:
+    async with db_manager.get_connection() as db:
+        cursor = await db.execute('''
+            DELETE FROM exemptions
+            WHERE is_permanent = 0
+              AND (expires_at IS NULL OR datetime(expires_at) <= datetime('now'))
+        ''')
+        await db.commit()
+        return cursor.rowcount or 0
+
+
+MONITOR_EVENT_KEEP = 2000
+
+
+async def record_monitor_event(
+    source: str, monitor_name: str, title: str, link: str = '', detail: str = '', pushed_count: int = 0,
+) -> None:
+    async with db_manager.get_connection() as db:
+        await db.execute('''
+            INSERT INTO monitor_events (source, monitor_name, title, link, detail, pushed_count)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (source, monitor_name, title, link, detail, pushed_count))
+        await db.execute(
+            'DELETE FROM monitor_events WHERE id <= (SELECT MAX(id) FROM monitor_events) - ?',
+            (MONITOR_EVENT_KEEP,),
+        )
+        await db.commit()
+
+
+async def get_monitor_events(limit: int = 20, offset: int = 0, source: str = None) -> list:
+    where_sql, params = ('WHERE source = ?', [source]) if source else ('', [])
+    async with db_manager.get_connection() as db:
+        async with db.execute(
+            f'SELECT * FROM monitor_events {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?',
+            (*params, limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_row_to_dict(cursor, row) for row in rows]
+
+
+async def get_monitor_events_count(source: str = None) -> int:
+    where_sql, params = ('WHERE source = ?', [source]) if source else ('', [])
+    async with db_manager.get_connection() as db:
+        async with db.execute(f'SELECT COUNT(*) FROM monitor_events {where_sql}', params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
 
 async def get_blacklist_user_details(user_id: int):
     async with db_manager.get_connection() as db:
@@ -696,25 +915,30 @@ async def get_all_exemptions():
             cols = [description[0] for description in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
-async def get_exemptions_paginated(limit: int = 5, offset: int = 0):
+async def get_exemptions_paginated(limit: int = 5, offset: int = 0, query: str = None):
+    where_sql, params = _reason_match('e', query)
     async with db_manager.get_connection() as db:
-        async with db.execute('''
-            SELECT e.user_id, u.first_name, u.username, e.is_permanent, e.expires_at, 
-                   e.exempted_by, e.reason, e.created_at
+        async with db.execute(f'''
+            SELECT e.user_id, u.first_name, u.username, e.is_permanent, e.expires_at,
+                   e.exempted_by, e.reason, e.created_at,
+                   {_EXEMPTION_ACTIVE_SQL} AS is_active
             FROM exemptions e
             LEFT JOIN users u ON e.user_id = u.user_id
+            {where_sql}
             ORDER BY e.created_at DESC
             LIMIT ? OFFSET ?
-        ''', (limit, offset)) as cursor:
+        ''', (*params, limit, offset)) as cursor:
             rows = await cursor.fetchall()
             if not rows:
                 return []
             cols = [description[0] for description in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
-async def get_exemptions_count() -> int:
+async def get_exemptions_count(query: str = None) -> int:
+    where_sql, params = _reason_match('e', query)
+    sql = f'SELECT COUNT(*) FROM exemptions e LEFT JOIN users u ON e.user_id = u.user_id {where_sql}'
     async with db_manager.get_connection() as db:
-        async with db.execute('SELECT COUNT(*) FROM exemptions') as cursor:
+        async with db.execute(sql, params) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
 
@@ -869,8 +1093,17 @@ async def get_group_members(group_name: str, include_blacklisted: bool = False):
             return group, members
 
 
-async def get_broadcast_recipients(group_name: str = None):
+async def get_broadcast_recipients(group_name: str = None, tag: str = None):
     async with db_manager.get_connection() as db:
+        if tag:
+            async with db.execute(
+                'SELECT * FROM users WHERE is_blacklisted = 0 AND tags IS NOT NULL ORDER BY created_at ASC'
+            ) as cursor:
+                rows = await cursor.fetchall()
+                cols = [description[0] for description in cursor.description]
+            users = [dict(zip(cols, row)) for row in rows]
+            return None, [user for user in users if tag in _decode_list(user['tags'])]
+
         if group_name:
             group = await get_user_group_by_name(group_name)
             if not group:
@@ -1229,8 +1462,43 @@ async def get_latest_review_appeal(user_id: int):
     )
 
 
+def _pending_appeal_match(query: str) -> tuple:
+    if not query:
+        return "WHERE ra.status = 'pending'", []
+    return f"WHERE ra.status = 'pending' AND {_USER_MATCH_SQL}", _user_match_params(query)
+
+
+async def get_pending_review_appeals(limit: int = 20, offset: int = 0, query: str = None):
+    where_sql, params = _pending_appeal_match(query)
+    async with db_manager.get_connection() as db:
+        async with db.execute(f'''
+            SELECT ra.id, ra.user_id, ra.blocked_reason, ra.created_at, u.first_name, u.username,
+                   (SELECT fm.content FROM filtered_messages fm
+                    WHERE fm.user_id = ra.user_id ORDER BY fm.id DESC LIMIT 1) AS blocked_content
+            FROM review_appeals ra
+            JOIN users u ON ra.user_id = u.user_id
+            {where_sql}
+            ORDER BY ra.id DESC
+            LIMIT ? OFFSET ?
+        ''', (*params, limit, offset)) as cursor:
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+            cols = [description[0] for description in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+
+async def get_pending_review_appeals_count(query: str = None) -> int:
+    where_sql, params = _pending_appeal_match(query)
+    sql = f'SELECT COUNT(*) FROM review_appeals ra JOIN users u ON ra.user_id = u.user_id {where_sql}'
+    async with db_manager.get_connection() as db:
+        async with db.execute(sql, params) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
 async def resolve_review_appeals(user_id: int, status: str, handled_by: int, duration_minutes: int = None) -> int:
-    """把该用户所有待处理的申请标为 approved / rejected，返回处理条数。"""
+    """把该用户所有待处理的申请标为 approved / rejected / cancelled，返回处理条数。"""
     async with db_manager.get_connection() as db:
         cursor = await db.execute('''
             UPDATE review_appeals
@@ -1504,6 +1772,7 @@ async def update_tg_group_monitor(monitor_id: int, **kwargs):
         'notify_telegram',
         'min_interval_seconds',
         'dedupe_window_seconds',
+        'notify_chat_ids',
     }
     updates = []
     values = []
@@ -1728,14 +1997,20 @@ async def create_web_monitor(
     link_selector: str = None,
     price_selector: str = None,
     stock_selector: str = None,
+    monitor_type: str = 'page',
+    product_keyword: str = '',
+    in_stock_words: str = '',
+    out_of_stock_words: str = '',
+    notify_chat_ids: str = '',
 ):
     async with db_manager.get_connection() as db:
         cursor = await db.execute('''
             INSERT INTO web_monitors (
                 name, url, keywords, interval_seconds, item_selector, title_selector,
-                link_selector, price_selector, stock_selector, created_by
+                link_selector, price_selector, stock_selector, created_by,
+                monitor_type, product_keyword, in_stock_words, out_of_stock_words, notify_chat_ids
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             name,
             url,
@@ -1747,6 +2022,11 @@ async def create_web_monitor(
             price_selector or '',
             stock_selector or '',
             created_by,
+            monitor_type,
+            product_keyword or '',
+            in_stock_words or '',
+            out_of_stock_words or '',
+            notify_chat_ids or '',
         ))
         await db.commit()
         return cursor.lastrowid
@@ -1769,6 +2049,11 @@ async def update_web_monitor(monitor_id: int, **kwargs):
         'notify_on_new_item',
         'notify_on_change',
         'last_checked_at',
+        'product_keyword',
+        'in_stock_words',
+        'out_of_stock_words',
+        'notify_chat_ids',
+        'last_error',
     }
     updates = []
     values = []

@@ -127,7 +127,9 @@ def test_allowed_routes_exist_and_exclude_sensitive_interfaces():
     assert registered == miniapp.ALLOWED_ROUTES | {
         ('POST', '/api/session'),
         ('POST', '/api/verify'),
+        ('POST', '/api/verify/fallback'),
     }
+    assert ('GET', '/api/review-appeals') in registered
     for _, path in registered:
         for blocked in ('conversations', 'media', 'login', 'setup', 'password'):
             assert blocked not in path
@@ -397,11 +399,81 @@ def test_turnstile_mode_falls_back_when_not_configured(patched_config, monkeypat
     assert not any(button.web_app for row in prompt.keyboard.inline_keyboard for button in row)
 
 
-def test_turnstile_prompt_offers_web_app_and_fallback(patched_config):
+def test_turnstile_comes_first_without_other_options(patched_config):
     prompt = asyncio.run(verification.create_verification(USER_ID))
     buttons = [button for row in prompt.keyboard.inline_keyboard for button in row]
+    assert len(buttons) == 1
     assert buttons[0].web_app.url == f'{PUBLIC_URL}/'
+
+
+def test_random_mode_also_starts_with_turnstile(patched_config, monkeypatch):
+    monkeypatch.setattr(config, 'VERIFICATION_MODE', 'random')
+    asyncio.run(verification.create_verification(USER_ID))
+    assert verification.pending_verifications[USER_ID]['mode'] == 'turnstile'
+
+
+def test_explicit_plain_mode_is_respected(patched_config, monkeypatch):
+    monkeypatch.setattr(config, 'VERIFICATION_MODE', 'image')
+    asyncio.run(verification.create_verification(USER_ID))
+    assert verification.pending_verifications[USER_ID]['mode'] == 'image'
+
+
+def test_stuck_user_gets_fallback_button_later(patched_config):
+    asyncio.run(verification.create_verification(USER_ID))
+    session = verification.pending_verifications[USER_ID]
+    session['created_at'] -= verification.TURNSTILE_FALLBACK_SECONDS
+    prompt = verification.get_pending_verification_message(USER_ID)
+    buttons = [button for row in prompt.keyboard.inline_keyboard for button in row]
     assert buttons[1].callback_data == 'verify_fallback'
+
+
+def test_failed_turnstile_switches_to_plain_question(tmp_path, patched_config):
+    path = f'{VERIFY_PATH}/fallback'
+
+    async def scenario(client, application):
+        response = await client.post(path, json={'init_data': _init_data(USER_ID)})
+        assert response.status == 410
+
+        await verification.create_verification(USER_ID)
+        verification.pending_verifications[USER_ID]['attempts'] = 1
+        response = await client.post(path, json={'init_data': 'forged'})
+        assert response.status == 401
+        assert verification.turnstile_pending(USER_ID)
+
+        response = await client.post(path, json={'init_data': _init_data(USER_ID)})
+        assert response.status == 200
+        session = verification.pending_verifications[USER_ID]
+        assert session['mode'] in ('text', 'image')
+        assert session['attempts'] == 1
+        assert len(application.tasks) == 1
+
+    asyncio.run(_with_client(tmp_path, scenario))
+
+
+def test_fallback_question_reaches_the_chat(patched_config):
+    calls = []
+
+    class Bot:
+        async def edit_message_text(self, **kwargs):
+            calls.append(('edit', kwargs))
+
+        async def send_message(self, **kwargs):
+            calls.append(('text', kwargs))
+
+        async def send_photo(self, **kwargs):
+            calls.append(('photo', kwargs))
+
+    prompt = verification.VerificationPrompt('题目', '题目', None)
+    application = SimpleNamespace(bot=Bot())
+    asyncio.run(miniapp._send_fallback_question(application, USER_ID, 5, prompt))
+    assert [kind for kind, _ in calls] == ['edit', 'text']
+    assert calls[0][1]['message_id'] == 5
+    assert 'reply_markup' not in calls[0][1]
+
+    calls.clear()
+    prompt.image = b'png'
+    asyncio.run(miniapp._send_fallback_question(application, USER_ID, None, prompt))
+    assert [kind for kind, _ in calls] == ['photo']
 
 
 def test_fallback_keeps_attempts_and_stays_on_plain_questions(patched_config):

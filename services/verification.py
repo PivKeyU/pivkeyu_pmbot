@@ -13,8 +13,11 @@ from services.gemini_service import gemini_service
 pending_verifications = {}
 
 # 验证方式：text = 常识文字题，image = 图片验证码，random = 每次随机二选一，
-# turnstile = Mini App 里的 Cloudflare Turnstile（只能显式选择，不参与 random）
+# turnstile = Mini App 里的 Cloudflare Turnstile。
+# random 和 turnstile 在配好 Turnstile 时都先走人机验证，没通过才换普通题
 VERIFICATION_MODES = ('random', 'text', 'image', 'turnstile')
+# 打开人机验证后这么久还没通过，客人再发消息时给一个换普通题的按钮，防止网页打不开时卡死
+TURNSTILE_FALLBACK_SECONDS = 60
 
 
 @dataclass
@@ -51,9 +54,9 @@ def _pick_mode(allow_turnstile: bool = True) -> str:
     mode = str(getattr(config, 'VERIFICATION_MODE', 'random') or 'random').strip().lower()
     if mode not in VERIFICATION_MODES:
         mode = 'random'
-    if mode == 'turnstile':
+    if mode in ('turnstile', 'random'):
         if allow_turnstile and turnstile_ready():
-            return mode
+            return 'turnstile'
         mode = 'random'
     if mode == 'random':
         return random.choice(('text', 'image'))
@@ -70,11 +73,11 @@ async def _new_challenge(mode: str) -> dict:
 
 def _build_prompt(session: dict) -> VerificationPrompt:
     if session.get('mode') == 'turnstile':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(copy_text.BTN_VERIFY_TURNSTILE, web_app=WebAppInfo(url=miniapp_url()))],
-            [InlineKeyboardButton(copy_text.BTN_VERIFY_FALLBACK, callback_data='verify_fallback')],
-        ])
-        return VerificationPrompt(text=session['question'], question=session['question'], keyboard=keyboard)
+        rows = [[InlineKeyboardButton(copy_text.BTN_VERIFY_TURNSTILE, web_app=WebAppInfo(url=miniapp_url()))]]
+        if time.time() - session.get('created_at', 0) >= TURNSTILE_FALLBACK_SECONDS:
+            rows.append([InlineKeyboardButton(copy_text.BTN_VERIFY_FALLBACK, callback_data='verify_fallback')])
+        return VerificationPrompt(
+            text=session['question'], question=session['question'], keyboard=InlineKeyboardMarkup(rows))
 
     buttons = [InlineKeyboardButton(option, callback_data=f"verify_{option}") for option in session['options']]
     # 选项较长时排成 2×2，避免一行四个按钮把文字截断

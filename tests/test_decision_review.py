@@ -56,19 +56,29 @@ def _run_server(scenario):
 INCEPTION_REPLY = {
     'model': 'mercury-decide',
     'answers': {
-        'violation': {'type': 'noul', 'noul': 0.97},
-        'category': {'type': 'choice', 'choice': 'scam', 'probabilities': {'scam': 0.9}, 'confidence': 0.8},
+        'verdict': {
+            'type': 'choice',
+            'choice': 'scam',
+            'probabilities': {'safe': 0.03, 'ad': 0.07, 'scam': 0.9},
+            'confidence': 0.8,
+        },
     },
     'usage': {'input_tokens': 48, 'output_tokens': 1},
 }
 
 OPENAI_REPLY = {
     'model': 'gpt-6-luna',
-    'answers': [
-        {'type': 'predicate', 'name': 'violation', 'probability': 0.95},
-        {'type': 'choice', 'name': 'category', 'choice': 'ad',
-         'probabilities': [{'value': 'ad', 'probability': 0.9}], 'confidence': 0.8},
-    ],
+    'answers': [{
+        'type': 'choice',
+        'name': 'verdict',
+        'choice': 'ad',
+        'probabilities': [
+            {'value': 'safe', 'probability': 0.05},
+            {'value': 'ad', 'probability': 0.9},
+            {'value': 'scam', 'probability': 0.05},
+        ],
+        'confidence': 0.8,
+    }],
 }
 
 
@@ -94,7 +104,8 @@ def test_inception_request_and_response():
 
         result = await client.ask('mercury-decide', '禁止广告', '加我微信', image)
 
-        assert result == decision_review.DecisionResult(0.97, 'scam')
+        assert result.probability == pytest.approx(0.97)
+        assert result.category == 'scam'
         sent = fake.requests[-1]
         assert sent['path'] == '/v1/decisions'
         assert sent['headers']['Authorization'] == 'Bearer key-1'
@@ -104,12 +115,14 @@ def test_inception_request_and_response():
             {'type': 'text', 'text': '加我微信'},
             {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,QUJD'}},
         ]
-        assert body['questions']['violation']['type'] == 'noul'
-        assert '禁止广告' in body['questions']['violation']['instructions']
+        # 只问一道题：规则只发一遍
+        assert list(body['questions']) == ['verdict']
+        verdict = body['questions']['verdict']
+        assert verdict['type'] == 'choice'
+        assert '禁止广告' in verdict['instructions']
         # 用户内容只能出现在 state 里，不能和审查规则混在一起
-        assert '加我微信' not in body['questions']['violation']['instructions']
-        assert body['questions']['category']['type'] == 'choice'
-        assert set(body['questions']['category']['criteria']) == set(copy_text.DECISION_REASONS)
+        assert '加我微信' not in verdict['instructions']
+        assert set(verdict['criteria']) == set(copy_text.DECISION_REASONS) | {'safe'}
         await client.client.close()
 
     _run_server(scenario)
@@ -123,7 +136,8 @@ def test_openai_request_and_response():
 
         result = await client.ask('gpt-6-luna', '禁止广告', '加我微信', image)
 
-        assert result == decision_review.DecisionResult(0.95, 'ad')
+        assert result.probability == pytest.approx(0.95)
+        assert result.category == 'ad'
         sent = fake.requests[-1]
         assert sent['path'] == '/v1/decisions'
         body = sent['body']
@@ -132,10 +146,10 @@ def test_openai_request_and_response():
             {'type': 'input_text', 'text': '加我微信'},
             {'type': 'input_image', 'image_url': 'data:image/webp;base64,QUJD'},
         ]}]
-        violation, category = body['questions']
-        assert (violation['type'], violation['name']) == ('predicate', 'violation')
-        assert (category['type'], category['name']) == ('choice', 'category')
-        assert {choice['value'] for choice in category['choices']} == set(copy_text.DECISION_REASONS)
+        assert len(body['questions']) == 1
+        verdict = body['questions'][0]
+        assert (verdict['type'], verdict['name']) == ('choice', 'verdict')
+        assert {choice['value'] for choice in verdict['choices']} == set(copy_text.DECISION_REASONS) | {'safe'}
         await client.client.close()
 
     _run_server(scenario)
@@ -143,7 +157,7 @@ def test_openai_request_and_response():
 
 def test_openai_refusal_counts_as_blocked():
     adapter = decision_review.OpenAIDecisionsAdapter()
-    result = adapter.parse({'answers': [{'type': 'refusal', 'name': 'violation'}]})
+    result = adapter.parse({'answers': [{'type': 'refusal', 'name': 'verdict'}]})
     assert result.refused
     assert decision_review.to_review(result, 0.5) == {
         'is_spam': True, 'reason': copy_text.DECISION_REFUSED_REASON,
@@ -175,7 +189,7 @@ def test_workers_ai_request_and_response(wrapped):
 
         result = await client.ask('clef-flash', '禁止广告', '加我微信', image)
 
-        assert result.probability == 0.97
+        assert result.probability == pytest.approx(0.97)
         sent = fake.requests[-1]
         assert sent['path'] == '/v1/ai/run/@cf/cloudflare/clef-flash'
         assert sent['headers']['Authorization'] == 'Bearer cf-token'
@@ -208,7 +222,7 @@ def test_typesafe_request_uses_systemone_and_assets():
 
         result = await client.ask('jev-latest', '禁止广告', '加我微信', image)
 
-        assert result.probability == 0.97
+        assert result.probability == pytest.approx(0.97)
         sent = fake.requests[-1]
         assert sent['path'] == '/v1/systemone'
         assert sent['headers']['TypeSafe-Danger-Zone-Images'] == 'true'
@@ -237,7 +251,27 @@ def test_typesafe_rejects_unsupported_image_format():
 def test_invalid_probability_is_an_error_not_safe(value):
     adapter = decision_review.StateQuestionsAdapter()
     with pytest.raises(ValueError):
-        adapter.parse({'answers': {'violation': {'type': 'noul', 'noul': value}}})
+        adapter.parse({'answers': {'verdict': {'type': 'choice', 'probabilities': {'safe': value, 'ad': 0.1}}}})
+
+
+def test_missing_safe_option_is_an_error_not_safe():
+    adapter = decision_review.StateQuestionsAdapter()
+    with pytest.raises(KeyError):
+        adapter.parse({'answers': {'verdict': {'type': 'choice', 'probabilities': {'ad': 0.1}}}})
+
+
+def test_safe_message_keeps_low_violation_probability():
+    adapter = decision_review.StateQuestionsAdapter()
+    result = adapter.parse({'answers': {'verdict': {
+        'type': 'choice', 'choice': 'safe', 'probabilities': {'safe': 0.98, 'ad': 0.015, 'scam': 0.005},
+    }}})
+    assert result.probability == pytest.approx(0.02)
+    assert decision_review.to_review(result, 0.5) == {'is_spam': False, 'reason': copy_text.DECISION_SAFE_REASON}
+
+
+def test_connections_outlive_quiet_periods():
+    # 默认 5 秒就断开，私聊场景几乎每条消息都要重新握手
+    assert decision_review.KEEPALIVE_SECONDS >= 300
 
 
 def test_threshold_and_reason_mapping():
@@ -300,7 +334,7 @@ def test_review_uses_decision_provider_instead_of_chat_model(decision_env, monke
         assert body['model'] == 'mercury-decide'
         assert body['state'][1]['image_url']['url'].endswith(base64.b64encode(PNG_BYTES).decode())
         assert body['state'][1]['image_url']['url'].startswith('data:image/png;base64,')
-        assert body['questions']['violation']['instructions'].startswith(await _review_policy())
+        assert body['questions']['verdict']['instructions'].startswith(await _review_policy())
 
     _run_review(decision_env, monkeypatch, scenario)
 
@@ -367,7 +401,10 @@ def test_test_decision_reports_probability(decision_env, monkeypatch):
     async def scenario(fake, service, chat):
         fake.reply = INCEPTION_REPLY
         result = await service.test_decision()
-        assert (result['protocol'], result['model'], result['probability']) == ('inception', 'mercury-decide', 0.97)
+        assert (result['protocol'], result['model']) == ('inception', 'mercury-decide')
+        assert result['probability'] == pytest.approx(0.97)
+        assert len(fake.requests) == 2
+        assert result['first_latency_ms'] >= 0 and result['latency_ms'] >= 0
 
     _run_review(decision_env, monkeypatch, scenario)
 

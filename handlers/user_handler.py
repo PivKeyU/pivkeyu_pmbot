@@ -8,6 +8,7 @@ from services.verification import (
 from services.thread_manager import get_or_create_thread
 from services.gemini_service import gemini_service
 from utils.media_converter import sticker_to_image
+from utils.forward import forward_label
 from utils.message_sender import edit_message_by_type, send_message_by_type
 from services.rate_limiter import rate_limiter
 from services import moderation, spam_filter
@@ -85,7 +86,7 @@ async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, th
             media_type, media_file_id = "voice", message.voice.file_id
         elif message.video_note:
             media_type, media_file_id = "video_note", message.video_note.file_id
-        # 记录消息预览（含论坛侧 message_id），供 /inbox 待办聚合展示内容
+        # 记录消息预览（含论坛侧 message_id），供 /todo 待办聚合展示内容
         await db.save_message(
             user_id=update.effective_user.id,
             message_id=message.message_id,
@@ -95,6 +96,7 @@ async def _resend_message(update: Update, context: ContextTypes.DEFAULT_TYPE, th
             media_file_id=media_file_id,
             dest_message_id=sent.message_id,
             thread_id=thread_id,
+            forward_source=forward_label(message),
         )
         # 推送给 Web 面板（没有面板订阅者时是空操作）
         panel_events.publish(
@@ -153,6 +155,7 @@ async def deliver_pending_update(context: ContextTypes.DEFAULT_TYPE, user_id: in
                 reason=analysis_result.get("reason"),
                 media_type=media_type,
                 media_file_id=media_file_id,
+                forward_source=forward_label(message),
             )
             reason = analysis_result.get("reason", "暂时没有写明理由")
             await analyzing_message.edit_text(
@@ -290,6 +293,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reason=reason,
             media_type=message.photo and "photo" or message.sticker and "sticker",
             media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
+            forward_source=forward_label(message),
         )
         if spam_result.auto_block:
             await db.add_to_blacklist(
@@ -370,6 +374,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reason=analysis_result.get("reason"),
                     media_type=message.photo and "photo" or message.sticker and "sticker",
                     media_file_id=message.photo and message.photo[-1].file_id or message.sticker and message.sticker.file_id,
+                    forward_source=forward_label(message),
                 )
                 reason = analysis_result.get("reason", "暂时没有写明理由")
                 await analyzing_message.edit_text(

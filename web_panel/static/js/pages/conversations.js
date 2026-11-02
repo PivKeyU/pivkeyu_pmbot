@@ -2,7 +2,7 @@
 
 import { api } from '../api.js';
 import * as bus from '../bus.js';
-import { el, clear, spinner, toast, badge, confirmDialog, modal, fmtTime, fmtRelative, pager } from '../ui.js';
+import { el, clear, spinner, toast, badge, confirmDialog, modal, askPauseDuration, fmtTime, fmtRelative, pager } from '../ui.js';
 
 const PAGE_SIZE = 30;
 const HISTORY_SIZE = 50;
@@ -22,56 +22,6 @@ function userBadges(user) {
   if (user.exempted) nodes.push(badge('审查已暂停', 'accent'));
   if (user.pending_appeal) nodes.push(badge('申请暂停审查', 'warn'));
   return nodes;
-}
-
-/* 暂停审查弹窗：快捷时长 / 自定义时长 / 永久，返回 { minutes } 或 { permanent: true }，取消返回 null */
-function askPauseDuration({ title, hint }) {
-  return new Promise((resolve) => {
-    const amount = el('input', { class: 'input', type: 'number', min: '1', value: '2', style: { maxWidth: '120px' } });
-    const unit = el('select', { class: 'input', style: { maxWidth: '120px' } },
-      el('option', { value: '1' }, '分钟'),
-      el('option', { value: '60', selected: true }, '小时'),
-      el('option', { value: '1440' }, '天'),
-    );
-    const permanent = el('input', { type: 'checkbox' });
-    const errorNode = el('div', { class: 'login-error' });
-    let done = false;
-    const finish = (value) => {
-      if (done) return;
-      done = true;
-      dialog.close();
-      resolve(value);
-    };
-    const presets = [[30, '30 分钟'], [120, '2 小时'], [1440, '1 天'], [10080, '7 天']].map(([minutes, label]) =>
-      el('button', { class: 'btn sm', onClick: () => finish({ minutes }) }, label));
-    const confirmButton = el('button', {
-      class: 'btn primary',
-      onClick: () => {
-        if (permanent.checked) { finish({ permanent: true }); return; }
-        const value = Number(amount.value);
-        if (!Number.isFinite(value) || value <= 0) {
-          errorNode.textContent = '请填写大于 0 的时长';
-          return;
-        }
-        finish({ minutes: Math.round(value * Number(unit.value)) });
-      },
-    }, '确定');
-    const dialog = modal({
-      title,
-      body: el('div', {},
-        hint ? el('div', { class: 'muted small', style: { marginBottom: '12px' } }, hint) : null,
-        el('div', { class: 'field' }, el('label', {}, '快捷时长'), el('div', { class: 'row' }, presets)),
-        el('div', { class: 'field' },
-          el('label', {}, '自定义时长'),
-          el('div', { class: 'row', style: { alignItems: 'center' } }, amount, unit),
-        ),
-        el('label', { class: 'small', style: { display: 'flex', gap: '6px', alignItems: 'center' } }, permanent, '永久暂停（直到手动恢复审查）'),
-        errorNode,
-      ),
-      footer: [el('button', { class: 'btn', onClick: () => finish(null) }, '取消'), confirmButton],
-    });
-    dialog.mask.addEventListener('click', (event) => { if (event.target === dialog.mask) finish(null); });
-  });
 }
 
 function mediaNode(message) {
@@ -100,7 +50,11 @@ function messageNode(message) {
   return el('div', { class: `msg ${out ? 'out' : ''}`.trim() },
     el('div', { class: 'msg-col' },
       bubble,
-      el('div', { class: 'meta' }, `${out ? '管理员' : '用户'} · ${fmtTime(message.created_at)}`),
+      el('div', { class: 'meta' }, [
+        out ? '管理员' : '用户',
+        fmtTime(message.created_at),
+        message.forward_source ? `转发自 ${message.forward_source}` : null,
+      ].filter(Boolean).join(' · ')),
     ),
   );
 }
@@ -298,7 +252,7 @@ export default {
       actions.push(readButton);
 
       if (user.exempted) {
-        const resumeButton = el('button', { class: 'btn sm' }, '恢复审查');
+        const resumeButton = el('button', { class: 'btn sm' }, '取消免审查');
         resumeButton.addEventListener('click', () => runAction(resumeButton,
           () => api.del(`/api/conversations/${uid}/review-pause`), '已恢复 AI 审查'));
         actions.push(resumeButton);
@@ -355,12 +309,15 @@ export default {
         const rejectButton = el('button', { class: 'btn sm' }, '拒绝');
         rejectButton.addEventListener('click', () => runAction(rejectButton,
           () => api.post(`/api/conversations/${uid}/appeal/reject`), '已拒绝申请'));
+        const cancelButton = el('button', { class: 'btn sm', title: '撤掉这条申请，不通知用户' }, '取消申请');
+        cancelButton.addEventListener('click', () => runAction(cancelButton,
+          () => api.del(`/api/review-appeals/${uid}`), '已取消申请'));
         chatHead.appendChild(el('div', { class: 'appeal-banner' },
           el('div', {},
             el('strong', {}, '🙋 用户申请暂停审查'),
             el('div', { class: 'small' }, `拦截理由：${appeal.blocked_reason || '（未记录）'} · ${fmtTime(appeal.created_at)}`),
           ),
-          el('div', { class: 'chat-actions' }, approveButton, rejectButton),
+          el('div', { class: 'chat-actions' }, approveButton, rejectButton, cancelButton),
         ));
       }
     }

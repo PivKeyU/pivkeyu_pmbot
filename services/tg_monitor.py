@@ -11,12 +11,11 @@ from typing import Any, Iterable
 from urllib.parse import urlparse
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
-from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes
 
 from config import config
 from database import models as db
+from services import monitor_push
 from utils import copy as copy_text
 
 try:
@@ -118,25 +117,32 @@ def format_monitor_notification(message, monitor: dict, hits: list[str]) -> str:
     )
 
 
-def _notify_chat_ids() -> list[int]:
-    if config.TG_MONITOR_NOTIFY_CHAT_IDS:
-        return config.TG_MONITOR_NOTIFY_CHAT_IDS
-    return config.ADMIN_IDS
+def _notify_chat_ids(monitor: dict) -> list[int]:
+    default = config.TG_MONITOR_NOTIFY_CHAT_IDS or config.ADMIN_IDS
+    return monitor_push.resolve_targets(monitor, default)
 
 
-async def _send_notification(application: Application, text: str) -> int:
+async def _notify_hit(application: Application, monitor: dict, message, hits: list[str]) -> int:
+    """推送一次命中并记录结果；关闭了机器人推送时只记录。"""
     sent_count = 0
-    for chat_id in _notify_chat_ids():
-        try:
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-            sent_count += 1
-        except TelegramError as exc:
-            logger.warning("发送 TG 监听通知失败 chat_id=%s: %s", chat_id, exc)
+    if monitor.get("notify_telegram", True):
+        sent_count = await monitor_push.push(
+            application.bot,
+            _notify_chat_ids(monitor),
+            format_monitor_notification(message, monitor, hits),
+        )
+    await db.record_monitor_event(
+        "tg",
+        monitor.get("name") or "",
+        ", ".join(hits),
+        _message_link(
+            str(getattr(message.chat, "username", "") or "") or None,
+            int(getattr(message.chat, "id")),
+            int(getattr(message, "message_id", 0) or 0),
+        ),
+        _message_text(message).strip()[:SUMMARY_MAX_CHARS],
+        sent_count,
+    )
     return sent_count
 
 
@@ -166,7 +172,7 @@ async def handle_bot_group_message(update: Update, context: ContextTypes.DEFAULT
     if not message or not message.chat:
         return False
 
-    # 跳过机器人自己的论坛话题群，避免污染 /tgmon discovered 发现列表（其余监听逻辑保持不变）
+    # 跳过机器人自己的论坛话题群，避免污染 /watch_tg discovered 发现列表（其余监听逻辑保持不变）
     if not (config.FORUM_GROUP_ID and int(message.chat.id) == config.FORUM_GROUP_ID):
         await db.record_discovered_tg_chat(
             int(message.chat.id),
@@ -190,12 +196,7 @@ async def handle_bot_group_message(update: Update, context: ContextTypes.DEFAULT
         logger.info("TG bot 监听跳过 monitor=%s reason=%s", hit.monitor.get("name"), reason)
         return True
 
-    sent_count = 0
-    if hit.monitor.get("notify_telegram", True):
-        sent_count = await _send_notification(
-            context.application,
-            format_monitor_notification(message, hit.monitor, hit.hits),
-        )
+    sent_count = await _notify_hit(context.application, hit.monitor, message, hit.hits)
     await db.record_runtime_status(
         f"tg:{hit.monitor['name']}",
         "tg_monitor",
@@ -270,7 +271,7 @@ async def _handle_user_session_event(application: Application, event: Any) -> No
     if pseudo is None:
         return
 
-    # 跳过机器人自己的论坛话题群，避免污染 /tgmon discovered 发现列表（其余监听逻辑保持不变）
+    # 跳过机器人自己的论坛话题群，避免污染 /watch_tg discovered 发现列表（其余监听逻辑保持不变）
     if not (config.FORUM_GROUP_ID and int(pseudo.chat.id) == config.FORUM_GROUP_ID):
         await db.record_discovered_tg_chat(
             int(pseudo.chat.id),
@@ -297,11 +298,7 @@ async def _handle_user_session_event(application: Application, event: Any) -> No
     start = time.monotonic()
     sent_count = 0
     try:
-        if hit.monitor.get("notify_telegram", True):
-            sent_count = await _send_notification(
-                application,
-                format_monitor_notification(pseudo, hit.monitor, hit.hits),
-            )
+        sent_count = await _notify_hit(application, hit.monitor, pseudo, hit.hits)
         duration_ms = int((time.monotonic() - start) * 1000)
         await db.record_runtime_status(
             f"tg:{hit.monitor['name']}",
@@ -428,18 +425,18 @@ async def build_panel_text() -> str:
         f"启用中: {len(enabled)}\n"
         f"用户会话监听: {user_session_count}\n\n"
         "命令小抄:\n"
-        "/tgmon add <名称> <chat_id> <关键词1,关键词2>\n"
-        "/tgmon list\n"
-        "/tgmon on <ID> /tgmon off <ID>\n"
-        "/tgmon delete <ID>\n"
-        "/tgmon discovered"
+        "/watch_tg add <名称> <chat_id> <关键词1,关键词2>\n"
+        "/watch_tg list\n"
+        "/watch_tg on <ID> /watch_tg off <ID>\n"
+        "/watch_tg delete <ID>\n"
+        "/watch_tg discovered"
     )
 
 
 async def build_monitor_list_text() -> str:
     monitors = await db.list_tg_group_monitors()
     if not monitors:
-        return "当前还没有 TG 群/频道监听。\n\n使用 /tgmon add <名称> <chat_id> <关键词1,关键词2> 添加。"
+        return "当前还没有 TG 群/频道监听。\n\n使用 /watch_tg add <名称> <chat_id> <关键词1,关键词2> 添加。"
     lines = ["TG 监听列表", ""]
     for item in monitors[:40]:
         status = "启用" if item.get("enabled") else "停用"

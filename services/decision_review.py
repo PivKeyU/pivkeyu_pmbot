@@ -8,21 +8,27 @@
 新增一种格式：在 services/ai_providers.py 登记，并在这里写适配器挂进 ADAPTERS。
 
 审查规则放在问题的 instructions 里，用户内容放在 state / input 里，互不混合。
+所有格式都只问一道选择题：一次拿到是否违规和违规类别，规则也只发一遍。
 """
 
 import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+import httpx
 from openai import AsyncOpenAI
 
 from utils import copy as copy_text
 
-VIOLATION_QUESTION = 'violation'
-CATEGORY_QUESTION = 'category'
-VIOLATION_INSTRUCTIONS = '上面是审查规则。待审内容是否违反其中任何一条？'
-CATEGORY_INSTRUCTIONS = '上面是审查规则。如果待审内容违规，最符合哪一类？'
+VERDICT_QUESTION = 'verdict'
+SAFE_OPTION = 'safe'
+SAFE_OPTION_DESCRIPTION = '内容安全，没有违反任何一条审查规则'
+VERDICT_INSTRUCTIONS = '上面是审查规则。待审内容完全没有违规就选 safe，否则选最符合的违规类别。'
 MAX_RETRIES = 1
+# 私聊消息往往隔很久才来一条，连接断开后每次都要重新握手，这里保留得久一些
+KEEPALIVE_SECONDS = 300
+MAX_KEEPALIVE_CONNECTIONS = 5
+MAX_CONNECTIONS = 20
 
 
 @dataclass
@@ -42,8 +48,9 @@ class DecisionResult:
     refused: bool = False
 
 
-def _categories() -> dict:
-    return {name: reason.rstrip('。') for name, reason in copy_text.DECISION_REASONS.items()}
+def _options() -> dict:
+    categories = {name: reason.rstrip('。') for name, reason in copy_text.DECISION_REASONS.items()}
+    return {SAFE_OPTION: SAFE_OPTION_DESCRIPTION, **categories}
 
 
 def _read_probability(value) -> float:
@@ -51,6 +58,14 @@ def _read_probability(value) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
         raise ValueError(f'决策模型返回的概率无效: {value!r}')
     return float(value)
+
+
+def _read_verdict(probabilities: dict) -> DecisionResult:
+    """违规概率是「安全」以外的全部概率；类别取其中最高的一项。"""
+    values = {name: _read_probability(value) for name, value in probabilities.items()}
+    safe = values.pop(SAFE_OPTION)
+    category = max(values, key=values.get) if values else None
+    return DecisionResult(1 - safe, category)
 
 
 class StateQuestionsAdapter:
@@ -80,22 +95,16 @@ class StateQuestionsAdapter:
             'model': self.model_name(model),
             **self.state(text, image),
             'questions': {
-                VIOLATION_QUESTION: {
-                    'type': 'noul',
-                    'instructions': f'{policy}\n\n{VIOLATION_INSTRUCTIONS}',
-                },
-                CATEGORY_QUESTION: {
+                VERDICT_QUESTION: {
                     'type': 'choice',
-                    'instructions': f'{policy}\n\n{CATEGORY_INSTRUCTIONS}',
-                    'criteria': _categories(),
+                    'instructions': f'{policy}\n\n{VERDICT_INSTRUCTIONS}',
+                    'criteria': _options(),
                 },
             },
         }
 
     def parse(self, response: dict) -> DecisionResult:
-        answers = response['answers']
-        category = answers.get(CATEGORY_QUESTION) or {}
-        return DecisionResult(_read_probability(answers[VIOLATION_QUESTION]['noul']), category.get('choice'))
+        return _read_verdict(response['answers'][VERDICT_QUESTION]['probabilities'])
 
 
 class SystemOneAdapter(StateQuestionsAdapter):
@@ -145,7 +154,7 @@ class WorkersAIAdapter(StateQuestionsAdapter):
 
 
 class OpenAIDecisionsAdapter:
-    """OpenAI 格式：input + 问题数组，boolean 题叫 predicate，回答也是数组。"""
+    """OpenAI 格式：input + 问题数组，选项是 choices 数组，回答和概率也是数组。"""
 
     default_path = '/decisions'
 
@@ -165,31 +174,23 @@ class OpenAIDecisionsAdapter:
         return {
             'model': model,
             'input': content,
-            'questions': [
-                {
-                    'type': 'predicate',
-                    'name': VIOLATION_QUESTION,
-                    'instructions': f'{policy}\n\n{VIOLATION_INSTRUCTIONS}',
-                },
-                {
-                    'type': 'choice',
-                    'name': CATEGORY_QUESTION,
-                    'instructions': f'{policy}\n\n{CATEGORY_INSTRUCTIONS}',
-                    'choices': [
-                        {'value': name, 'description': description}
-                        for name, description in _categories().items()
-                    ],
-                },
-            ],
+            'questions': [{
+                'type': 'choice',
+                'name': VERDICT_QUESTION,
+                'instructions': f'{policy}\n\n{VERDICT_INSTRUCTIONS}',
+                'choices': [
+                    {'value': name, 'description': description}
+                    for name, description in _options().items()
+                ],
+            }],
         }
 
     def parse(self, response: dict) -> DecisionResult:
         answers = {answer.get('name'): answer for answer in response['answers']}
-        violation = answers[VIOLATION_QUESTION]
-        if violation.get('type') == 'refusal':
+        verdict = answers[VERDICT_QUESTION]
+        if verdict.get('type') == 'refusal':
             return DecisionResult(1.0, refused=True)
-        category = answers.get(CATEGORY_QUESTION) or {}
-        return DecisionResult(_read_probability(violation['probability']), category.get('choice'))
+        return _read_verdict({item['value']: item['probability'] for item in verdict['probabilities']})
 
 
 ADAPTERS = {
@@ -209,7 +210,19 @@ class DecisionClient:
         self.base_url = base_url
         self.path = path
         self.adapter = ADAPTERS[protocol]
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=MAX_RETRIES)
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=MAX_RETRIES,
+            http_client=httpx.AsyncClient(
+                follow_redirects=True,
+                limits=httpx.Limits(
+                    max_connections=MAX_CONNECTIONS,
+                    max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
+                    keepalive_expiry=KEEPALIVE_SECONDS,
+                ),
+            ),
+        )
 
     async def ask(self, model: str, policy: str, text: str, image: Optional[DecisionImage] = None) -> DecisionResult:
         response = await self.client.post(

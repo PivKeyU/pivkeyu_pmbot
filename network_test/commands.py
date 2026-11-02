@@ -29,8 +29,8 @@ async def start_command(update, context):
             "欢迎使用网络测试女仆。\n\n"
             "女仆小抄：\n"
             "1）Ping 测试：/ping 后按提示进行\n"
-            "2）路由追踪：/nexttrace 后按提示进行\n\n"
-            "管理员女仆长命令：/adduser, /rmuser, /addserver, /rmserver",
+            "2）路由追踪：/trace 后按提示进行\n\n"
+            "管理员女仆长命令：/net_allow, /net_deny, /net_server_add, /net_server_del",
             'GREET')
     )
 
@@ -203,7 +203,7 @@ async def add_user_command(update, context):
 
     args = context.args
     if len(args) < 1:
-        await update.message.reply_text(copy_text.with_deco("女仆小抄：/adduser <user_id>", 'ASK'))
+        await update.message.reply_text(copy_text.with_deco("女仆小抄：/net_allow <user_id>", 'ASK'))
         return
 
     try:
@@ -230,7 +230,7 @@ async def rm_user_command(update, context):
 
     args = context.args
     if len(args) < 1:
-        await update.message.reply_text(copy_text.with_deco("女仆小抄：/rmuser <user_id>", 'ASK'))
+        await update.message.reply_text(copy_text.with_deco("女仆小抄：/net_deny <user_id>", 'ASK'))
         return
 
     try:
@@ -257,7 +257,7 @@ async def add_server_command(update, context):
 
     message_text = update.message.text.strip()
     
-    if message_text == "/addserver":
+    if not context.args:
         msg = await update.message.reply_text(
             copy_text.with_deco_head(
                 "欢迎使用服务器登记女仆向导。\n\n"
@@ -370,7 +370,7 @@ async def rm_server_command(update, context):
 
     message_text = update.message.text.strip()
     
-    if message_text == "/rmserver":
+    if not context.args:
         if not SERVERS:
             await update.message.reply_text(copy_text.nt_no_servers_registered())
             return
@@ -461,7 +461,7 @@ async def install_nexttrace_command(update, context):
     if not SERVERS:
         await update.message.reply_text(
             copy_text.with_deco_head(
-                "当前还没有登记任何服务器。\n请先使用 /addserver 登记服务器，女仆才好端出 NextTrace 茶具哦。",
+                "当前还没有登记任何服务器。\n请先使用 /net_server_add 登记服务器，女仆才好端出 NextTrace 茶具哦。",
                 'EMPTY'))
         return
         

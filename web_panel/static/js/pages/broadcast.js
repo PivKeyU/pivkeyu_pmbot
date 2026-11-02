@@ -2,15 +2,18 @@
 
 import { api } from '../api.js';
 import * as bus from '../bus.js';
-import { el, clear, spinner, toast, badge, confirmDialog, table, pager, fmtTime, selectInput } from '../ui.js';
+import { el, clear, spinner, toast, badge, confirmDialog, modal, table, pager, fmtTime, selectInput } from '../ui.js';
 
 const PAGE_SIZE = 15;
+const PICKER_SIZE = 50;
+const TAG_PREFIX = 'tag:';
 
 export default {
   title: '广播群发',
   render(container) {
     let page = 1;
     let groups = [];
+    let tags = [];
 
     const sendCard = el('div', { class: 'card' });
     const groupsCard = el('div', { class: 'card' });
@@ -25,7 +28,8 @@ export default {
       clear(sendCard);
       const groupSelect = selectInput({
         options: [{ value: '', label: `全部用户（不含黑名单）` },
-          ...groups.map((group) => ({ value: group.name, label: `${group.name}（${group.member_count} 人）` }))],
+          ...groups.map((group) => ({ value: group.name, label: `${group.name}（${group.member_count} 人）` })),
+          ...tags.map((tag) => ({ value: `${TAG_PREFIX}${tag}`, label: `标签：${tag}` }))],
         value: '',
       });
       const textarea = el('textarea', { class: 'input', rows: '5', placeholder: '要广播的内容……' });
@@ -37,7 +41,11 @@ export default {
           toast('广播内容不能为空', 'error');
           return;
         }
-        const scope = groupSelect.value ? `分组「${groupSelect.value}」` : '全部用户';
+        const selected = groupSelect.value;
+        const tag = selected.startsWith(TAG_PREFIX) ? selected.slice(TAG_PREFIX.length) : undefined;
+        let scope = '全部用户';
+        if (tag) scope = `标签「${tag}」`;
+        else if (selected) scope = `分组「${selected}」`;
         if (!(await confirmDialog({
           title: '确认广播',
           message: `将向 ${scope} 发送这条消息，过程中请勿关闭机器人。确定开始吗？`,
@@ -48,7 +56,7 @@ export default {
         sendButton.disabled = true;
         sendButton.textContent = '投递中……';
         try {
-          const result = await api.post('/api/broadcast', { text, group_name: groupSelect.value || undefined });
+          const result = await api.post('/api/broadcast', { text, group_name: tag ? undefined : (selected || undefined), tag });
           toast(`已开始投递，共 ${result.total} 位收件人，下方记录会自动刷新`, 'ok');
           textarea.value = '';
           scheduleHistoryRefresh(3000);
@@ -83,6 +91,7 @@ export default {
         return;
       }
       groups = data.items;
+      tags = (await api.get('/api/user-tags').catch(() => ({ items: [] }))).items;
       clear(groupsCard);
 
       const nameInput = el('input', { class: 'input', placeholder: '新分组名称' });
@@ -146,6 +155,71 @@ export default {
       }));
     }
 
+    /* 搜索用户并勾选，一次加入这个分组 */
+    function openPicker(groupName, onDone) {
+      const selected = new Set();
+      const countNode = el('span', { class: 'muted small' }, '已选 0 人');
+      const listNode = el('div', { class: 'check-list' });
+      const searchInput = el('input', { class: 'input', type: 'search', placeholder: '搜索 ID / 昵称 / 用户名 / 标签' });
+      const updateCount = () => { countNode.textContent = `已选 ${selected.size} 人`; };
+
+      async function search() {
+        clear(listNode);
+        listNode.appendChild(spinner());
+        const params = new URLSearchParams({ per_page: String(PICKER_SIZE) });
+        if (searchInput.value.trim()) params.set('q', searchInput.value.trim());
+        try {
+          const data = await api.get(`/api/users?${params}`);
+          clear(listNode);
+          if (!data.items.length) listNode.appendChild(el('div', { class: 'muted small' }, '没有找到用户。'));
+          for (const user of data.items) {
+            const box = el('input', { type: 'checkbox' });
+            box.checked = selected.has(user.user_id);
+            box.addEventListener('change', () => {
+              if (box.checked) selected.add(user.user_id);
+              else selected.delete(user.user_id);
+              updateCount();
+            });
+            listNode.appendChild(el('label', {}, box,
+              `${user.first_name || '-'}${user.username ? ` @${user.username}` : ''}（${user.user_id}）`));
+          }
+        } catch (err) {
+          clear(listNode);
+          listNode.appendChild(el('div', {}, err.message));
+        }
+      }
+      searchInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') search(); });
+
+      const dialog = modal({
+        title: `批量加入「${groupName}」`,
+        wide: true,
+        body: el('div', {},
+          el('div', { class: 'search-bar' }, searchInput, el('button', { class: 'btn sm primary', onClick: search }, '搜索')),
+          listNode,
+        ),
+        footer: [
+          countNode,
+          el('button', { class: 'btn', onClick: () => dialog.close() }, '取消'),
+          el('button', {
+            class: 'btn primary',
+            onClick: async () => {
+              if (!selected.size) {
+                toast('请先勾选用户', 'error');
+                return;
+              }
+              try {
+                const result = await api.post('/api/user-groups/bulk-add', { user_ids: [...selected], groups: [groupName] });
+                toast(`已加入 ${result.added} 人`, 'ok');
+                dialog.close();
+                onDone();
+              } catch (err) { toast(err.message, 'error'); }
+            },
+          }, '加入分组'),
+        ],
+      });
+      search();
+    }
+
     function openMembers(groupName) {
       const memberList = el('div', {});
       const userIdInput = el('input', { class: 'input', placeholder: '用户 ID' });
@@ -192,9 +266,13 @@ export default {
         el('header', {}, `分组「${groupName}」成员`),
         el('div', { class: 'body' },
           el('div', { class: 'row', style: { marginBottom: '12px' } },
-            el('div', { class: 'grow' }, userIdInput),
             el('button', {
               class: 'btn sm primary',
+              onClick: () => openPicker(groupName, () => { loadMembers(); loadGroups(); }),
+            }, '搜索多选'),
+            el('div', { class: 'grow' }, userIdInput),
+            el('button', {
+              class: 'btn sm',
               onClick: async () => {
                 const userId = Number(userIdInput.value.trim());
                 if (!userId) {
@@ -241,7 +319,14 @@ export default {
       historyCard.appendChild(table({
         columns: [
           { title: 'ID', render: (row) => el('span', { class: 'mono' }, row.id) },
-          { title: '范围', render: (row) => (row.group_name ? `分组：${row.group_name}` : (row.scope === 'all' ? '全部用户' : row.scope)) },
+          {
+            title: '范围',
+            render: (row) => {
+              if (row.group_name) return `分组：${row.group_name}`;
+              if (row.scope === 'all') return '全部用户';
+              return row.scope.startsWith(TAG_PREFIX) ? `标签：${row.scope.slice(TAG_PREFIX.length)}` : row.scope;
+            },
+          },
           { title: '内容', render: (row) => el('div', { style: { maxWidth: '360px' } }, (row.content_preview || '').slice(0, 80)) },
           { title: '成功/失败/总数', render: (row) => `${row.success_count}/${row.failed_count}/${row.total_count}` },
           { title: '状态', render: (row) => (row.success_count + row.failed_count >= row.total_count ? badge('完成', 'ok') : badge('进行中', 'warn')) },

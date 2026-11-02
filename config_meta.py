@@ -123,7 +123,7 @@ META = [
     },
     {
         'key': 'VERIFICATION_MODE', 'type': 'enum', 'category': 'security',
-        'label': '验证方式', 'hint': 'random = 每次随机出图片验证码或文字题；text = 只出文字题；image = 只出图片验证码；turnstile = Mini App 里的 Cloudflare 人机验证（需配置公网地址和 Turnstile 密钥，否则退回 random）',
+        'label': '验证方式', 'hint': 'random = 每次随机出图片验证码或文字题；text = 只出文字题；image = 只出图片验证码；turnstile = Mini App 里的 Cloudflare 人机验证。配好公网地址和 Turnstile 密钥后，random 和 turnstile 都先走人机验证，没通过才出普通验证题；没配好时退回 random',
         'default': 'random', 'restart': False,
         'options': ['random', 'text', 'image', 'turnstile'],
     },

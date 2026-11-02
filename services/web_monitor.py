@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import html
 import ipaddress
+import json
 import logging
 import re
 import socket
@@ -14,12 +15,11 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
-from telegram.error import TelegramError
 from telegram.ext import Application, ContextTypes
 
 from config import config
 from database import models as db
+from services import monitor_push
 from utils import copy as copy_text
 
 try:
@@ -36,6 +36,25 @@ DEFAULT_UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 pivkeyu-bot/1.0"
 )
+
+
+STOCK_STATE_KEY = "__stock__"
+STOCK_IN = "in"
+STOCK_OUT = "out"
+STOCK_UNKNOWN = "unknown"
+STOCK_SCOPE_MAX_CHARS = 1500
+# 缺货词优先判断：「暂无货」里也有「有货」的字样不会误判，「not in stock」同理
+DEFAULT_IN_STOCK_WORDS = (
+    "有货", "现货", "有库存", "加入购物车", "立即购买", "立即下单", "马上抢",
+    "in stock", "add to cart", "add to bag", "buy now",
+)
+DEFAULT_OUT_OF_STOCK_WORDS = (
+    "缺货", "售罄", "无货", "已抢光", "已售完", "卖光了", "到货通知", "补货中", "暂时无法购买",
+    "sold out", "out of stock", "not in stock", "currently unavailable", "notify me",
+)
+_PRICE_PATTERN = re.compile(r"(?:[¥￥$€£]|RMB|CNY|USD)\s?\d[\d,]*(?:\.\d+)?", re.IGNORECASE)
+_SCHEMA_IN_STOCK = ("instock", "limitedavailability", "onlineonly", "instoreonly")
+_SCHEMA_OUT_OF_STOCK = ("outofstock", "soldout", "discontinued")
 
 
 def _now_sql() -> str:
@@ -129,6 +148,141 @@ def _extract_items(html_text: str, monitor: dict) -> list[WebItem]:
     return items
 
 
+@dataclass
+class StockResult:
+    state: str
+    title: str = ""
+    price: str = ""
+    evidence: str = ""
+
+
+def _words(raw: str, defaults: tuple[str, ...]) -> list[str]:
+    return [word.lower() for word in parse_keywords(raw)] or list(defaults)
+
+
+def _classify_stock(text: str, in_words: list[str], out_words: list[str]) -> tuple[str, str]:
+    normalized = (text or "").lower()
+    for word in out_words:
+        if word in normalized:
+            return STOCK_OUT, word
+    for word in in_words:
+        if word in normalized:
+            return STOCK_IN, word
+    return STOCK_UNKNOWN, ""
+
+
+def _walk_json(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json(child)
+
+
+def _offer_price(offer: dict) -> str:
+    price = offer.get("price") or offer.get("lowPrice")
+    if price in (None, ""):
+        return ""
+    return f"{offer.get('priceCurrency') or ''} {price}".strip()
+
+
+def _stock_from_structured_data(soup, keyword: str) -> StockResult | None:
+    """电商页面常带 schema.org 的商品数据，比页面文字可靠。"""
+    states = []
+    title = price = ""
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or "")
+        except ValueError:
+            continue
+        for node in _walk_json(data):
+            offers = node.get("offers")
+            if not offers:
+                continue
+            name = str(node.get("name") or "")
+            if keyword and keyword not in name.lower():
+                continue
+            for offer in offers if isinstance(offers, list) else [offers]:
+                if not isinstance(offer, dict):
+                    continue
+                availability = str(offer.get("availability") or "").lower()
+                if any(word in availability for word in _SCHEMA_IN_STOCK):
+                    states.append(STOCK_IN)
+                elif any(word in availability for word in _SCHEMA_OUT_OF_STOCK):
+                    states.append(STOCK_OUT)
+                else:
+                    continue
+                title = title or name
+                price = price or _offer_price(offer)
+    if not states:
+        return None
+    state = STOCK_IN if STOCK_IN in states else STOCK_OUT
+    return StockResult(state, title, price, "页面的商品结构化数据")
+
+
+def _product_scope(root, keyword: str, in_words: list[str], out_words: list[str]) -> str | None:
+    """找到商品名所在的区域：从商品名往外扩，直到碰到库存字样；太大就停。"""
+    fallback = None
+    for text_node in root.find_all(string=True):
+        if keyword not in str(text_node).lower():
+            continue
+        element = text_node.parent
+        for _ in range(8):
+            if element is None:
+                break
+            text = _clean_text(element.get_text(" ", strip=True))
+            if len(text) > STOCK_SCOPE_MAX_CHARS:
+                break
+            fallback = fallback or text
+            if _classify_stock(text, in_words, out_words)[0] != STOCK_UNKNOWN:
+                return text
+            element = element.parent
+    return fallback
+
+
+def detect_stock(html_text: str, monitor: dict) -> StockResult:
+    if BeautifulSoup is None:
+        raise RuntimeError("beautifulsoup4 未安装，无法解析网页监控内容。")
+
+    soup = BeautifulSoup(html_text, "html.parser")
+    keyword = (monitor.get("product_keyword") or "").strip().lower()
+    selector = (monitor.get("stock_selector") or "").strip()
+    in_words = _words(monitor.get("in_stock_words"), DEFAULT_IN_STOCK_WORDS)
+    out_words = _words(monitor.get("out_of_stock_words"), DEFAULT_OUT_OF_STOCK_WORDS)
+
+    structured = None if selector else _stock_from_structured_data(soup, keyword)
+    for tag in soup(["script", "style", "noscript", "template"]):
+        tag.decompose()
+    root = soup.body or soup
+    title = (structured.title if structured else "") or _first_text(root, "h1") or monitor.get("name", "")
+    price = _first_text(root, monitor.get("price_selector") or "")
+
+    if structured:
+        structured.title = title
+        structured.price = price or structured.price
+        return structured
+
+    if selector:
+        scope = _first_text(root, selector)
+        if not scope:
+            return StockResult(STOCK_UNKNOWN, title, price, f"页面里找不到库存选择器 {selector}")
+    elif keyword:
+        scope = _product_scope(root, keyword, in_words, out_words)
+        if not scope:
+            return StockResult(STOCK_UNKNOWN, title, price, f"页面里没有商品关键词「{keyword}」")
+    else:
+        scope = _clean_text(root.get_text(" ", strip=True))
+
+    state, word = _classify_stock(scope, in_words, out_words)
+    if not price:
+        found = _PRICE_PATTERN.search(scope)
+        price = found.group(0) if found else ""
+    evidence = f"页面文字「{word}」" if word else "页面里没有有货或缺货字样，可以填库存选择器或自定义字样"
+    return StockResult(state, title, price, evidence)
+
+
 async def _assert_public_url(url: str) -> None:
     """拒绝内网、回环等非公网地址，防止监控地址被用来探测服务器内部服务。"""
     parsed = urlsplit(url)
@@ -156,7 +310,7 @@ async def _fetch_html(url: str) -> str:
                     url = urljoin(str(response.url), location)
                     continue
                 response.raise_for_status()
-                return await response.text()
+                return await response.text(errors="replace")
     raise ValueError(f"网页监控重定向次数过多: {url}")
 
 
@@ -181,20 +335,58 @@ def _build_notification(monitor: dict, item: WebItem, reasons: list[str], hits: 
     return "\n".join(lines)
 
 
-async def _send_admins(application: Application, text: str) -> int:
-    sent = 0
-    for chat_id in config.ADMIN_IDS:
-        try:
-            await application.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-            sent += 1
-        except TelegramError as exc:
-            logger.warning("发送网页监控通知失败 chat_id=%s: %s", chat_id, exc)
-    return sent
+def _build_restock_notification(monitor: dict, result: StockResult) -> str:
+    lines = [
+        f"<b>[补货提醒] {html.escape(monitor['name'])}</b>",
+        f"商品：{html.escape(result.title or monitor['name'])}",
+    ]
+    if result.price:
+        lines.append(f"价格：{html.escape(result.price)}")
+    lines.append(f"判断依据：{html.escape(result.evidence)}")
+    lines.append(f"链接：{html.escape(monitor['url'])}")
+    return "\n".join(lines)
+
+
+async def preview_stock(monitor: dict) -> StockResult:
+    """保存前试一次，看配置能不能判断出库存状态。"""
+    return detect_stock(await _fetch_html(monitor["url"]), monitor)
+
+
+async def _check_stock(application: Application, monitor: dict, html_text: str) -> int:
+    """只有从缺货变成有货才推送；看不出状态时保留上次结果，防止页面抖动造成误报。"""
+    result = detect_stock(html_text, monitor)
+    if result.state == STOCK_UNKNOWN:
+        await db.update_web_monitor(monitor["id"], last_error=result.evidence)
+        return 0
+
+    previous = await db.get_web_monitor_state(monitor["id"], STOCK_STATE_KEY)
+    last_state = previous.get("stock") if previous else None
+    await db.save_web_monitor_state(
+        monitor["id"], STOCK_STATE_KEY, result.title, monitor["url"], "", result.price, result.state,
+    )
+    await db.update_web_monitor(monitor["id"], last_error="")
+    if last_state is None or last_state == result.state:
+        return 0
+
+    sent_count = 0
+    restocked = result.state == STOCK_IN
+    if restocked and monitor.get("notify_telegram"):
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("去看看", url=monitor["url"])]])
+        sent_count = await monitor_push.push(
+            application.bot,
+            monitor_push.resolve_targets(monitor, config.ADMIN_IDS),
+            _build_restock_notification(monitor, result),
+            keyboard,
+        )
+    await db.record_monitor_event(
+        "stock",
+        monitor["name"],
+        "已补货" if restocked else "已售罄",
+        monitor["url"],
+        " · ".join(part for part in (result.title, result.price, result.evidence) if part),
+        sent_count,
+    )
+    return sent_count
 
 
 # 按 monitor_id 区分的运行锁：防止定时轮询与手动触发并发执行同一监控时重复推送
@@ -228,6 +420,18 @@ async def run_monitor(application: Application, monitor: dict) -> int:
     notified_items = 0  # 按“条目命中数”计数（区别于 sent_count 的按管理员消息数）
     try:
         html_text = await _fetch_html(monitor["url"])
+        if monitor.get("monitor_type") == "stock":
+            sent_count = await _check_stock(application, monitor, html_text)
+            await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
+            await db.record_runtime_status(
+                f"stock:{monitor['name']}",
+                "web",
+                True,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                sent_count=sent_count,
+            )
+            return sent_count
+
         items = _extract_items(html_text, monitor)
         keywords = monitor.get("keywords") or []
         has_baseline = await db.has_web_monitor_state(monitor["id"])
@@ -258,13 +462,23 @@ async def run_monitor(application: Application, monitor: dict) -> int:
                 item.stock,
             )
 
-            if reasons and monitor.get("notify_telegram"):
-                sent_count += await _send_admins(application, _build_notification(monitor, item, reasons, hits))
+            if reasons:
+                pushed = 0
+                if monitor.get("notify_telegram"):
+                    pushed = await monitor_push.push(
+                        application.bot,
+                        monitor_push.resolve_targets(monitor, config.ADMIN_IDS),
+                        _build_notification(monitor, item, reasons, hits),
+                    )
+                await db.record_monitor_event(
+                    "web", monitor["name"], item.title, item.link, "、".join(reasons), pushed,
+                )
+                sent_count += pushed
                 notified_items += 1
                 if notified_items >= 5:
                     break
 
-        await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
+        await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql(), last_error="")
         await db.record_runtime_status(
             f"web:{monitor['name']}",
             "web",
@@ -275,6 +489,7 @@ async def run_monitor(application: Application, monitor: dict) -> int:
         return sent_count
     except Exception as exc:
         logger.exception("网页监控失败 monitor=%s", monitor.get("name"))
+        await db.update_web_monitor(monitor["id"], last_error=str(exc)[:300])
         await db.record_runtime_status(
             f"web:{monitor.get('name') or monitor.get('id')}",
             "web",
@@ -315,11 +530,11 @@ async def build_panel_text() -> str:
         f"监控总数: {len(monitors)}\n"
         f"启用中: {len(enabled)}\n\n"
         "命令小抄:\n"
-        "/webmon add <名称> <url> [关键词1,关键词2]\n"
-        "/webmon list\n"
-        "/webmon on <ID> /webmon off <ID>\n"
-        "/webmon run <ID>\n"
-        "/webmon delete <ID>"
+        "/watch_web add <名称> <url> [关键词1,关键词2]\n"
+        "/watch_web list\n"
+        "/watch_web on <ID> /watch_web off <ID>\n"
+        "/watch_web run <ID>\n"
+        "/watch_web delete <ID>"
     )
 
 
@@ -334,7 +549,7 @@ def build_panel_keyboard() -> InlineKeyboardMarkup:
 async def build_monitor_list_text() -> str:
     monitors = await db.list_web_monitors()
     if not monitors:
-        return "当前还没有网页监控。\n\n使用 /webmon add <名称> <url> [关键词1,关键词2] 添加。"
+        return "当前还没有网页监控。\n\n使用 /watch_web add <名称> <url> [关键词1,关键词2] 添加。"
     lines = ["网页监控列表", ""]
     for item in monitors[:40]:
         status = "启用" if item.get("enabled") else "停用"

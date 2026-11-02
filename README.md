@@ -47,26 +47,26 @@
 
 | 方向 | 能力 |
 | --- | --- |
-| 🗣️ **双向沟通** | 每位用户自动分配独立论坛话题线程，消息附带用户信息卡片 · 文本 / 图片 / 视频 / 音频 / 语音 / 文档 / 贴纸 / 动画全媒体递送并保留 Markdown · 双方**编辑**消息同步 · `/inbox` 聚合待回复话题 |
+| 🗣️ **双向沟通** | 每位用户自动分配独立论坛话题线程，消息附带用户信息卡片 · 文本 / 图片 / 视频 / 音频 / 语音 / 文档 / 贴纸 / 动画全媒体递送并保留 Markdown · 双方**编辑**消息同步 · `/todo` 聚合待回复话题 |
 | 🤖 **AI 能力** | Gemini / OpenAI 兼容 / Anthropic Claude 三种协议，可在面板里切换；OpenAI 兼容协议内置 DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenRouter、Ollama 等预设 · 在线获取并按用途选择模型 · AI 内容审查支持图片等多模态输入 · 知识库自动回复并通知管理员 · 可配置自动回复 `人格.md` |
 | 🧩 **人机验证** | 新用户首次交互需完成验证：**图片验证码**（本地生成的扭曲字符图）或**文字题**（AI 每次随机主题与题型出题），默认随机二选一 · 答错自动换题、超限拉黑 · 被临时拉黑的用户可答挑战题自助解封 · 无 API Key 时文字题自动改用本地题库 + 程序化出题（算术、找规律、分类、反义词、星期推算等，几乎不重复） |
 | 🛡️ **安全防护** | 四道关卡：限速 → 黑名单 → 关键词广告拦截 → AI 人机验证与内容审查 · 黑名单 / 审查通行证 / 速率限制 / 自动拉黑策略均可在面板配置 |
 | 📡 **TG 群频道监听** | Bot 入群监听 + Telethon 用户会话监听（Bot 无法加入的群 / 频道）· 关键词、排除词、去重与最小推送间隔 |
 | 🕸️ **网页监控** | CSS 选择器解析条目 · 新条目、关键词命中、内容 / 价格 / 库存变化提醒 · 任务防重叠 |
 | 📰 **RSS 推送** | 私聊管理订阅源、口味词（关键词）、小尾巴（自定义页脚）与链接预览 · 单次最多推送 5 条，多余用摘要提示防刷屏 |
-| 🎛️ **女仆长面板** | `/panel` 一站式管理统计、黑名单、拦截篮、通行证名单、自动回复、广播分组、监控与 AI 模型 |
-| 🌐 **Web 管理面板** | 浏览器里完成 `/panel` 的全部管理：配置中心（.env 类配置可视化修改、热生效）、会话回复（实时消息推送 + 直接回复用户）、黑名单 / 通行证 / 拦截篮 / 知识库 / 广播 / RSS / 双监控 / 网络工具 / 更新 · 首次访问在线设置密码 + 登录限速 + 安全响应头 + CSRF 防护 · 零前端依赖静态托管 |
+| 🎛️ **女仆长面板** | `/manage` 一站式管理统计、黑名单、拦截篮、通行证名单、自动回复、广播分组、监控与 AI 模型 |
+| 🌐 **Web 管理面板** | 浏览器里完成 `/manage` 的全部管理：配置中心（.env 类配置可视化修改、热生效）、会话回复（实时消息推送 + 直接回复用户）、黑名单 / 通行证 / 拦截篮 / 知识库 / 广播 / RSS / 双监控 / 网络工具 / 更新 · 首次访问在线设置密码 + 登录限速 + 安全响应头 + CSRF 防护 · 零前端依赖静态托管 |
 | 🌐 **网络测试** | 通过 SSH 在远程服务器执行 ICMP / TCP Ping 与 NextTrace 路由追踪 · 目标地址做防注入校验 |
-| 🔧 **更新与部署** | `/updatebot` 仅执行 `ff-only` 更新并支持回滚 · Docker 下由面板触发 Watchtower 拉镜像重建容器 · 镜像多架构 amd64 / arm64 |
+| 🔧 **更新与部署** | `/upgrade` 仅执行 `ff-only` 更新并支持回滚 · Docker 下由面板触发 Watchtower 拉镜像重建容器 · 镜像多架构 amd64 / arm64 |
 
 ### 设计边界
 
 - ⚠️ Web 管理面板默认**只监听本机回环地址**（`127.0.0.1`），需要开放访问时按 [Web 管理面板](#-web-管理面板) 一节的说明配置端口映射与密码
-- ⚠️ 论坛话题群必须开启 Topics 且机器人须为管理员，否则**除 `/getid` 外全部功能禁用**
-- ⚠️ 工单流只存在于「用户私聊 ↔ 论坛话题」之间；群聊里只响应 8 个命令（`/getid` `/ping` `/nexttrace` `/adduser` `/rmuser` `/addserver` `/rmserver` `/install_nexttrace`），不做群内工单
+- ⚠️ 论坛话题群必须开启 Topics 且机器人须为管理员，否则**除 `/myid` 外全部功能禁用**
+- ⚠️ 工单流只存在于「用户私聊 ↔ 论坛话题」之间；群聊里只响应 8 个命令（`/myid` `/ping` `/trace` `/net_allow` `/net_deny` `/net_server_add` `/net_server_del` `/trace_install`），不做群内工单
 - ⚠️ TG 用户会话监听（`user_session` 模式）需单独配置 `TG_API_ID` / `TG_API_HASH` / `TG_API_SESSION`，未配置时不会启动，只能监听机器人已加入的群 / 频道
 - ✅ 网络测试的目标地址经过严格校验（`validate_target` + `shlex.quote`），防止 SSH 命令注入
-- ✅ `/updatebot` 只执行 `ff-only` 更新，本地存在未提交改动时**拒绝**更新
+- ✅ `/upgrade` 只执行 `ff-only` 更新，本地存在未提交改动时**拒绝**更新
 - ✅ 无任何 AI API Key 时仍可运行：人机验证自动回退到内置本地题库；数据库为本地 SQLite，不依赖任何外部数据库服务
 
 ---
@@ -174,7 +174,7 @@ services:
 docker compose pull && docker compose up -d
 ```
 
-**也可以在机器人面板里远程更新**：配置 `WATCHTOWER_HTTP_API_URL` / `WATCHTOWER_HTTP_API_TOKEN` 后，私聊机器人打开 `/panel`，点「检查镜像更新」查询 Docker Hub 上有没有新镜像，再点「确认更新」，由 Watchtower 拉取新镜像并重建容器——适合不方便登录服务器的场景。详见 [watchtower/README.md](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 HTTP API 远程更新与 shoutrrr 通知配置示例）。
+**也可以在机器人面板里远程更新**：配置 `WATCHTOWER_HTTP_API_URL` / `WATCHTOWER_HTTP_API_TOKEN` 后，私聊机器人打开 `/manage`，点「检查镜像更新」查询 Docker Hub 上有没有新镜像，再点「确认更新」，由 Watchtower 拉取新镜像并重建容器——适合不方便登录服务器的场景。详见 [watchtower/README.md](watchtower/README.md)（仓库提供 `watchtower/docker-compose.yml`，含 HTTP API 远程更新与 shoutrrr 通知配置示例）。
 
 ### 备选部署方式
 
@@ -218,7 +218,7 @@ nano .env
 python bot.py
 ```
 
-> **注意：** `/updatebot` 安全更新基于 git 工作区，需要以 `git clone` 方式部署（而非直接下载压缩包）才能使用该功能。
+> **注意：** `/upgrade` 安全更新基于 git 工作区，需要以 `git clone` 方式部署（而非直接下载压缩包）才能使用该功能。
 
 </details>
 
@@ -230,7 +230,7 @@ python bot.py
 
 ## 🌐 Web 管理面板
 
-机器人在同一进程内嵌了一个零依赖的 Web 管理面板（`web_panel/`，aiohttp 托管），浏览器里就能完成 `/panel` 的全部管理工作，还能实时看到用户消息并直接回复。
+机器人在同一进程内嵌了一个零依赖的 Web 管理面板（`web_panel/`，aiohttp 托管），浏览器里就能完成 `/manage` 的全部管理工作，还能实时看到用户消息并直接回复。
 
 ### 功能一览
 
@@ -241,7 +241,7 @@ python bot.py
 | ⚙️ 配置中心 | `.env` 里配置项可视化修改：开关 / 数字 / 枚举 / 文本分控件呈现，密钥类只显示掩码；**绝大多数配置改完立即热生效**，少数结构性配置（群 ID、数据库路径等）标注「需重启」；面板密码通过独立表单更改；其它修改会持久化到数据库，重启后自动加载，也可一键还原为 `.env` 值 |
 | 🤖 AI 设置 | 所有 AI 配置集中在这一页，分四个标签：**提供商与模型**（Gemini / OpenAI 兼容 / Claude 切换、API Key、Base URL 预设、按功能测试连接耗时、按用途选模型）；**功能开关**（AI 内容审查、自动回复、误杀申诉按钮、AI 自动撤销验证）；**生成参数**（按功能设置思考等级、最大输出 token、超时，输入 / 知识库截断，额外请求参数 JSON）；**提示词**（审查规则、出题规则、人格.md，可恢复默认）。全部热生效 |
 | 💡 回复与关键词 | AI 自动回复总开关、可编辑并持久保存的 `人格.md`、知识库增删改查、关键词广告拦截开关与词表管理 |
-| 👥 用户管理 | 全部用户、黑名单（手动拉黑 / 解封）、审查通行证（发放 / 移除）、拦截篮（查看 / 删除 / 清空） |
+| 👥 用户管理 | 全部用户、黑名单（手动拉黑 / 解封）、审查通行证（发放 / 取消）、暂停审查申请（批准 / 拒绝 / 取消）、拦截篮（查看 / 删除 / 清空）。顶部搜索框按 ID、昵称、用户名查找，全部用户标签还能搜消息内容并显示消息来源（谁发的、何时、是否被拦截），Mini App 同样可用 |
 | 📣 广播群发 | 按分组或全体用户发广播（后台异步投递，自动记录成功 / 失败），分组与成员管理，投递历史 |
 | 📡 RSS / 监控 | RSS 订阅增删、口味关键词、授权用户、检查间隔；TG 群监听规则 CRUD 与最近发现的群聊；网页监控 CRUD（含 CSS 选择器高级配置） |
 | 🛠️ 网络与更新 | SSH 远程 Ping / NextTrace、服务器登记管理；Git 更新状态 / 拉取 / 回滚，Docker 镜像更新检查 / 触发（均带二次确认） |
@@ -295,7 +295,7 @@ WEB_PANEL_PASSWORD=           # 留空 = 使用网页初始化；也可在此预
 Mini App 挂在面板的 `/miniapp/` 路径下，和面板共用端口与反向代理，提供两个入口：
 
 - **人机验证**：`VERIFICATION_MODE=turnstile` 时，新用户点按钮打开 Cloudflare Turnstile，通过后自动补发验证前的消息。打不开时可以在聊天里点「打不开？换普通验证题」，回到图片或文字题
-- **手机管理页**：管理员点聊天框左下角的「管理面板」菜单按钮打开，也可以私聊机器人发 `/app`，免密码，包含概览、用户/黑名单、配置中心、AI 设置、回复与关键词、广播与分组、RSS、消息监控、网页监控、网络工具和机器人更新
+- **手机管理页**：管理员点聊天框左下角的「管理面板」菜单按钮打开，也可以私聊机器人发 `/mobile`，免密码，包含概览、用户/黑名单、配置中心、AI 设置、回复与关键词、广播与分组、RSS、消息监控、网页监控、网络工具和机器人更新
 
 启用步骤：
 
@@ -462,8 +462,8 @@ Web 面板修改 `.env` 类配置时，会写入 SQLite 的 `settings` 表作为
 | **茶点** | RSS 订阅源 | `services/telegram_commands.py`「添加 RSS 茶点」 |
 | **口味词** | RSS 关键词过滤 | `services/telegram_commands.py`「添加 RSS 口味词」 |
 | **小尾巴** | RSS 自定义页脚 | `rss/handlers.py`「RSS 小尾巴已系好」 |
-| **通行证** | 审查豁免（`/exempt`） | `services/telegram_commands.py`「管理审查通行证」、`utils/copy.py` `nt_no_pass` |
-| **拦截篮 / 小篮子** | 被拦截消息的存放处（`/view_filtered`） | `utils/copy.py` `filtered_empty()`「拦截篮里还是空空的」、`msg_blocked`「拦进了小篮子」；`handlers/admin_handler.py`「女仆拦截篮」 |
+| **通行证** | 审查豁免（`/pass`） | `services/telegram_commands.py`「管理审查通行证」、`utils/copy.py` `nt_no_pass` |
+| **拦截篮 / 小篮子** | 被拦截消息的存放处（`/intercepts`） | `utils/copy.py` `filtered_empty()`「拦截篮里还是空空的」、`msg_blocked`「拦进了小篮子」；`handlers/admin_handler.py`「女仆拦截篮」 |
 | **小扫帚** | AI 内容审查 | `utils/copy.py` `scan_message()`「用 AI 小扫帚检查消息」 |
 | **衣柜** | AI 模型列表 | `utils/copy.py` `BTN_PANEL_AI_SETTINGS`「AI 模型衣柜」 |
 | **茶具** | 网络测试工具（Ping / NextTrace） | `utils/copy.py` `nt_panel_not_admin()`「网络测试茶具」、`network_test/commands.py`「NextTrace 茶具」 |
@@ -509,7 +509,7 @@ flowchart LR
     B -->|关键词广告拦截| SF[🚫 命中→拦截篮<br/>可配置自动拉黑]
     B -->|AI 人机验证| V[🧩 未验证用户<br/>AI 验证题]
     B -->|AI 内容审查| AI[🕵️ Gemini / OpenAI / Claude<br/>支持多模态图片]
-    AI -->|疑似垃圾| FB[🧺 拦截篮<br/>/view_filtered 可查看]
+    AI -->|疑似垃圾| FB[🧺 拦截篮<br/>/intercepts 可查看]
     AI -->|通过| F[📨 转发到论坛话题群]
     F -->|创建或复用话题| T[🗂️ 用户专属话题线程]
     A[🧑‍💼 管理员] -->|在话题中回复| T
@@ -534,7 +534,7 @@ pivkeyu_msg/
 ├── bot.py                  # 启动入口：初始化数据库、注册命令/处理器、启动轮询
 ├── config.py               # 环境变量加载与配置校验（python-dotenv）
 ├── handlers/               # Telegram 事件处理器
-│   ├── command_handler.py  #   /panel /inbox /exempt /group /broadcast 等命令
+│   ├── command_handler.py  #   /manage /todo /pass /groups /announce 等命令
 │   ├── user_handler.py     #   用户私聊消息：限速→黑名单→验证→审查→转发
 │   ├── admin_handler.py    #   管理员话题回复回传、编辑同步、拦截篮查看
 │   └── callback_handler.py #   内联键盘回调（面板、模型衣柜、分页等）
@@ -577,17 +577,36 @@ pivkeyu_msg/
 | :---: | :--- | :--- | :--- |
 | ① | ⏱️ **速率限制** | 同一用户超过 `MAX_MESSAGES_PER_MINUTE`（默认 30 条/分钟） | 先给**限速警告**；收到警告后继续刷屏 → **自动永久拉黑** |
 | ② | ⚫ **黑名单** | 用户在 `blacklist` 表中 | **永久拉黑**：直接拒绝投递；**临时拉黑**：下发 AI 解封挑战题（`AUTO_UNBLOCK_ENABLED=true` 时） |
-| ③ | 🚫 **关键词广告拦截** | 命中 `/spamrules` 维护的关键词（在 AI 审查**之前**执行，降低固定话术成本） | 消息进**拦截篮**（`/view_filtered` 可查看）；`SPAM_KEYWORD_AUTO_BLOCK=true` 时**自动拉黑**该用户 |
+| ③ | 🚫 **关键词广告拦截** | 命中 `/keywords` 维护的关键词（在 AI 审查**之前**执行，降低固定话术成本） | 消息进**拦截篮**（`/intercepts` 可查看）；`SPAM_KEYWORD_AUTO_BLOCK=true` 时**自动拉黑**该用户 |
 | ④ | 🧩🕵️ **AI 关卡**<br/>（两层串联） | ④-a **人机验证**：新用户首次交互、尚未通过验证<br/>④-b **内容审查**：AI 判定为垃圾 / 恶意内容（支持图片等多模态输入） | ④-a 下发**验证题**（答对才递送；答错自动换题），累计超过 `MAX_VERIFICATION_ATTEMPTS`（默认 3 次）→ **自动拉黑**<br/>④-b 消息进**拦截篮**，不转发到话题群；未配置任何 API Key 时**放行**（日志为 `No AI provider configured`） |
 
 补充说明：
 
 - **人机验证有本地兜底**：无 API Key 时自动使用内置**本地题库**（`_get_local_question()`），AI 生成的题调用失败时同样回退，因此没有 API Key 也能跑通验证流程。
-- **自助解封**：临时被拉黑的用户重新发消息即触发 AI 挑战题，答对自动开门；永久拉黑（管理员 `/block`、关键词拦截自动拉黑、多次超限等）只能由管理员 `/unblock` 解封。
-- **审查通行证**：为可信用户发放临时（按小时）/永久豁免（`/exempt`），跳过 AI 内容审查，其余规则仍然生效。
+- **自助解封**：临时被拉黑的用户重新发消息即触发 AI 挑战题，答对自动开门；永久拉黑（管理员 `/ban`、关键词拦截自动拉黑、多次超限等）只能由管理员 `/unban` 解封。
+- **审查通行证**：为可信用户发放临时（按小时）/永久豁免（`/pass`），跳过 AI 内容审查，其余规则仍然生效。
 - **AI 审查原理**：把用户的文字 / 图片连同「审查规则」提示词发给模型，模型返回 `is_spam` 与理由；判为违规就拦下并记入拦截篮。审查出错或超时会放行，避免卡住正常用户。审查规则可在「AI 设置 → 提示词」修改。
 - **误杀申诉**：消息被 AI 拦下时，用户可点「申请暂停审查」。申请会发到他的话题，管理员点「暂停 30 分钟 / 2 小时 / 1 天」，或点「自定义时长」后回复 `45m`、`3h`、`2d`、`永久` 等；网页会话里则通过弹窗选择时长。到期自动恢复审查。
-- **撤销验证**：已验证用户开始骚扰时，可在话题里发 `/unverify`（`/verify` 恢复）或在网页会话里点「撤销验证」，他下次发消息需要重新验证；也可在「AI 设置 → 功能开关」开启「AI 自动撤销验证」，一段时间内被 AI 拦下达到次数就自动收回。
+
+  **手动取消**：还没处理的申请可以点「取消申请」，不批准也不拒绝，不通知用户；已生效的免审查可以点「取消免审查」，用户消息立即恢复 AI 审查。TG 话题、Web 会话页、用户管理和 Mini App 都有入口。
+
+- **人机验证优先**：配好 Turnstile 后，`random` 和 `turnstile` 模式都只显示人机验证按钮。验证出错或没通过时，页面让机器人把普通验证题发到聊天；Mini App 打不开时，超过 60 秒后客人再发消息会出现「打不开？换普通验证题」按钮。选了 `text` 或 `image` 模式时不走人机验证。
+- **一键收回**：用户管理里可以收回全部验证（管理员除外）或取消全部免审查，确认时显示影响人数，不通知用户。过期通行证每小时自动清理。
+- **拦截放行**：拦截篮里误拦的消息可以点「放行」补发到用户话题，回复照常能送到用户，不通知用户。
+- **转发来源**：用户转发来的消息会记录原始频道或作者，可以搜索，也会显示在会话、拦截篮和用户详情里。话题里的消息不显示转发来源。
+- **用户备注和标签**：用户详情里可以写备注、加标签，都能被搜索，标签还能用于广播。详情里的消息记录只读，Mini App 同样不能回复。
+- **批量分组**：用户列表勾选多人后一次加入多个分组；分组成员弹窗里可以搜索多选。
+
+### 🛒 补货监控
+
+在 Mini App 或 Web 面板的「RSS / 监控 → 补货监控」添加商品，填商品网址和检查间隔（分钟）即可，保存前可以点「先试一次」看判断结果。商品从缺货变成有货时，机器人推送带「去看看」按钮的消息；售罄只记录，不推送。
+
+判断顺序：库存选择器（填了才用）→ 页面的 schema.org 商品数据 → 商品关键词附近的文字 → 整页文字，缺货字样优先于有货字样。同一页面看不出状态时保留上次结果，不会误报，错误原因显示在列表里。
+
+只能读取服务器直接返回的网页内容。库存靠浏览器脚本加载，或者网站有反爬验证时判断不了。
+
+所有监控的命中记录都在「监控结果」标签，保留最近 2000 条。网页、补货和 TG 监听可以单独开关机器人推送，并单独设置推送目标；RSS 推送到订阅所属的聊天。
+- **撤销验证**：已验证用户开始骚扰时，可在话题里发 `/reverify`（`/trust` 恢复）或在网页会话里点「撤销验证」，他下次发消息需要重新验证；也可在「AI 设置 → 功能开关」开启「AI 自动撤销验证」，一段时间内被 AI 拦下达到次数就自动收回。
 - **读者与关卡无关**：关卡是网关逻辑，人设只决定拦下时用户读到的那句话怎么称呼他。
 
 ### 数据与备份
@@ -614,7 +633,7 @@ sqlite3 data/bot.db ".backup backup.db"     # 生成一致性快照，可在运�
 ### 生产部署清单
 
 - [ ] `.env` 不进 Git（`.gitignore` 与 `.dockerignore` 均已排除），文件权限收紧
-- [ ] `ADMIN_IDS` 只填可信管理员——该名单可以触发封禁、广播、`/updatebot`、镜像更新等操作
+- [ ] `ADMIN_IDS` 只填可信管理员——该名单可以触发封禁、广播、`/upgrade`、镜像更新等操作
 - [ ] `data/` 使用持久化挂载（`./data:/app/data`），SQLite 数据库、RSS 订阅与监控数据都在这里
 - [ ] 备份使用 `sqlite3 data/bot.db ".backup backup.db"`，不要直接 `cp` 主库文件
 - [ ] 数据库目录避开 NFS / SMB 与 Docker Desktop 的 WSL2 / virtiofs bind mount，改用 named volume
@@ -622,20 +641,20 @@ sqlite3 data/bot.db ".backup backup.db"     # 生成一致性快照，可在运�
 - [ ] 使用 Watchtower 时确认 `8080` 端口**不暴露到公网**（compose 用 `expose` 只在 Compose 网络内可见，不要改成 `ports`）
 - [ ] `BOT_TOKEN` 一旦外泄，立即在 [@BotFather](https://t.me/BotFather) 用 `/revoke` 重置
 - [ ] AI API Key 只授予必要额度；`GEMINI_BASE_URL` / `OPENAI_BASE_URL` 指向自己信任的网关
-- [ ] 定期翻一遍 `/view_filtered` 拦截篮与 `/panel` 黑名单，确认拦截策略没有误伤正常用户
+- [ ] 定期翻一遍 `/intercepts` 拦截篮与 `/manage` 黑名单，确认拦截策略没有误伤正常用户
 - [ ] 定期实测一次恢复流程（用 `.backup` 的产物在旁路环境起一遍），确认备份真的可用
 
 ---
 
 ## 📡 监控体系
 
-三类监控（TG 群/频道、网页、RSS）统一由 `/monitor_status` 查看运行状态：
+三类监控（TG 群/频道、网页、RSS）统一由 `/watch_status` 查看运行状态：
 
 ```bash
-/monitor_status             # 查看全部监控运行状态
-/monitor_status rss
-/monitor_status tg
-/monitor_status web
+/watch_status             # 查看全部监控运行状态
+/watch_status rss
+/watch_status tg
+/watch_status web
 ```
 
 输出包含各监控任务的运行状态、最近失败原因与耗时。
@@ -648,18 +667,18 @@ sqlite3 data/bot.db ".backup backup.db"     # 生成一致性快照，可在运�
 - **`user_session` 模式**：通过 Telethon 使用用户会话监听 Bot 无法加入的群/频道，需要完整配置 `TG_API_ID`、`TG_API_HASH`、`TG_API_SESSION`（可选 `TG_PROXY`）。
 
 ```bash
-/tgmon add 监听名称 -1001234567890 关键词1,关键词2 user_session
-/tgmon list
-/tgmon discovered        # 查看用户会话发现的群/频道
-/tgmon on 1
-/tgmon off 1
-/tgmon keywords 1 新关键词1,新关键词2    # 更新监听词
-/tgmon exclude 1 排除词1,排除词2        # 设置排除词
-/tgmon interval 1 300                    # 设置最小推送间隔（秒）
-/tgmon delete 1
+/watch_tg add 监听名称 -1001234567890 关键词1,关键词2 user_session
+/watch_tg list
+/watch_tg discovered        # 查看用户会话发现的群/频道
+/watch_tg on 1
+/watch_tg off 1
+/watch_tg keywords 1 新关键词1,新关键词2    # 更新监听词
+/watch_tg exclude 1 排除词1,排除词2        # 设置排除词
+/watch_tg interval 1 300                    # 设置最小推送间隔（秒）
+/watch_tg delete 1
 ```
 
-> 论坛话题群自身（`FORUM_GROUP_ID`）不会被记录进发现列表，避免污染 `/tgmon discovered`。
+> 论坛话题群自身（`FORUM_GROUP_ID`）不会被记录进发现列表，避免污染 `/watch_tg discovered`。
 
 ### 网页监控
 
@@ -672,25 +691,25 @@ CSS 选择器自动解析页面条目（标题、链接、正文、价格、库�
 任务防重叠，可通过 `interval` 控制检查频率。
 
 ```bash
-/webmon add 监控名称 https://example.com 关键词1,关键词2
-/webmon list
-/webmon run 1        # 立即手动检查一次
-/webmon keywords 1 新关键词1,新关键词2
-/webmon interval 1 300
-/webmon off 1
-/webmon delete 1
+/watch_web add 监控名称 https://example.com 关键词1,关键词2
+/watch_web list
+/watch_web run 1        # 立即手动检查一次
+/watch_web keywords 1 新关键词1,新关键词2
+/watch_web interval 1 300
+/watch_web off 1
+/watch_web delete 1
 ```
 
 ### RSS 订阅推送
 
-RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` → RSS 订阅茶点管理 中开启），重启后：
+RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/manage` → RSS 订阅茶点管理 中开启），重启后：
 
 ```bash
 /rss_add https://example.com/feed.xml
 /rss_list
-/rss_addkeyword 1 口味词          # 只推送命中口味词的条目
-/rss_setfooter 来自女仆的问候       # 自定义页脚
-/rss_togglepreview                # 切换链接预览
+/rss_kw_add 1 口味词          # 只推送命中口味词的条目
+/rss_footer 来自女仆的问候       # 自定义页脚
+/rss_preview                # 切换链接预览
 ```
 
 订阅源、关键词、页脚与链接预览均在私聊中管理。
@@ -706,12 +725,12 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 通过 SSH 在远程服务器上执行 Ping 与 NextTrace 路由追踪（ICMP / TCP），授权用户可用。
 
 ```bash
-/adduser 123456789          # 管理员：授权用户使用网络测试
-/addserver                  # 管理员：启动 5 步登记向导（或 /addserver "香港 - GCP" 1.2.3.4 22 user pass）
-/install_nexttrace          # 管理员：为服务器安装 NextTrace
+/net_allow 123456789          # 管理员：授权用户使用网络测试
+/net_server_add                  # 管理员：启动 5 步登记向导（或 /net_server_add "香港 - GCP" 1.2.3.4 22 user pass）
+/trace_install          # 管理员：为服务器安装 NextTrace
 
 /ping example.com 4         # 授权用户：Ping 测试（选择服务器）
-/nexttrace example.com      # 授权用户：路由追踪（选择 ICMP / TCP 模式）
+/trace example.com      # 授权用户：路由追踪（选择 ICMP / TCP 模式）
 ```
 
 > 目标地址经过严格校验（`validate_target` + `shlex.quote`），防止 SSH 命令注入；服务器凭据保存在 `data/network_test_config.json`。
@@ -719,35 +738,35 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 ### 📢 分组与广播
 
 ```bash
-/group create 高优用户 重要客户分组
-/group add 高优用户 123456789        # 在用户话题中可省略 user_id
-/group members 高优用户
-/group list
+/groups create 高优用户 重要客户分组
+/groups add 高优用户 123456789        # 在用户话题中可省略 user_id
+/groups members 高优用户
+/groups list
 
-/broadcast all 大家好，系统维护公告
-/broadcast group 高优用户 针对高优用户的通知
+/announce all 大家好，系统维护公告
+/announce group 高优用户 针对高优用户的通知
 ```
 
-也可以**回复**一条文本/图片/视频/文件消息后执行 `/broadcast all` 或 `/broadcast group <分组名>`，广播后编辑源消息可同步更新已投递内容。
+也可以**回复**一条文本/图片/视频/文件消息后执行 `/announce all` 或 `/announce group <分组名>`，广播后编辑源消息可同步更新已投递内容。
 
 ### 🔧 安全更新与镜像更新
 
-`/updatebot` 走 **git 部署**路线：
+`/upgrade` 走 **git 部署**路线：
 
 ```bash
-/updatebot status           # 检查 git 状态（分支、领先/落后、脏工作区）
-/updatebot apply            # 执行 ff-only 更新
-/updatebot rollback         # 回滚到上一次更新前
+/upgrade status           # 检查 git 状态（分支、领先/落后、脏工作区）
+/upgrade apply            # 执行 ff-only 更新
+/upgrade rollback         # 回滚到上一次更新前
 ```
 
-**镜像更新**走 **Docker 部署**路线，全程在面板中完成：`/panel` → 安全更新 / 运行状态 → **「检查镜像更新」→「确认更新」**，由 Watchtower 的 HTTP API 拉取新镜像并重建容器，无需登录服务器。
+**镜像更新**走 **Docker 部署**路线，全程在面板中完成：`/manage` → 安全更新 / 运行状态 → **「检查镜像更新」→「确认更新」**，由 Watchtower 的 HTTP API 拉取新镜像并重建容器，无需登录服务器。
 
 | 更新方式 | 适用场景 | 操作入口 | 依赖 |
 | :--- | :--- | :--- | :--- |
-| Git 更新 | 仓库部署，服务器上有 git 工作区 | `/updatebot status` → `/updatebot apply` | 本地工作区干净、远端可快进 |
-| 镜像更新 | 机器人跑在 Docker 里，服务器上**没有 git 仓库**（例如镜像由 CI 构建后直接拉取） | `/panel` → 检查镜像更新 → 确认更新 | `WATCHTOWER_HTTP_API_URL` + `WATCHTOWER_HTTP_API_TOKEN` + Watchtower 容器 |
+| Git 更新 | 仓库部署，服务器上有 git 工作区 | `/upgrade status` → `/upgrade apply` | 本地工作区干净、远端可快进 |
+| 镜像更新 | 机器人跑在 Docker 里，服务器上**没有 git 仓库**（例如镜像由 CI 构建后直接拉取） | `/manage` → 检查镜像更新 → 确认更新 | `WATCHTOWER_HTTP_API_URL` + `WATCHTOWER_HTTP_API_TOKEN` + Watchtower 容器 |
 
-> `/updatebot apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新；更新完成后发 `/restart` 重启 Bot。
+> `/upgrade apply` 会拒绝覆盖本地未提交改动，只执行 `ff-only` 更新；更新完成后发 `/restart` 重启 Bot。
 >
 > 面板中的「检查镜像更新」即使未配置 token 也能查看状态，但「确认更新」会提示没配口令。镜像更新的配置详见 `.env.example` 与 [watchtower/README.md](watchtower/README.md)。
 
@@ -771,7 +790,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 > [!WARNING]
 > 预检只覆盖 `BOT_TOKEN`。其他配置错误仍可能导致启动失败，此时机器人和面板都打不开，需要回服务器修复。
 
-### 🎛️ 女仆长面板 /panel
+### 🎛️ 女仆长面板 /manage
 
 面板一站式管理：黑名单、客人名册、拦截消息篮、自动回复女仆、审查通行证、网络测试茶具、广播与分组、RSS 订阅、TG 监听、网页监控、关键词拦截、运行状态、安全更新、**AI 模型衣柜**（分别配置 Gemini / OpenAI / Claude 的内容审查、验证题生成、自动回复模型）。
 
@@ -807,6 +826,8 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 - 审查规则继续使用「提示词」页的内容
 - 决策模型不写解释，拦截理由来自广告、诈骗、辱骂、色情、违法、其他六个固定类别
+- 每条消息只问一道选择题，违规概率是「安全」以外所有选项的概率之和
+- 「保存并测试」分别显示首次连接和复用连接的耗时，日常审查更接近后者；连接空闲 5 分钟或被服务商断开后，下一条消息要重新握手
 - 决策接口出错或 10 秒内没有结果时，退回聊天模型再审一次，所以聊天协议的内容审查模型要填真实的聊天模型。两边都失败时消息会放行
 - `mercury-decide`、`clef`、`clef-flash`、`jev-*` 不支持聊天接口，不能填在聊天模型里
 - System One 格式只接受 PNG 和 JPEG，Workers AI 格式只接受 PNG、JPEG 和 WebP，其他图片会退回聊天模型审查
@@ -816,7 +837,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
 | `BOT_TOKEN` | ✅ | 无 | Telegram Bot Token，从 [@BotFather](https://t.me/BotFather) 获取 |
-| `FORUM_GROUP_ID` | ✅ | 无 | 论坛话题群组 ID（超级群组需开启 Topics），机器人须为该群管理员；**未设置时除 `/getid` 外全部功能禁用** |
+| `FORUM_GROUP_ID` | ✅ | 无 | 论坛话题群组 ID（超级群组需开启 Topics），机器人须为该群管理员；**未设置时除 `/myid` 外全部功能禁用** |
 | `ADMIN_IDS` | ✅ | 无 | 管理员 Telegram 用户 ID，多个用逗号分隔（如 `123456789,987654321`） |
 
 ### 🧠 AI
@@ -870,18 +891,18 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
-| `SPAM_KEYWORD_FILTER_ENABLED` | ❌ | `false` | 是否启用关键词广告拦截（也可运行时用 `/spamrules on` 开启） |
+| `SPAM_KEYWORD_FILTER_ENABLED` | ❌ | `false` | 是否启用关键词广告拦截（也可运行时用 `/keywords on` 开启） |
 | `SPAM_KEYWORD_AUTO_BLOCK` | ❌ | `true` | 命中后是否自动拉黑 |
 
-运行时的关键词管理（命中消息会进入拦截篮，可用 `/view_filtered` 查看）：
+运行时的关键词管理（命中消息会进入拦截篮，可用 `/intercepts` 查看）：
 
 ```bash
-/spamrules on
-/spamrules add 广告词1,广告词2
-/spamrules autoblock on    # 命中后自动拉黑
-/spamrules del 广告词1
-/spamrules                  # 查看当前设置
-/spamrules clear            # 清空全部关键词
+/keywords on
+/keywords add 广告词1,广告词2
+/keywords autoblock on    # 命中后自动拉黑
+/keywords del 广告词1
+/keywords                  # 查看当前设置
+/keywords clear            # 清空全部关键词
 ```
 
 ### 📰 RSS
@@ -890,7 +911,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
-| `RSS_ENABLED` | ❌ | `false` | 是否启用 RSS 轮询推送（也可运行时在 `/panel` → RSS 管理中开启） |
+| `RSS_ENABLED` | ❌ | `false` | 是否启用 RSS 轮询推送（也可运行时在 `/manage` → RSS 管理中开启） |
 | `RSS_DATA_FILE` | ❌ | `./data/rss_subscriptions.json` | RSS 订阅数据文件 |
 | `RSS_CHECK_INTERVAL` | ❌ | `300` | RSS 轮询间隔（秒），建议 ≥ 120 |
 | `RSS_AUTHORIZED_USER_IDS` | ❌ | 空 | RSS 命令授权用户（逗号分隔），不填则仅 `ADMIN_IDS` 可用 |
@@ -937,7 +958,7 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 ### 🔑 获取必要信息
 
 1. **Bot Token**：与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 创建机器人即可获得。
-2. **话题群组 ID**：创建超级群组并启用「话题」(Topics)，将机器人添加为管理员，在群组中发送 `/getid`，机器人会自动回复群组 ID。
+2. **话题群组 ID**：创建超级群组并启用「话题」(Topics)，将机器人添加为管理员，在群组中发送 `/myid`，机器人会自动回复群组 ID。
 3. **Gemini API 密钥**（可选）：访问 [Google AI Studio](https://aistudio.google.com/api-keys) 创建。
 4. **Telethon StringSession**（可选，user_session 监听）：在 https://my.telegram.org 获取 API ID/Hash，再用任意 Telethon 工具生成 StringSession 填入 `TG_API_SESSION`。
 
@@ -950,86 +971,91 @@ RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/panel` 
 | AI 内容审查 | 至少一个 API Key + `ENABLE_AI_FILTER=true` | 无需操作，自动生效；面板可切换提供商/模型 |
 | AI 人机验证 | 默认开启；无 Key 走本地题库 | 新用户自动触发 |
 | AI 自助解封 | `AUTO_UNBLOCK_ENABLED=true` | 被拉黑用户发消息自动触发 |
-| 关键词广告拦截 | 无需额外配置 | `/spamrules on` → `/spamrules add 广告词` |
-| 审查通行证 | 无需额外配置 | `/exempt <user_id> permanent\|temp <小时数>` |
-| 分组与广播 | 无需额外配置 | `/group create` → `/broadcast group <分组名> <内容>` |
-| 网络测试 | 无需额外配置 | `/adduser <user_id>` 授权 → `/addserver` 登记 → `/ping` |
-| TG 监听（bot 模式） | 把 Bot 拉进目标群即可 | `/tgmon add <名称> <chat_id> <关键词> bot` |
-| TG 监听（user_session） | `TG_API_ID` + `TG_API_HASH` + `TG_API_SESSION` | `/tgmon add <名称> <chat_id> <关键词> user_session` |
-| 网页监控 | 无需额外配置 | `/webmon add <名称> <url> [关键词]` |
+| 关键词广告拦截 | 无需额外配置 | `/keywords on` → `/keywords add 广告词` |
+| 审查通行证 | 无需额外配置 | `/pass <user_id> permanent\|temp <小时数>` |
+| 分组与广播 | 无需额外配置 | `/groups create` → `/announce group <分组名> <内容>` |
+| 网络测试 | 无需额外配置 | `/net_allow <user_id>` 授权 → `/net_server_add` 登记 → `/ping` |
+| TG 监听（bot 模式） | 把 Bot 拉进目标群即可 | `/watch_tg add <名称> <chat_id> <关键词> bot` |
+| TG 监听（user_session） | `TG_API_ID` + `TG_API_HASH` + `TG_API_SESSION` | `/watch_tg add <名称> <chat_id> <关键词> user_session` |
+| 网页监控 | 无需额外配置 | `/watch_web add <名称> <url> [关键词]` |
 | RSS 推送 | `RSS_ENABLED=true`（或面板开启） | `/rss_add <url>` |
-| 安全更新 | git 方式部署 | `/updatebot status` → `/updatebot apply` |
-| 镜像更新（Docker） | `WATCHTOWER_HTTP_API_TOKEN` + watchtower 容器 | `/panel` → 安全更新/运行状态 → 检查镜像更新 → 确认更新 |
+| 安全更新 | git 方式部署 | `/upgrade status` → `/upgrade apply` |
+| 镜像更新（Docker） | `WATCHTOWER_HTTP_API_TOKEN` + watchtower 容器 | `/manage` → 安全更新/运行状态 → 检查镜像更新 → 确认更新 |
 | Watchtower 自动更新 | 见 [watchtower/README.md](watchtower/README.md) | `docker compose up -d` |
 
 ---
 
 ## 📖 命令参考
 
-> 命令菜单会在启动时自动同步到 Telegram（私聊 20 个命令、群聊 8 个命令，分别设置）。以下命令表与代码 `services/telegram_commands.py` 保持一致。
+> 命令菜单在启动时自动同步到 Telegram，内容来自 `utils/commands.py`。改名后的旧命令继续可用，但不再显示在菜单里。
 >
-> 管理员功能（`FORUM_GROUP_ID` + `ADMIN_IDS` 均设置时）在私聊和群聊中都会注册，群聊便于在话题内直接操作。另有部分管理员命令不在 BotFather 菜单中，但代码支持。
+> 管理员功能需要同时设置 `FORUM_GROUP_ID` 和 `ADMIN_IDS`。
 
 ### 👤 用户命令
 
-私聊与群聊通用。
-
-| 命令 | 描述 |
-| :--- | :--- |
-| `/start` | 唤醒女仆（仅私聊） |
-| `/getid` | 查看客人 ID / 查看群组 ID |
-| `/ping` | 端来 Ping 测试（需授权，每 15 秒一次） |
-| `/nexttrace` | 端来路由追踪（需授权，每 10 秒一次） |
-| `/adduser` | 登记授权客人（管理员） |
-| `/rmuser` | 移除授权客人（管理员） |
-| `/addserver` | 登记测试服务器（管理员，支持 5 步向导或一次性参数） |
-| `/rmserver` | 撤下测试服务器（管理员） |
-| `/install_nexttrace` | 安装追踪工具（管理员） |
+| 命令 | 作用 | 旧名字（仍可使用） |
+| :--- | :--- | :--- |
+| `/start` | 唤醒女仆（仅私聊） | |
+| `/help [命令名]` | 查看命令手册（仅私聊） | |
+| `/myid` | 查看自己的 ID，群里同时显示群 ID | `/getid` |
 
 ### 🧑‍💼 管理员命令
 
-私聊与群聊。
+普通用户的命令菜单只显示 `/start`、`/help`、`/myid`，管理员的私聊和论坛群显示完整菜单。发 `/help 命令名` 可以看用法，打错命令时女仆会提示最接近的命令。
 
-| 命令 | 描述 |
-| :--- | :--- |
-| `/help` | 查看女仆小手册（仅私聊） |
-| `/block` | 记入黑名单（可在用户话题中使用，自动定位用户） |
-| `/unblock` | 移出黑名单 |
-| `/panel` | 打开女仆长面板 |
-| `/blacklist` | 查看黑名单小本本 |
-| `/stats` | 查看宅邸统计 |
-| `/inbox` | 查看待办小本本 |
-| `/view_filtered` | 查看拦截篮 |
-| `/autoreply` | 管理自动回复女仆与知识库 |
-| `/exempt` | 管理审查通行证 |
-| `/unverify` | 收回用户的验证结果，让他重新验证（在话题里直接用，或 `/unverify <user_id>`） |
-| `/verify` | 恢复用户的验证状态 |
-| `/group` | 管理用户分组 |
-| `/broadcast` | 发送用户广播 |
-| `/spamrules` | 管理关键词拦截 |
-| `/tgmon` | 管理 TG 监听 |
-| `/webmon` | 管理网页监控 |
-| `/monitor_status` | 查看监听状态 |
-| `/updatebot` | 安全更新机器人（git 部署）；面板中还提供「检查镜像更新 / 确认更新」（Docker 部署，经 Watchtower HTTP API 触发） |
-| `/restart` | 验证 Bot Token 后重启机器人 |
+| 分类 | 命令 | 作用 | 旧名字（仍可使用） |
+| :--- | :--- | :--- | :--- |
+| 日常 | `/todo` | 查看待回复的客人 | `/inbox` |
+| 日常 | `/mobile` | 打开手机管理页（仅私聊） | `/app` |
+| 日常 | `/manage` | 打开管理面板 | `/panel` |
+| 日常 | `/stats` | 查看宅邸统计 | |
+| 用户 | `/ban` | 拉黑用户（话题里可省略 ID） | `/block` |
+| 用户 | `/unban` | 解除拉黑 | `/unblock` |
+| 用户 | `/banlist` | 查看黑名单 | `/blacklist` |
+| 用户 | `/intercepts` | 查看拦截篮 | `/view_filtered` |
+| 用户 | `/pass` | 管理免审查通行证 | `/exempt` |
+| 用户 | `/reverify` | 收回验证让用户重验 | `/unverify` |
+| 用户 | `/trust` | 恢复用户的验证 | `/verify` |
+| 用户 | `/groups` | 管理用户分组 | `/group` |
+| 消息 | `/announce` | 向用户群发公告 | `/broadcast` |
+| 消息 | `/aireply` | 安排 AI 自动回复 | `/autoreply` |
+| 消息 | `/keywords` | 管理关键词拦截 | `/spamrules` |
+| 监控 | `/restock` | 管理补货监控：`list`、`add <名称> <网址> [商品关键词]`、`check <ID>`、`delete <ID>` | |
+| 监控 | `/watch_web` | 管理网页监控 | `/webmon` |
+| 监控 | `/watch_tg` | 管理 TG 群监听 | `/tgmon` |
+| 监控 | `/watch_status` | 查看监控运行状态 | `/monitor_status` |
+| 维护 | `/upgrade` | 检查并更新机器人；面板还提供 Docker 镜像更新 | `/updatebot` |
+| 维护 | `/restart` | 验证 Bot Token 后重启 | |
 
 ### 📰 RSS 命令
 
 仅限私聊。
 
-| 命令 | 描述 |
-| :--- | :--- |
-| `/rss_add <url>` | 添加 RSS 茶点 |
-| `/rss_remove <url\|ID>` | 撤下 RSS 茶点 |
-| `/rss_list` | 查看 RSS 茶点 |
-| `/rss_addkeyword <id> <口味词>` | 添加 RSS 口味词 |
-| `/rss_removekeyword <id> <口味词>` | 删除 RSS 口味词 |
-| `/rss_listkeywords <id>` | 查看 RSS 口味词 |
-| `/rss_removeallkeywords <id>` | 清空 RSS 口味词 |
-| `/rss_setfooter [文本]` | 设置 RSS 小尾巴 |
-| `/rss_togglepreview` | 切换链接预览 |
-| `/rss_add_user <user_id>` | 登记 RSS 授权（管理员） |
-| `/rss_rm_user <user_id>` | 移除 RSS 授权（管理员） |
+| 命令 | 作用 | 旧名字（仍可使用） |
+| :--- | :--- | :--- |
+| `/rss_add <网址>` | 添加订阅 | |
+| `/rss_del <网址\|编号>` | 删除订阅 | `/rss_remove` |
+| `/rss_list` | 查看订阅 | |
+| `/rss_kw_add <编号> <关键词>` | 添加关键词 | `/rss_addkeyword` |
+| `/rss_kw_del <编号> <关键词>` | 删除关键词 | `/rss_removekeyword` |
+| `/rss_kw_list <编号>` | 查看关键词 | `/rss_listkeywords` |
+| `/rss_kw_clear <编号>` | 清空关键词 | `/rss_removeallkeywords` |
+| `/rss_footer [文本]` | 设置消息尾巴 | `/rss_setfooter` |
+| `/rss_preview` | 切换链接预览 | `/rss_togglepreview` |
+| `/rss_allow <user_id>` | 授权用户使用 RSS（管理员） | `/rss_add_user` |
+| `/rss_deny <user_id>` | 收回 RSS 授权（管理员） | `/rss_rm_user` |
+
+### 🌐 网络工具命令
+
+| 命令 | 作用 | 旧名字（仍可使用） |
+| :--- | :--- | :--- |
+| `/ping [目标] [次数]` | Ping 测试 | |
+| `/trace [目标]` | 路由追踪 | `/nexttrace` |
+| `/net_allow <user_id>` | 授权用户使用网络工具（管理员） | `/adduser` |
+| `/net_deny <user_id>` | 收回网络工具授权（管理员） | `/rmuser` |
+| `/net_server_add` | 登记测试服务器（管理员） | `/addserver` |
+| `/net_server_del` | 撤下测试服务器（管理员） | `/rmserver` |
+| `/trace_install` | 安装路由追踪工具（管理员） | `/install_nexttrace` |
 
 ---
 
@@ -1057,7 +1083,7 @@ python -m web_panel.preview              # 打开 http://127.0.0.1:18100
 python -m web_panel.preview --port 19000 # 自定义端口
 ```
 
-> `/updatebot` 安全更新基于 git 工作区，因此需要以 `git clone` 方式部署（而不是下载压缩包）；纯镜像部署改走面板里的「检查镜像更新」。
+> `/upgrade` 安全更新基于 git 工作区，因此需要以 `git clone` 方式部署（而不是下载压缩包）；纯镜像部署改走面板里的「检查镜像更新」。
 
 ### 代码结构
 
@@ -1099,7 +1125,7 @@ python -m web_panel.preview --port 19000 # 自定义端口
 - [ ] 备份使用 `sqlite3 data/bot.db ".backup backup.db"`，不要直接 `cp` 主库文件（WAL 模式下最新数据可能在 `-wal` 里）
 - [ ] 数据库目录避开 NFS / SMB 与 Docker Desktop 的 WSL2 / virtiofs bind mount，这类环境改用 named volume
 - [ ] 确认 AI API Key 额度：无 Key 时人机验证走**本地题库**兜底，但 AI 内容审查会放行、知识库自动回复不会回复
-- [ ] 用 `git clone` 部署（而非下载压缩包），否则 `/updatebot` 无法工作；纯镜像部署改用面板里的「检查镜像更新」
+- [ ] 用 `git clone` 部署（而非下载压缩包），否则 `/upgrade` 无法工作；纯镜像部署改用面板里的「检查镜像更新」
 
 ---
 
@@ -1112,7 +1138,7 @@ python -m web_panel.preview --port 19000 # 自定义端口
 
 1. **触发限速**：收到限速提醒后继续刷屏会被自动拉黑；
 2. **被拉黑**：永久拉黑直接拒绝，临时拉黑需完成 AI 解封挑战；
-3. **命中关键词广告拦截**：消息进入拦截篮，管理员可用 `/view_filtered` 查看；
+3. **命中关键词广告拦截**：消息进入拦截篮，管理员可用 `/intercepts` 查看；
 4. **未通过 AI 人机验证**：新用户首次发消息会收到验证题，答对后才递送；
 5. **AI 审查判为垃圾**：同样进入拦截篮，不会转发到话题群。
 
@@ -1121,7 +1147,7 @@ python -m web_panel.preview --port 19000 # 自定义端口
 <details>
 <summary><strong>如何获取群组 ID？</strong></summary>
 
-把机器人加为群组管理员，在群里发送 `/getid`，机器人会回复群组 ID 和用户 ID。
+把机器人加为群组管理员，在群里发送 `/myid`，机器人会回复群组 ID 和用户 ID。
 
 </details>
 
@@ -1138,39 +1164,39 @@ python -m web_panel.preview --port 19000 # 自定义端口
 </details>
 
 <details>
-<summary><strong><code>/updatebot apply</code> 失败了怎么办？</strong></summary>
+<summary><strong><code>/upgrade apply</code> 失败了怎么办？</strong></summary>
 
-失败是保护机制生效：本地有未提交改动、本地分支领先远端、或没有可用的回滚点。先提交 / 清理本地改动再重试；`/updatebot rollback` 可回滚到上一次更新前。
+失败是保护机制生效：本地有未提交改动、本地分支领先远端、或没有可用的回滚点。先提交 / 清理本地改动再重试；`/upgrade rollback` 可回滚到上一次更新前。
 
-如果机器人跑在 Docker 里、服务器上没有 git 仓库（例如镜像是 CI 构建后直接拉取的），`/updatebot` 会没有可用更新点。这种情况改用面板里的**「检查镜像更新」→「确认更新」**，由 Watchtower 拉新镜像并重建容器，详见 [watchtower/README.md](watchtower/README.md)。
+如果机器人跑在 Docker 里、服务器上没有 git 仓库（例如镜像是 CI 构建后直接拉取的），`/upgrade` 会没有可用更新点。这种情况改用面板里的**「检查镜像更新」→「确认更新」**，由 Watchtower 拉新镜像并重建容器，详见 [watchtower/README.md](watchtower/README.md)。
 
 </details>
 
 <details>
 <summary><strong>验证失败被拉黑，还能解封吗？</strong></summary>
 
-临时拉黑可重新发消息触发 AI 解封挑战自动开门；永久拉黑（管理员 `/block`、关键词拦截自动拉黑、多次超限等）只能由管理员 `/unblock` 解封。
+临时拉黑可重新发消息触发 AI 解封挑战自动开门；永久拉黑（管理员 `/ban`、关键词拦截自动拉黑、多次超限等）只能由管理员 `/unban` 解封。
 
 </details>
 
 <details>
-<summary><strong>为什么 <code>/tgmon discovered</code> 看不到我的论坛群？</strong></summary>
+<summary><strong>为什么 <code>/watch_tg discovered</code> 看不到我的论坛群？</strong></summary>
 
-这是刻意设计：论坛话题群自身（`FORUM_GROUP_ID`）不会再被记录进发现列表，避免污染 `/tgmon discovered`；其余群 / 频道照常被发现与监听。
+这是刻意设计：论坛话题群自身（`FORUM_GROUP_ID`）不会再被记录进发现列表，避免污染 `/watch_tg discovered`；其余群 / 频道照常被发现与监听。
 
 </details>
 
 <details>
 <summary><strong>网页监控添加后为什么不推送？</strong></summary>
 
-首次检查只建立基线、不推送已有内容；之后出现新条目、关键词命中或内容 / 价格 / 库存变化才会推送。可先用 `/webmon run <ID>` 手动触发一次检查验证。
+首次检查只建立基线、不推送已有内容；之后出现新条目、关键词命中或内容 / 价格 / 库存变化才会推送。可先用 `/watch_web run <ID>` 手动触发一次检查验证。
 
 </details>
 
 <details>
 <summary><strong>RSS 命令没反应怎么办？</strong></summary>
 
-RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_IDS` 中的用户可用；另外 `RSS_ENABLED` 默认 `false`，未开启时不会轮询推送（可在 `/panel` → RSS 功能管理中开启）。
+RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_IDS` 中的用户可用；另外 `RSS_ENABLED` 默认 `false`，未开启时不会轮询推送（可在 `/manage` → RSS 功能管理中开启）。
 
 </details>
 
@@ -1198,7 +1224,7 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 <details>
 <summary><strong>如何让用户使用网络测试功能？</strong></summary>
 
-管理员执行 `/adduser <user_id>` 把用户加入授权名单（数据保存在 `data/network_test_config.json`）；授权用户即可使用 `/ping` 与 `/nexttrace`。移除授权用 `/rmuser <user_id>`。
+管理员执行 `/net_allow <user_id>` 把用户加入授权名单（数据保存在 `data/network_test_config.json`）；授权用户即可使用 `/ping` 与 `/trace`。移除授权用 `/net_deny <user_id>`。
 
 </details>
 
@@ -1241,7 +1267,7 @@ RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_ID
 
 **片刻月**（[@PivKeyU](https://github.com/PivKeyU)）设计并开发。
 
-运行中的机器人会在这些地方显示作者署名：`/start` 欢迎语、`/help` 小手册、`/panel` 管理面板、Web 面板的登录页和侧栏底部，以及启动日志。署名统一定义在 `utils/about.py`（Web 面板在 `web_panel/static/js/app.js` 的 `ABOUT` 常量），二次分发时请保留。
+运行中的机器人会在这些地方显示作者署名：`/start` 欢迎语、`/help` 小手册、`/manage` 管理面板、Web 面板的登录页和侧栏底部，以及启动日志。署名统一定义在 `utils/about.py`（Web 面板在 `web_panel/static/js/app.js` 的 `ABOUT` 常量），二次分发时请保留。
 
 ## 📄 许可证
 

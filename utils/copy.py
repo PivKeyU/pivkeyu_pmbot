@@ -178,7 +178,7 @@ def nt_no_pass(user_id: int) -> str:
     """网络测试命令：当前账号还没有授权通行证（读者是普通用户）。"""
     return with_deco_head(
         (
-            '客人还没有使用网络测试茶具的通行证\n\n当前 ID：`{user_id}`\n\n请联系管理员女仆长使用 `/adduser {user_id}` 把客人加入授权名单。'
+            '客人还没有使用网络测试茶具的通行证\n\n当前 ID：`{user_id}`\n\n请联系管理员女仆长使用 `/net_allow {user_id}` 把客人加入授权名单。'
         ).format(user_id=user_id),
         'DENY',
     )
@@ -367,7 +367,7 @@ def kb_edit_hint(entry_id: int, entry_title: str, entry_content, kb_id: int) -> 
     return with_deco_head(
         (
             '修改知识便签\n\nID: {entry_id}\n标题: {entry_title}\n内容: {entry_content}\n\n主人，请这样让女仆修改：\n'
-            '`/autoreply edit {kb_id} <新标题> <新内容>`\n\n示例：\n`/autoreply edit {kb_id} 新标题 新内容`'
+            '`/aireply edit {kb_id} <新标题> <新内容>`\n\n示例：\n`/aireply edit {kb_id} 新标题 新内容`'
         ).format(entry_id=entry_id, entry_title=entry_title, entry_content=entry_content, kb_id=kb_id),
         'ASK',
     )
@@ -389,7 +389,7 @@ def kb_deleted(entry_title: str) -> str:
 def kb_add_hint() -> str:
     """知识小本本：新增便签的用法提示（含命令语法）。"""
     return with_deco_head(
-        '新增知识便签\n\n主人，请这样交给女仆新便签：\n`/autoreply add <标题> <内容>`\n\n示例：\n`/autoreply add 常见问题 这是问题的答案`',
+        '新增知识便签\n\n主人，请这样交给女仆新便签：\n`/aireply add <标题> <内容>`\n\n示例：\n`/aireply add 常见问题 这是问题的答案`',
         'ASK',
     )
   # 2 处
@@ -516,7 +516,7 @@ def nt_server_removed(name, host) -> str:
 def nt_server_index_stale() -> str:
     """网络测试：服务器索引过期，列表已变。"""
     return with_deco(
-        '服务器索引不对劲，可能列表已经更新，主人重新执行一次 /rmserver 嘛。',
+        '服务器索引不对劲，可能列表已经更新，主人重新执行一次 /net_server_del 嘛。',
         'ERROR',
     )
 
@@ -530,11 +530,11 @@ BTN_NT_IPV6 = 'IPv6'  # 2 处
 BTN_NT_TCP = 'TCP 模式'  # 2 处
 
 def nt_addserver_hint() -> str:
-    """网络测试：/addserver 的两种登记方式（含命令语法）。"""
+    """网络测试：/net_server_add 的两种登记方式（含命令语法）。"""
     return with_deco_head(
-'主人可以用两种方式登记服务器：\n\n1. 直接输入 /addserver 启动交互式登记向导\n2. 一次性交给女仆所有参数：\n'
-        '   /addserver <名称> <host> <port> <username> <password>\n\n名称可以包含空格，但需要用引号括起来，例如：\n'
-        '/addserver "香港 - GCP" 1.2.3.4 22 user pass',
+'主人可以用两种方式登记服务器：\n\n1. 直接输入 /net_server_add 启动交互式登记向导\n2. 一次性交给女仆所有参数：\n'
+        '   /net_server_add <名称> <host> <port> <username> <password>\n\n名称可以包含空格，但需要用引号括起来，例如：\n'
+        '/net_server_add "香港 - GCP" 1.2.3.4 22 user pass',
         'ASK',
     )
   # 2 处
@@ -596,9 +596,9 @@ def nt_no_servers_registered() -> str:
 
 
 def nt_no_servers_registered_hint() -> str:
-    """网络测试：还没登记服务器，附 /addserver 提示。"""
+    """网络测试：还没登记服务器，附 /net_server_add 提示。"""
     return with_deco(
-        '主人还没有登记过任何服务器呢。先用 /addserver 把服务器交给女仆吧。',
+        '主人还没有登记过任何服务器呢。先用 /net_server_add 把服务器交给女仆吧。',
         'EMPTY',
     )
 
@@ -614,15 +614,15 @@ def nt_remove_cancelled() -> str:
 def nt_server_list_stale() -> str:
     """网络测试：选中的服务器对不上号。"""
     return with_deco(
-        '服务器列表已经变过，选中的那台对不上号，主人重新执行一次 /rmserver 嘛。',
+        '服务器列表已经变过，选中的那台对不上号，主人重新执行一次 /net_server_del 嘛。',
         'ERROR',
     )
 
 
 def nt_rmserver_hint() -> str:
-    """网络测试：/rmserver 用法提示（含命令语法）。"""
+    """网络测试：/net_server_del 用法提示（含命令语法）。"""
     return with_deco_head(
-'直接输入 /rmserver 可以查看所有服务器并选择要撤下的服务器。\n\n如果要直接指定撤下，女仆小抄：/rmserver <服务器名字>\n'
+'直接输入 /net_server_del 可以查看所有服务器并选择要撤下的服务器。\n\n如果要直接指定撤下，女仆小抄：/net_server_del <服务器名字>\n'
         '如果服务器名称包含空格，请用引号括起来，例如：\n/rmserver "香港 - GCP"',
         'ASK',
     )
@@ -988,7 +988,7 @@ THREAD_CLOSED_REVERIFY = (
 # 查看 ID
 # ==========================================================================
 
-# ``/getid`` 对所有人开放，管理员也会用同一条命令，所以这两条属于 SHARED：
+# ``/myid`` 对所有人开放，管理员也会用同一条命令，所以这两条属于 SHARED：
 # 跟消息递送那三条一样做成带 ``display_name`` 的函数，不做成单一档。
 
 
@@ -1026,6 +1026,8 @@ VERIFY_TURNSTILE_PASSED = '验证通过啦，女仆为客人开门。'
 BTN_VERIFY_TURNSTILE = '点我验证'
 
 BTN_VERIFY_FALLBACK = '打不开？换普通验证题'
+
+VERIFY_TURNSTILE_FAILED = '人机验证没有通过，女仆换一道普通验证题给客人。'
 
 MINIAPP_NOT_READY = 'Mini App 还没启用，请先配置 https 开头的 MINIAPP_PUBLIC_URL。'
 
@@ -1164,8 +1166,8 @@ BTN_IMAGE_APPLY = '确认更新'
 
 IMAGE_UPDATE_NOT_IN_DOCKER = (
     '当前不是 Docker 容器环境，镜像更新这条路走不通哦。\n\n'
-    '主人可以用 Git 更新：/updatebot status 查看、/updatebot apply 执行、'
-    '/updatebot rollback 回滚。'
+    '主人可以用 Git 更新：/upgrade status 查看、/upgrade apply 执行、'
+    '/upgrade rollback 回滚。'
 )
 
 

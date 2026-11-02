@@ -110,14 +110,14 @@ def _build_rss_panel_view():
         "",
         "常用命令（请在私聊吩咐女仆）：",
         "/rss_add <url>",
-        "/rss_remove <url|ID>",
+        "/rss_del <url|ID>",
         "/rss_list",
-        "/rss_addkeyword <ID> <关键词>",
-        "/rss_removekeyword <ID> <关键词>",
-        "/rss_listkeywords <ID>",
-        "/rss_removeallkeywords <ID>",
-        "/rss_setfooter [文本]",
-        "/rss_togglepreview",
+        "/rss_kw_add <ID> <关键词>",
+        "/rss_kw_del <ID> <关键词>",
+        "/rss_kw_list <ID>",
+        "/rss_kw_clear <ID>",
+        "/rss_footer [文本]",
+        "/rss_preview",
     ]
 
     keyboard = [
@@ -298,14 +298,14 @@ async def _build_spamrules_view():
         ],
         [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
     ]
-    return text + "\n\n命令管理: /spamrules", InlineKeyboardMarkup(keyboard)
+    return text + "\n\n命令管理: /keywords", InlineKeyboardMarkup(keyboard)
 
 
 def _git_updatebot_view_text(status, rollback, note: str = "") -> str:
     """Git 更新面板的正文。note 用于附加一句说明（例如镜像检查失败的原因）。"""
     text = (
         safe_update.format_status(status, rollback)
-        + "\n\n执行更新: /updatebot apply\n执行回滚: /updatebot rollback"
+        + "\n\n执行更新: /upgrade apply\n执行回滚: /upgrade rollback"
     )
     if note:
         text += "\n\n" + note
@@ -359,7 +359,7 @@ async def _build_updatebot_view():
         if image_update.detect_container():
             status = await image_update.check_for_update()
             text, keyboard = await _build_image_update_view(status)
-            text += "\n\nGit 更新: /updatebot status|apply|rollback"
+            text += "\n\nGit 更新: /upgrade status|apply|rollback"
             return text, keyboard
     except Exception:
         # 异常详情只进日志，给主人的是一句简短说明 + 可用的 Git 面板
@@ -559,7 +559,19 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         await answer_callback(notice, show_alert=True)
         return
 
-    if data.startswith(("appeal_ok:", "appeal_no:", "appeal_custom:")):
+    if data.startswith("appeal_resume:"):
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
+        appeal = await db.get_review_appeal(int(data.split(":")[1]))
+        if not appeal:
+            await answer_callback(copy_text.with_deco("这条申请找不到啦。", 'ERROR'), show_alert=True)
+            return
+        cancelled = await moderation.cancel_pause_from_topic(context.bot, appeal, 'TG 话题')
+        await answer_callback(copy_text.with_deco("已取消免审查。" if cancelled else "这次免审查已经结束啦。", 'OK'))
+        return
+
+    if data.startswith(("appeal_ok:", "appeal_no:", "appeal_cancel:", "appeal_custom:")):
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
@@ -579,6 +591,9 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         elif parts[0] == "appeal_no":
             await moderation.reject_appeal(context.bot, appeal['user_id'], user_id, 'TG 话题')
             await answer_callback(copy_text.with_deco("已拒绝这条申请。", 'OK'))
+        elif parts[0] == "appeal_cancel":
+            await moderation.cancel_appeal(context.bot, appeal['user_id'], user_id, 'TG 话题')
+            await answer_callback(copy_text.with_deco("已取消这条申请。", 'OK'))
         else:
             await moderation.ask_custom_duration(context.bot, context.application, appeal)
             await answer_callback(copy_text.with_deco("请回复女仆刚发的那条消息，告诉女仆要暂停多久。", 'ASK'))
@@ -645,7 +660,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         if not groups:
             await query.edit_message_text(
                 copy_text.with_deco(
-                    "主人还没有建过任何分组呢。用 /group create <分组名> 现建一个吧。",
+                    "主人还没有建过任何分组呢。用 /groups create <分组名> 现建一个吧。",
                     'EMPTY',
                 ),
                 reply_markup=broadcast_service.build_broadcast_panel_keyboard(),
@@ -1119,7 +1134,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             # 异常详情只进日志，给主人的是简短说明
             logging.exception("检查镜像更新失败")
             message = ("女仆这次没查到镜像的更新情况呢，主人稍后再试一次吧。"
-                       "\n\nGit 更新: /updatebot status|apply|rollback")
+                       "\n\nGit 更新: /upgrade status|apply|rollback")
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
             ])
@@ -1755,11 +1770,11 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             copy_text.with_deco_head(
                 "路由追踪\n\n"
                 "女仆小抄：\n"
-                "`/nexttrace` - 交互式选择服务器和模式\n"
-                "`/nexttrace <目标>` - 直接指定目标\n\n"
+                "`/trace` - 交互式选择服务器和模式\n"
+                "`/trace <目标>` - 直接指定目标\n\n"
                 "示例：\n"
-                "`/nexttrace 8.8.8.8`\n"
-                "`/nexttrace google.com`",
+                "`/trace 8.8.8.8`\n"
+                "`/trace google.com`",
                 'ASK',
             ),
             parse_mode='Markdown',
@@ -1783,9 +1798,9 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             copy_text.with_deco_head(
                 "登记授权主人\n\n"
                 "请这样吩咐女仆：\n"
-                "`/adduser <user_id>`\n\n"
+                "`/net_allow <user_id>`\n\n"
                 "示例：\n"
-                "`/adduser 123456789`",
+                "`/net_allow 123456789`",
                 'ASK',
             ),
             parse_mode='Markdown',
@@ -1809,9 +1824,9 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             copy_text.with_deco_head(
                 "移除授权主人\n\n"
                 "请这样吩咐女仆：\n"
-                "`/rmuser <user_id>`\n\n"
+                "`/net_deny <user_id>`\n\n"
                 "示例：\n"
-                "`/rmuser 123456789`",
+                "`/net_deny 123456789`",
                 'ASK',
             ),
             parse_mode='Markdown',

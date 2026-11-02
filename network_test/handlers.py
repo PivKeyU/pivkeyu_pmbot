@@ -71,7 +71,7 @@ async def callback_handler(update, context, answer_callback=None):
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=copy_text.with_deco("服务器索引不对劲，可能列表已更新，请主人重新执行 /install_nexttrace。", 'ERROR')
+                text=copy_text.with_deco("服务器索引不对劲，可能列表已更新，请主人重新执行 /trace_install。", 'ERROR')
             )
             
             context.application.create_task(
@@ -656,7 +656,7 @@ async def handle_message(update, context):
                 copy_text.with_deco("命令式模式不用再输入 IP 啦，想重新测试就用 /ping 吩咐女仆。", 'ASK'))
         elif info.get("operation") == "nexttrace":
             await update.message.reply_text(
-                copy_text.with_deco("命令式模式不用再输入 IP 啦，想重新测试就用 /nexttrace 吩咐女仆。", 'ASK'))
+                copy_text.with_deco("命令式模式不用再输入 IP 啦，想重新测试就用 /trace 吩咐女仆。", 'ASK'))
         return True
 
     if not info.get("target"):

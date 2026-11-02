@@ -1,6 +1,7 @@
 import logging
 import os
 from telegram.ext import Application, CommandHandler, filters
+from utils.commands import names_for
 from telegram.ext import Job
 from typing import Optional
 from . import data_manager, feed_checker, handlers as rss_handlers, settings
@@ -66,7 +67,7 @@ def setup(app: Application) -> None:
         # 与 handlers/__init__.py 同样的理由：CommandHandler 默认 filters 是 UpdateType.MESSAGES，
         # 会把「编辑成命令」的 Update 也放进来，而那种 Update 的 update.message 是 None。
         app.add_handler(CommandHandler(
-            command,
+            names_for(command),
             handler,
             filters=filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE,
         ))

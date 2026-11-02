@@ -1,15 +1,61 @@
-/* 订阅与监控：RSS 订阅 / TG 群监听 / 网页监控。 */
+/* 订阅与监控：RSS 订阅 / TG 群监听 / 网页监控 / 补货监控 / 监控结果。 */
 
 import { api } from '../api.js';
-import { el, clear, spinner, toast, badge, confirmDialog, table, switchBox, chips, fmtTime } from '../ui.js';
+import { el, clear, spinner, toast, badge, confirmDialog, table, pager, switchBox, chips, selectInput, fmtTime } from '../ui.js';
+
+const EVENT_PAGE_SIZE = 20;
+const EVENT_SOURCES = {
+  stock: ['补货', 'ok'],
+  web: ['网页', ''],
+  tg: ['TG', 'accent'],
+  rss: ['RSS', ''],
+};
+const STOCK_STATES = { in: ['有货', 'ok'], out: ['缺货', 'danger'] };
 
 const state = { tab: 'rss' };
+
+/* 机器人推送设置：网页、补货和 TG 监听的表单共用 */
+function pushFields(monitor) {
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = !monitor || monitor.notify_telegram !== false;
+  const targets = el('input', {
+    class: 'input',
+    value: (monitor && monitor.notify_chat_ids) || '',
+    placeholder: '留空推送给默认目标；多个 chat_id 用逗号分隔',
+  });
+  return {
+    nodes: [
+      el('label', { class: 'small', style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' } }, enabled, '命中后由机器人推送消息'),
+      el('div', { class: 'field' }, el('label', {}, '推送目标'), targets),
+    ],
+    values: () => ({ notify_telegram: enabled.checked, notify_chat_ids: targets.value.trim() }),
+  };
+}
+
+function runButton(row, reload) {
+  const button = el('button', { class: 'btn sm' }, '立即检查');
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try {
+      const result = await api.post(`/api/web-monitors/${row.id}/run`);
+      if (result.error) toast(result.error, 'error');
+      else toast(result.sent ? `检查完成，推送了 ${result.sent} 条` : '检查完成，没有需要推送的变化', 'ok');
+      reload();
+    } catch (err) {
+      toast(err.message, 'error');
+      button.disabled = false;
+    }
+  });
+  return button;
+}
 
 function tabsBar(onChange) {
   const tabs = [
     ['rss', 'RSS 订阅'],
     ['tg', 'TG 群监听'],
     ['web', '网页监控'],
+    ['stock', '补货监控'],
+    ['events', '监控结果'],
   ];
   const bar = el('div', { class: 'tabs' });
   for (const [id, label] of tabs) {
@@ -343,6 +389,7 @@ async function renderTg(container) {
     sourceSelect.value = monitor ? monitor.listen_source : 'user_session';
     const minIntervalInput = el('input', { class: 'input', type: 'number', value: String(monitor ? monitor.min_interval_seconds : 30) });
     const dedupeInput = el('input', { class: 'input', type: 'number', value: String(monitor ? monitor.dedupe_window_seconds : 300) });
+    const push = pushFields(monitor);
 
     const mask = el('div', { class: 'modal-mask' });
     const close = () => mask.remove();
@@ -361,6 +408,7 @@ async function renderTg(container) {
           el('div', { class: 'field grow' }, el('label', {}, '最小推送间隔（秒）'), minIntervalInput),
           el('div', { class: 'field grow' }, el('label', {}, '去重窗口（秒）'), dedupeInput),
         ),
+        push.nodes,
       ),
       el('footer', {},
         el('button', { class: 'btn', onClick: close }, '取消'),
@@ -376,6 +424,7 @@ async function renderTg(container) {
               listen_source: sourceSelect.value,
               min_interval_seconds: Number(minIntervalInput.value || 30),
               dedupe_window_seconds: Number(dedupeInput.value || 300),
+              ...push.values(),
             };
             if (!payload.name || !payload.chat_id) {
               toast('名称与 chat_id 不能为空', 'error');
@@ -427,7 +476,12 @@ async function renderWeb(container) {
         { title: '网址', render: (row) => el('a', { href: row.url, target: '_blank', rel: 'noopener', class: 'small' }, row.url.slice(0, 55)) },
         { title: '关键词', render: (row) => (row.keywords && row.keywords.length ? chips(row.keywords) : el('span', { class: 'muted small' }, '（新条目）')) },
         { title: '间隔', render: (row) => `${row.interval_seconds}s` },
-        { title: '最近检查', render: (row) => fmtTime(row.last_checked_at) },
+        {
+          title: '最近检查',
+          render: (row) => el('div', {}, fmtTime(row.last_checked_at),
+            row.last_error ? el('div', { class: 'small', style: { color: 'var(--danger, #c0392b)' } }, row.last_error.slice(0, 80)) : null),
+        },
+        { title: '推送', render: (row) => (row.notify_telegram ? badge('开', 'ok') : badge('关', '')) },
         {
           title: '启用',
           render: (row) => switchBox({
@@ -443,7 +497,8 @@ async function renderWeb(container) {
         {
           title: '',
           className: 'actions',
-          render: (row) => el('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end' } },
+          render: (row) => el('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' } },
+            runButton(row, reload),
             el('button', { class: 'btn sm', onClick: () => openForm(row) }, '编辑'),
             el('button', {
               class: 'btn sm danger',
@@ -474,6 +529,7 @@ async function renderWeb(container) {
     const linkSelector = el('input', { class: 'input', value: monitor ? monitor.link_selector : '', placeholder: '默认 a' });
     const priceSelector = el('input', { class: 'input', value: monitor ? monitor.price_selector : '', placeholder: '价格元素选择器（可留空）' });
     const stockSelector = el('input', { class: 'input', value: monitor ? monitor.stock_selector : '', placeholder: '库存元素选择器（可留空）' });
+    const push = pushFields(monitor);
 
     const mask = el('div', { class: 'modal-mask' });
     const close = () => mask.remove();
@@ -496,6 +552,7 @@ async function renderWeb(container) {
             el('div', { class: 'field grow' }, el('label', {}, '库存选择器'), stockSelector),
           ),
         ),
+        push.nodes,
       ),
       el('footer', {},
         el('button', { class: 'btn', onClick: close }, '取消'),
@@ -512,6 +569,7 @@ async function renderWeb(container) {
               link_selector: linkSelector.value.trim(),
               price_selector: priceSelector.value.trim(),
               stock_selector: stockSelector.value.trim(),
+              ...push.values(),
             };
             if (!payload.name || !payload.url) {
               toast('名称与网址不能为空', 'error');
@@ -534,6 +592,245 @@ async function renderWeb(container) {
   }
 }
 
+/* ------------------------------------------------------------ 补货监控 */
+
+function stockBadge(row) {
+  const [text, kind] = STOCK_STATES[row.stock_state] || ['未判断', ''];
+  return badge(text, kind);
+}
+
+async function renderStock(container) {
+  const reload = () => {
+    clear(container);
+    renderStock(container);
+  };
+  container.appendChild(spinner());
+  let data;
+  try {
+    data = await api.get('/api/web-monitors?type=stock');
+  } catch (err) {
+    clear(container);
+    container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
+    return;
+  }
+  clear(container);
+
+  container.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '补货监控', el('span', { class: 'sub' }, `共 ${data.items.length} 个`)),
+      el('button', { class: 'btn sm primary', onClick: () => openForm(null) }, '新增商品'),
+    ),
+    el('div', { class: 'small muted', style: { marginBottom: '8px' } }, '从缺货变成有货时由机器人推送。只能读取服务器直接返回的网页内容，靠浏览器脚本加载库存的页面判断不了。'),
+    table({
+      columns: [
+        { title: '商品', render: (row) => el('div', {}, row.name, row.stock_title ? el('div', { class: 'muted small' }, row.stock_title.slice(0, 60)) : null) },
+        { title: '状态', render: stockBadge },
+        { title: '价格', render: (row) => row.stock_price || '-' },
+        { title: '间隔', render: (row) => `${Math.round(row.interval_seconds / 60)} 分钟` },
+        {
+          title: '最近检查',
+          render: (row) => el('div', {}, fmtTime(row.last_checked_at),
+            row.last_error ? el('div', { class: 'small', style: { color: 'var(--danger, #c0392b)' } }, row.last_error.slice(0, 80)) : null),
+        },
+        {
+          title: '启用',
+          render: (row) => switchBox({
+            checked: !!row.enabled,
+            onChange: async (checked) => {
+              try {
+                await api.put(`/api/web-monitors/${row.id}`, { enabled: checked });
+                toast('已更新', 'ok');
+              } catch (err) { toast(err.message, 'error'); }
+            },
+          }),
+        },
+        {
+          title: '',
+          className: 'actions',
+          render: (row) => el('div', { style: { display: 'flex', gap: '6px', justifyContent: 'flex-end', flexWrap: 'wrap' } },
+            runButton(row, reload),
+            el('button', { class: 'btn sm', onClick: () => openForm(row) }, '编辑'),
+            el('button', {
+              class: 'btn sm danger',
+              onClick: async () => {
+                if (!(await confirmDialog({ title: '删除补货监控', message: `确定删除「${row.name}」吗？`, confirmText: '删除' }))) return;
+                try {
+                  await api.del(`/api/web-monitors/${row.id}`);
+                  toast('已删除', 'ok');
+                  reload();
+                } catch (err) { toast(err.message, 'error'); }
+              },
+            }, '删除'),
+          ),
+        },
+      ],
+      rows: data.items,
+      empty: '还没有补货监控，点「新增商品」填上商品网址就行。',
+    }),
+  ));
+
+  function openForm(monitor) {
+    const value = (key) => (monitor && monitor[key]) || '';
+    const nameInput = el('input', { class: 'input', value: value('name'), placeholder: '比如 显卡 RTX' });
+    const urlInput = el('input', { class: 'input', type: 'url', value: value('url'), placeholder: 'https://shop.example.com/item/123' });
+    const keywordInput = el('input', { class: 'input', value: value('product_keyword'), placeholder: '列表页才需要，填商品名里的关键词' });
+    const intervalInput = el('input', { class: 'input', type: 'number', min: '1', value: String(monitor ? Math.round(monitor.interval_seconds / 60) : 5) });
+    const stockSelector = el('input', { class: 'input', value: value('stock_selector'), placeholder: '例如 .stock-status，判断不准时再填' });
+    const priceSelector = el('input', { class: 'input', value: value('price_selector'), placeholder: '例如 .price（可留空）' });
+    const inWords = el('input', { class: 'input', value: value('in_stock_words'), placeholder: '留空用默认：有货、现货、加入购物车、in stock……' });
+    const outWords = el('input', { class: 'input', value: value('out_of_stock_words'), placeholder: '留空用默认：缺货、售罄、无货、sold out……' });
+    const push = pushFields(monitor);
+    const resultNode = el('div', { class: 'small', style: { marginTop: '8px' } });
+
+    const formValues = () => ({
+      name: nameInput.value.trim(),
+      url: urlInput.value.trim(),
+      product_keyword: keywordInput.value.trim(),
+      stock_selector: stockSelector.value.trim(),
+      price_selector: priceSelector.value.trim(),
+      in_stock_words: inWords.value.trim(),
+      out_of_stock_words: outWords.value.trim(),
+    });
+
+    const testButton = el('button', { class: 'btn' }, '先试一次');
+    testButton.addEventListener('click', async () => {
+      testButton.disabled = true;
+      resultNode.textContent = '正在打开页面……';
+      try {
+        const result = await api.post('/api/web-monitors/preview', formValues());
+        const [text] = STOCK_STATES[result.state] || ['判断不出来'];
+        resultNode.textContent = [`结果：${text}`, result.title, result.price, result.evidence].filter(Boolean).join(' · ');
+      } catch (err) {
+        resultNode.textContent = err.message;
+      } finally {
+        testButton.disabled = false;
+      }
+    });
+
+    const mask = el('div', { class: 'modal-mask' });
+    const close = () => mask.remove();
+    mask.appendChild(el('div', { class: 'modal wide' },
+      el('header', {}, monitor ? '编辑补货监控' : '新增补货监控'),
+      el('div', { class: 'body' },
+        el('div', { class: 'field' }, el('label', {}, '名称'), nameInput),
+        el('div', { class: 'field' }, el('label', {}, '商品网址'), urlInput),
+        el('div', { class: 'row' },
+          el('div', { class: 'field grow' }, el('label', {}, '商品关键词'), keywordInput),
+          el('div', { class: 'field', style: { width: '130px' } }, el('label', {}, '检查间隔（分钟）'), intervalInput),
+        ),
+        el('details', {},
+          el('summary', { class: 'small muted', style: { cursor: 'pointer', marginBottom: '8px' } }, '判断规则（高级）'),
+          el('div', { class: 'field' }, el('label', {}, '库存选择器'), stockSelector),
+          el('div', { class: 'field' }, el('label', {}, '价格选择器'), priceSelector),
+          el('div', { class: 'field' }, el('label', {}, '有货字样（逗号分隔）'), inWords),
+          el('div', { class: 'field' }, el('label', {}, '缺货字样（逗号分隔）'), outWords),
+        ),
+        push.nodes,
+        resultNode,
+      ),
+      el('footer', {},
+        el('button', { class: 'btn', onClick: close }, '取消'),
+        testButton,
+        el('button', {
+          class: 'btn primary',
+          onClick: async () => {
+            const payload = {
+              ...formValues(),
+              ...push.values(),
+              monitor_type: 'stock',
+              interval_seconds: Math.max(1, Number(intervalInput.value || 5)) * 60,
+            };
+            if (!payload.name || !payload.url) {
+              toast('名称与商品网址不能为空', 'error');
+              return;
+            }
+            try {
+              if (monitor) await api.put(`/api/web-monitors/${monitor.id}`, payload);
+              else await api.post('/api/web-monitors', payload);
+              toast('已保存', 'ok');
+              close();
+              reload();
+            } catch (err) { toast(err.message, 'error'); }
+          },
+        }, '保存'),
+      ),
+    ));
+    mask.addEventListener('click', (event) => { if (event.target === mask) close(); });
+    document.body.appendChild(mask);
+    nameInput.focus();
+  }
+}
+
+/* ------------------------------------------------------------ 监控结果 */
+
+async function renderEvents(container, filter = { source: '', page: 1 }) {
+  const reload = (next) => {
+    clear(container);
+    renderEvents(container, { ...filter, ...next });
+  };
+  container.appendChild(spinner());
+  let data;
+  try {
+    const params = new URLSearchParams({ page: String(filter.page), per_page: String(EVENT_PAGE_SIZE) });
+    if (filter.source) params.set('source', filter.source);
+    data = await api.get(`/api/monitor-events?${params}`);
+  } catch (err) {
+    clear(container);
+    container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
+    return;
+  }
+  clear(container);
+
+  const sourceSelect = selectInput({
+    options: [{ value: '', label: '全部来源' }, ...Object.entries(EVENT_SOURCES).map(([value, [label]]) => ({ value, label }))],
+    value: filter.source,
+    onChange: (source) => reload({ source, page: 1 }),
+  });
+  const testButton = el('button', { class: 'btn sm' }, '测试推送');
+  testButton.addEventListener('click', async () => {
+    try {
+      const result = await api.post('/api/monitor-push-test');
+      toast(`已发送 ${result.sent}/${result.total} 条测试消息`, result.sent ? 'ok' : 'error');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  container.appendChild(el('div', { class: 'card' },
+    el('div', { class: 'card-head' },
+      el('h3', {}, '监控结果', el('span', { class: 'sub' }, `共 ${data.total} 条`)),
+      el('div', { class: 'row' }, sourceSelect, testButton),
+    ),
+    table({
+      columns: [
+        { title: '时间', render: (row) => fmtTime(row.created_at) },
+        {
+          title: '来源',
+          render: (row) => {
+            const [text, kind] = EVENT_SOURCES[row.source] || [row.source, ''];
+            return badge(text, kind);
+          },
+        },
+        { title: '监控', render: (row) => row.monitor_name || '-' },
+        {
+          title: '内容',
+          render: (row) => el('div', { class: 'match-cell' },
+            row.link ? el('a', { href: row.link, target: '_blank', rel: 'noopener' }, row.title || row.link) : (row.title || '-'),
+            row.detail ? el('div', { class: 'muted small' }, row.detail.slice(0, 200)) : null,
+          ),
+        },
+        { title: '推送', render: (row) => (row.pushed_count ? `${row.pushed_count} 条` : '未推送') },
+      ],
+      rows: data.items,
+      empty: '还没有监控结果，命中后会出现在这里。',
+    }),
+    pager({
+      page: data.page,
+      totalPages: data.total_pages,
+      total: data.total,
+      onChange: (page) => reload({ page }),
+    }),
+  ));
+}
+
 export default {
   title: 'RSS / 监控',
   render(container) {
@@ -545,6 +842,8 @@ export default {
       clear(body);
       if (state.tab === 'rss') return renderRss(body);
       if (state.tab === 'tg') return renderTg(body);
+      if (state.tab === 'stock') return renderStock(body);
+      if (state.tab === 'events') return renderEvents(body);
       return renderWeb(body);
     }
 

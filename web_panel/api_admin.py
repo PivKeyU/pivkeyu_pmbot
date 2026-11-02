@@ -9,6 +9,7 @@ import dataclasses
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from aiohttp import web
 
@@ -18,7 +19,7 @@ from rss import settings as rss_settings
 from rss.handlers import ensure_user_data, is_valid_url
 from config import config
 from services import broadcast as broadcast_service
-from services import auto_update, image_update, restart, safe_update
+from services import auto_update, image_update, moderation, monitor_push, restart, safe_update, web_monitor
 from services.ai_providers import (
     AI_FEATURES, DECISION_PROTOCOLS, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, is_decision_model,
     model_setting_key,
@@ -39,14 +40,23 @@ AI_MODEL_KEYS = all_model_setting_keys()
 
 TG_MONITOR_EDITABLE = {
     'name', 'chat_id', 'chat_title', 'listen_source', 'keywords', 'exclude_keywords',
-    'enabled', 'notify_telegram', 'min_interval_seconds', 'dedupe_window_seconds',
+    'enabled', 'notify_telegram', 'min_interval_seconds', 'dedupe_window_seconds', 'notify_chat_ids',
 }
 
 WEB_MONITOR_EDITABLE = {
     'name', 'url', 'keywords', 'item_selector', 'title_selector', 'link_selector',
     'price_selector', 'stock_selector', 'enabled', 'interval_seconds', 'notify_telegram',
     'notify_on_keyword', 'notify_on_new_item', 'notify_on_change',
+    'product_keyword', 'in_stock_words', 'out_of_stock_words', 'notify_chat_ids',
 }
+
+STOCK_STATE_FIELDS = (
+    'url', 'name', 'product_keyword', 'stock_selector', 'price_selector', 'in_stock_words', 'out_of_stock_words',
+)
+USER_NOTE_MAX_CHARS = 500
+USER_TAGS_MAX = 10
+USER_TAG_MAX_CHARS = 20
+TIMELINE_CONTEXT = 6
 
 
 def _parse_keywords(raw) -> list:
@@ -81,6 +91,8 @@ def _pick(data: dict, allowed: set) -> dict:
         value = data[key]
         if key in ('keywords', 'exclude_keywords'):
             value = _parse_keywords(value)
+        elif key == 'notify_chat_ids':
+            value = ','.join(str(chat_id) for chat_id in monitor_push.parse_chat_ids(value))
         result[key] = value
     return result
 
@@ -97,16 +109,84 @@ def _user_display(user: dict) -> str:
 @routes.get('/api/users')
 async def list_users(request):
     page, per_page, offset = http_utils.pagination(request)
-    items = await db.get_all_users_paginated(limit=per_page, offset=offset)
-    total = await db.get_total_users_count()
+    query = http_utils.search_query(request)
+    items = await db.get_all_users_paginated(limit=per_page, offset=offset, query=query)
+    total = await db.get_total_users_count(query=query)
     return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
+
+
+@routes.put('/api/users/{user_id}/profile')
+async def update_user_profile(request):
+    user_id = int(request.match_info['user_id'])
+    data = await http_utils.read_json(request)
+    note = str(data.get('note') or '').strip()
+    tags = _parse_keywords(data.get('tags'))
+    if len(note) > USER_NOTE_MAX_CHARS:
+        return http_utils.fail(f'备注最多 {USER_NOTE_MAX_CHARS} 个字符')
+    if len(tags) > USER_TAGS_MAX or any(len(tag) > USER_TAG_MAX_CHARS for tag in tags):
+        return http_utils.fail(f'最多 {USER_TAGS_MAX} 个标签，每个不超过 {USER_TAG_MAX_CHARS} 个字符')
+    if not await db.update_user_profile(user_id, note, tags):
+        return http_utils.fail('用户不存在', status=404)
+    http_utils.audit(request, 'user.profile', f'user_id={user_id} 标签数={len(tags)}')
+    return http_utils.ok({'note': note, 'tags': tags})
+
+
+@routes.get('/api/users/{user_id}/timeline')
+async def user_timeline(request):
+    """只读的消息记录；带 q 时返回最新一条命中消息的前后几条。"""
+    user_id = int(request.match_info['user_id'])
+    query = (http_utils.search_query(request) or '').lower()
+    items = await db.get_user_timeline(user_id)
+    groups = [group['name'] for group in await db.get_groups_for_user(user_id)]
+    hit = None
+    if query:
+        hit = next((
+            index for index in range(len(items) - 1, -1, -1)
+            if query in f"{items[index]['content'] or ''} {items[index]['forward_source'] or ''}".lower()
+        ), None)
+    if hit is None:
+        window = items[-TIMELINE_CONTEXT * 3:]
+    else:
+        window = items[max(0, hit - TIMELINE_CONTEXT):hit + TIMELINE_CONTEXT + 1]
+    for item in window:
+        item.pop('id', None)
+    return http_utils.ok({'items': window, 'groups': groups})
+
+
+@routes.get('/api/user-tags')
+async def list_user_tags(request):
+    return http_utils.ok({'items': await db.get_all_user_tags()})
+
+
+@routes.get('/api/moderation/summary')
+async def moderation_summary(request):
+    return http_utils.ok({
+        'verified_users': await db.get_verified_users_count(),
+        'exemptions': await db.get_exemptions_count(),
+        'pending_appeals': await db.get_pending_review_appeals_count(),
+    })
+
+
+@routes.post('/api/moderation/revoke-all')
+async def revoke_all(request):
+    data = await http_utils.read_json(request)
+    target = data.get('target')
+    if target == 'verification':
+        count = await moderation.revoke_all_verifications()
+    elif target == 'exemption':
+        count = await moderation.revoke_all_exemptions()
+    else:
+        return http_utils.fail('target 只能是 verification 或 exemption')
+    http_utils.audit(request, 'moderation.revoke_all', f'target={target} 人数={count}')
+    return http_utils.ok({'count': count})
 
 
 @routes.get('/api/blacklist')
 async def list_blacklist(request):
     page, per_page, offset = http_utils.pagination(request)
-    items = await db.get_blacklist_paginated(limit=per_page, offset=offset)
-    total = await db.get_blacklist_count()
+    query = http_utils.search_query(request)
+    items = await db.get_blacklist_paginated(limit=per_page, offset=offset, query=query)
+    total = await db.get_blacklist_count(query=query)
     return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
 
 
@@ -138,8 +218,9 @@ async def remove_blacklist(request):
 @routes.get('/api/exemptions')
 async def list_exemptions(request):
     page, per_page, offset = http_utils.pagination(request)
-    items = await db.get_exemptions_paginated(limit=per_page, offset=offset)
-    total = await db.get_exemptions_count()
+    query = http_utils.search_query(request)
+    items = await db.get_exemptions_paginated(limit=per_page, offset=offset, query=query)
+    total = await db.get_exemptions_count(query=query)
     return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
 
 
@@ -167,17 +248,71 @@ async def add_exemption(request):
 @routes.delete('/api/exemptions/{user_id}')
 async def remove_exemption(request):
     user_id = int(request.match_info['user_id'])
-    await db.remove_exemption(user_id)
+    await moderation.resume_review(user_id)
     http_utils.audit(request, 'exemption.remove', f'user_id={user_id}')
     return http_utils.ok()
+
+
+@routes.get('/api/review-appeals')
+async def list_review_appeals(request):
+    page, per_page, offset = http_utils.pagination(request)
+    query = http_utils.search_query(request)
+    items = await db.get_pending_review_appeals(limit=per_page, offset=offset, query=query)
+    total = await db.get_pending_review_appeals_count(query=query)
+    return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
+
+
+async def _require_pending_appeal(user_id: int):
+    if not await db.get_pending_review_appeal(user_id):
+        raise ValueError('这个用户没有待处理的申请')
+
+
+@routes.post('/api/review-appeals/{user_id}/approve')
+async def approve_review_appeal(request):
+    user_id = int(request.match_info['user_id'])
+    await _require_pending_appeal(user_id)
+    data = await http_utils.read_json(request)
+    minutes = moderation.pause_minutes(data)
+    result = await moderation.grant_review_pause(request.app[keys.BOT_KEY], user_id, minutes, 0, 'Web 面板')
+    http_utils.audit(request, 'review_appeal.approve', f"user_id={user_id} 时长={result['duration_text']}")
+    return http_utils.ok(result)
+
+
+@routes.post('/api/review-appeals/{user_id}/reject')
+async def reject_review_appeal(request):
+    user_id = int(request.match_info['user_id'])
+    await _require_pending_appeal(user_id)
+    await moderation.reject_appeal(request.app[keys.BOT_KEY], user_id, 0, 'Web 面板')
+    http_utils.audit(request, 'review_appeal.reject', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id})
+
+
+@routes.delete('/api/review-appeals/{user_id}')
+async def cancel_review_appeal(request):
+    user_id = int(request.match_info['user_id'])
+    await _require_pending_appeal(user_id)
+    await moderation.cancel_appeal(request.app[keys.BOT_KEY], user_id, 0, 'Web 面板')
+    http_utils.audit(request, 'review_appeal.cancel', f'user_id={user_id}')
+    return http_utils.ok({'user_id': user_id})
 
 
 @routes.get('/api/filtered')
 async def list_filtered(request):
     page, per_page, offset = http_utils.pagination(request)
-    items = await db.get_filtered_messages(limit=per_page, offset=offset)
-    total = await db.get_filtered_messages_count()
+    query = http_utils.search_query(request)
+    items = await db.get_filtered_messages(limit=per_page, offset=offset, query=query)
+    total = await db.get_filtered_messages_count(query=query)
     return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
+
+
+@routes.post('/api/filtered/{message_id}/release')
+async def release_filtered(request):
+    filtered_id = int(request.match_info['message_id'])
+    row = await moderation.release_filtered(request.app[keys.BOT_KEY], filtered_id)
+    if not row:
+        return http_utils.fail('记录不存在', status=404)
+    http_utils.audit(request, 'filtered.release', f"id={filtered_id} user_id={row['user_id']}")
+    return http_utils.ok({'user_id': row['user_id']})
 
 
 @routes.delete('/api/filtered/{message_id}')
@@ -521,6 +656,30 @@ async def create_user_group(request):
     return http_utils.ok()
 
 
+@routes.post('/api/user-groups/bulk-add')
+async def bulk_add_group_members(request):
+    """把多个用户一次加入多个分组，已在分组里的自动跳过。"""
+    data = await http_utils.read_json(request)
+    groups = _parse_keywords(data.get('groups'))
+    user_ids = data.get('user_ids')
+    if not groups or not isinstance(user_ids, list) or not user_ids:
+        return http_utils.fail('请选择用户和分组')
+    try:
+        user_ids = sorted({int(user_id) for user_id in user_ids})
+    except (TypeError, ValueError):
+        return http_utils.fail('用户 ID 需要是整数')
+    for name in groups:
+        if not await db.get_user_group_by_name(name):
+            return http_utils.fail(f'分组不存在：{name}', status=404)
+
+    added = 0
+    for name in groups:
+        for user_id in user_ids:
+            added += 1 if (await db.add_user_to_group(name, user_id, 0))[2] else 0
+    http_utils.audit(request, 'user_groups.bulk_add', f'分组数={len(groups)} 用户数={len(user_ids)} 新增={added}')
+    return http_utils.ok({'added': added, 'skipped': len(groups) * len(user_ids) - added})
+
+
 @routes.delete('/api/user-groups/{name}')
 async def delete_user_group(request):
     name = request.match_info['name']
@@ -611,6 +770,7 @@ async def start_broadcast(request):
         return http_utils.fail('广播内容超过 4096 字上限')
 
     group_name = str(data.get('group_name') or '').strip() or None
+    tag = str(data.get('tag') or '').strip() or None
     group_id = None
     if group_name:
         group = await db.get_user_group_by_name(group_name)
@@ -618,15 +778,16 @@ async def start_broadcast(request):
             return http_utils.fail('分组不存在', status=404)
         group_id = group['id']
 
-    _, recipients = await db.get_broadcast_recipients(group_name)
+    _, recipients = await db.get_broadcast_recipients(group_name, tag)
     if not recipients:
-        return http_utils.fail('没有可投递的对象（该分组暂无成员或已全部拉黑）')
+        return http_utils.fail('没有可投递的对象（该分组或标签暂无成员，或已全部拉黑）')
 
     tasks = request.app[keys.BROADCAST_TASKS_KEY]
     if tasks:
         return http_utils.fail('已有广播任务进行中，请等待完成', status=409)
 
-    task = asyncio.create_task(_run_broadcast(request.app, recipients, text, 'group' if group_name else 'all', group_id))
+    scope = 'group' if group_name else (f'tag:{tag}' if tag else 'all')
+    task = asyncio.create_task(_run_broadcast(request.app, recipients, text, scope, group_id))
     tasks.add(task)
 
     def _cleanup(finished):
@@ -807,6 +968,9 @@ async def create_tg_monitor(request):
         min_interval_seconds=int(data.get('min_interval_seconds') or 30),
         dedupe_window_seconds=int(data.get('dedupe_window_seconds') or 300),
     )
+    extra = _pick(data, {'notify_telegram', 'notify_chat_ids'})
+    if extra:
+        await db.update_tg_group_monitor(monitor_id, **extra)
     http_utils.audit(request, 'tg_monitor.create', f'{name} chat_id={data.get("chat_id")}')
     return http_utils.ok({'id': monitor_id})
 
@@ -843,7 +1007,61 @@ async def list_tg_discovered(request):
 
 @routes.get('/api/web-monitors')
 async def list_web_monitors(request):
-    return http_utils.ok({'items': await db.list_web_monitors()})
+    monitor_type = request.query.get('type') or 'page'
+    items = [item for item in await db.list_web_monitors() if item.get('monitor_type', 'page') == monitor_type]
+    if monitor_type == 'stock':
+        for item in items:
+            state = await db.get_web_monitor_state(item['id'], web_monitor.STOCK_STATE_KEY) or {}
+            item.update(stock_state=state.get('stock'), stock_price=state.get('price'), stock_title=state.get('title'))
+    return http_utils.ok({'items': items})
+
+
+@routes.post('/api/web-monitors/preview')
+async def preview_stock_monitor(request):
+    """保存前试一次补货判断，不写库也不推送。"""
+    data = await http_utils.read_json(request)
+    monitor = {key: str(data.get(key) or '').strip() for key in STOCK_STATE_FIELDS}
+    if not monitor['url'].lower().startswith(('http://', 'https://')):
+        return http_utils.fail('网址需要以 http:// 或 https:// 开头')
+    try:
+        result = await web_monitor.preview_stock(monitor)
+    except Exception as exc:
+        return http_utils.fail(f'打不开这个页面：{exc}')
+    return http_utils.ok(dataclasses.asdict(result))
+
+
+@routes.post('/api/web-monitors/{monitor_id}/run')
+async def run_web_monitor(request):
+    monitor_id = int(request.match_info['monitor_id'])
+    monitor = await db.get_web_monitor(monitor_id)
+    if not monitor:
+        return http_utils.fail('监控不存在', status=404)
+    application = SimpleNamespace(bot=request.app[keys.BOT_KEY])
+    sent = await web_monitor.run_monitor(application, monitor)
+    http_utils.audit(request, 'web_monitor.run', f'id={monitor_id}')
+    current = await db.get_web_monitor(monitor_id)
+    return http_utils.ok({'sent': sent, 'error': current.get('last_error') or ''})
+
+
+@routes.get('/api/monitor-events')
+async def list_monitor_events(request):
+    page, per_page, offset = http_utils.pagination(request)
+    source = (request.query.get('source') or '').strip() or None
+    items = await db.get_monitor_events(limit=per_page, offset=offset, source=source)
+    total = await db.get_monitor_events_count(source=source)
+    return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
+
+
+@routes.post('/api/monitor-push-test')
+async def test_monitor_push(request):
+    data = await http_utils.read_json(request)
+    chat_ids = monitor_push.parse_chat_ids(data.get('chat_ids')) or list(config.ADMIN_IDS)
+    if not chat_ids:
+        return http_utils.fail('没有可推送的目标，请先配置管理员或填写 chat_id')
+    sent = await monitor_push.push(
+        request.app[keys.BOT_KEY], chat_ids, '监控推送测试：能看到这条，说明机器人推送是通的。',
+    )
+    return http_utils.ok({'sent': sent, 'total': len(chat_ids)})
 
 
 @routes.post('/api/web-monitors')
@@ -866,7 +1084,14 @@ async def create_web_monitor(request):
         link_selector=str(data.get('link_selector') or '').strip() or None,
         price_selector=str(data.get('price_selector') or '').strip() or None,
         stock_selector=str(data.get('stock_selector') or '').strip() or None,
+        monitor_type='stock' if data.get('monitor_type') == 'stock' else 'page',
+        product_keyword=str(data.get('product_keyword') or '').strip(),
+        in_stock_words=str(data.get('in_stock_words') or '').strip(),
+        out_of_stock_words=str(data.get('out_of_stock_words') or '').strip(),
+        notify_chat_ids=_pick(data, {'notify_chat_ids'}).get('notify_chat_ids', ''),
     )
+    if 'notify_telegram' in data:
+        await db.update_web_monitor(monitor_id, notify_telegram=data['notify_telegram'])
     http_utils.audit(request, 'web_monitor.create', f'{name} {url}')
     return http_utils.ok({'id': monitor_id})
 

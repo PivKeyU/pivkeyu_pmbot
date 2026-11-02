@@ -217,6 +217,8 @@ class DatabaseManager:
             await self.create_conversation_reads_table(db)
             await self.create_app_meta_table(db)
             await self.migrate_database(db)
+            await self.add_feature_columns(db)
+            await self.create_monitor_events_table(db)
             await db.commit()
         logging.info("数据库初始化完成。")
 
@@ -643,6 +645,42 @@ class DatabaseManager:
             )
         ''')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_web_monitor_state_monitor ON web_monitor_state(monitor_id)')
+
+    async def create_monitor_events_table(self, db):
+        """监控命中记录：网页、补货、TG 监听和 RSS 共用，Web 面板和 Mini App 从这里看结果。"""
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS monitor_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                monitor_name TEXT,
+                title TEXT,
+                link TEXT,
+                detail TEXT,
+                pushed_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_monitor_events_source ON monitor_events(source)')
+
+    async def add_feature_columns(self, db):
+        columns = (
+            ('messages', 'forward_source', 'TEXT'),
+            ('filtered_messages', 'forward_source', 'TEXT'),
+            ('users', 'note', 'TEXT'),
+            ('users', 'tags', 'TEXT'),
+            ('web_monitors', 'monitor_type', "TEXT DEFAULT 'page'"),
+            ('web_monitors', 'product_keyword', "TEXT DEFAULT ''"),
+            ('web_monitors', 'in_stock_words', "TEXT DEFAULT ''"),
+            ('web_monitors', 'out_of_stock_words', "TEXT DEFAULT ''"),
+            ('web_monitors', 'notify_chat_ids', "TEXT DEFAULT ''"),
+            ('web_monitors', 'last_error', "TEXT DEFAULT ''"),
+            ('tg_group_monitors', 'notify_chat_ids', "TEXT DEFAULT ''"),
+        )
+        for table, column, definition in columns:
+            async with db.execute(f'PRAGMA table_info({table})') as cursor:
+                existing = {row[1] for row in await cursor.fetchall()}
+            if column not in existing:
+                await db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
 
     async def create_app_meta_table(self, db):
         await db.execute('''

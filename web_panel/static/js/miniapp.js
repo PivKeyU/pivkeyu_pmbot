@@ -59,15 +59,28 @@ function renderVerify(session) {
     el('div', { class: 'login-card' }, el('h1', {}, '小验证'), status, widget),
   ));
 
-  const showFallback = (text) => {
-    status.textContent = `${text}可以回到聊天，点「打不开？换普通验证题」。`;
-  };
+  /* 人机验证没通过才走到这里：让机器人把普通验证题发到聊天 */
+  async function switchToFallback(text) {
+    status.textContent = `${text}女仆正在换普通验证题……`;
+    clear(widget);
+    try {
+      await api.post('/api/verify/fallback', { init_data: initData });
+      status.textContent = '普通验证题已经发到聊天里啦，回去答题吧。';
+      setTimeout(() => telegram.close(), 1800);
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
 
   async function submit(widgetApi, widgetId, token) {
     status.textContent = '正在核对结果……';
     try {
       await api.post('/api/verify', { init_data: initData, token });
     } catch (err) {
+      if (err.status === 403 || err.status === 502) {
+        switchToFallback(`${err.message}。`);
+        return;
+      }
       widgetApi.reset(widgetId);
       status.textContent = err.message;
       return;
@@ -90,10 +103,10 @@ function renderVerify(session) {
       // 标准尺寸固定 300px，放不下时改用紧凑尺寸
       size: widget.clientWidth < 300 ? 'compact' : 'normal',
       callback: (token) => submit(widgetApi, widgetId, token),
-      'error-callback': () => showFallback('验证组件出错了。'),
+      'error-callback': () => switchToFallback('验证组件出错了。'),
       'expired-callback': () => { status.textContent = '验证结果过期了，请再点一次。'; },
     });
-  }).catch(() => showFallback('验证组件加载失败。'));
+  }).catch(() => switchToFallback('验证组件加载失败。'));
 }
 
 function renderAdmin(session) {
@@ -114,7 +127,23 @@ function renderAdmin(session) {
     tabbar,
   ));
 
+  /* 用户标签上的红点：还有多少条暂停审查申请等着处理 */
+  const refreshTodoBadge = async () => {
+    const link = tabbar.querySelector('[data-page="users"]');
+    if (!link) return;
+    let pending = 0;
+    try {
+      pending = (await api.get('/api/moderation/summary')).pending_appeals;
+    } catch (err) {
+      return;
+    }
+    const existing = link.querySelector('.tab-badge');
+    if (existing) existing.remove();
+    if (pending > 0) link.appendChild(el('span', { class: 'tab-badge' }, pending > 99 ? '99+' : pending));
+  };
+
   const renderRoute = () => {
+    refreshTodoBadge();
     const [pageId, ...params] = location.hash.replace(/^#\/?/, '').split('/');
     const tab = TABS.find((item) => item.id === pageId) || TABS[0];
     if (cleanup) { try { cleanup(); } catch (err) { console.error(err); } cleanup = null; }

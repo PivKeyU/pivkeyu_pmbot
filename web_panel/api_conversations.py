@@ -202,14 +202,8 @@ async def pause_review(request):
     user_id = int(request.match_info['user_id'])
     await _get_user_or_404(user_id)
     data = await http_utils.read_json(request)
-    if data.get('permanent'):
-        minutes = None
-    else:
-        raw = str(data.get('minutes') or data.get('duration') or '').strip()
-        minutes = moderation.parse_duration(raw)
-        if minutes is None:
-            return http_utils.fail('请填写暂停时长，例如 30、3h、2d')
     try:
+        minutes = moderation.pause_minutes(data)
         result = await moderation.grant_review_pause(request.app[keys.BOT_KEY], user_id, minutes, 0, 'Web 面板')
     except ValueError as exc:
         return http_utils.fail(str(exc))

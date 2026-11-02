@@ -53,7 +53,7 @@ async def _ensure_access(update: Update):
     if not rss_settings.is_enabled():
         await message.reply_text(
             copy_text.with_deco(
-                "RSS 女仆正在休息，请联系管理员女仆长在 /panel → RSS 订阅茶点管理 中唤醒。", 'WAIT'))
+                "RSS 女仆正在休息，请联系管理员女仆长在 /manage → RSS 订阅茶点管理 中唤醒。", 'WAIT'))
         return None
 
     return message
@@ -178,7 +178,7 @@ async def remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not context.args:
         await message.reply_text(copy_text.with_deco(
-            f"{_who(chat_id)}，请告诉女仆要撤下的 RSS 链接或 ID（来自 /rss_list）。女仆小抄：/rss_remove <链接或ID>", 'ASK'))
+            f"{_who(chat_id)}，请告诉女仆要撤下的 RSS 链接或 ID（来自 /rss_list）。女仆小抄：/rss_del <链接或ID>", 'ASK'))
         return
 
     identifier = context.args[0]
@@ -219,7 +219,7 @@ async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if len(context.args) < 2:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_addkeyword <RSS链接或ID> <口味词>", 'ASK'))
+            "女仆小抄：/rss_kw_add <RSS链接或ID> <口味词>", 'ASK'))
         return
 
     feed_identifier = context.args[0]
@@ -263,7 +263,7 @@ async def remove_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if len(context.args) < 2:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_removekeyword <RSS链接或ID> <口味词>", 'ASK'))
+            "女仆小抄：/rss_kw_del <RSS链接或ID> <口味词>", 'ASK'))
         return
 
     feed_identifier = context.args[0]
@@ -305,7 +305,7 @@ async def list_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     if not context.args:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_listkeywords <RSS链接或ID>", 'ASK'))
+            "女仆小抄：/rss_kw_list <RSS链接或ID>", 'ASK'))
         return
 
     feed_identifier = context.args[0]
@@ -343,7 +343,7 @@ async def remove_all_keywords(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if not context.args:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_removeallkeywords <RSS链接或ID>", 'ASK'))
+            "女仆小抄：/rss_kw_clear <RSS链接或ID>", 'ASK'))
         return
 
     feed_identifier = context.args[0]
@@ -430,7 +430,7 @@ async def add_authorized_user(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if not context.args:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_add_user <user_id>", 'ASK'))
+            "女仆小抄：/rss_allow <user_id>", 'ASK'))
         return
 
     try:
@@ -460,7 +460,7 @@ async def remove_authorized_user(update: Update, context: ContextTypes.DEFAULT_T
 
     if not context.args:
         await message.reply_text(copy_text.with_deco(
-            "女仆小抄：/rss_rm_user <user_id>", 'ASK'))
+            "女仆小抄：/rss_deny <user_id>", 'ASK'))
         return
 
     try:

@@ -240,6 +240,7 @@ async def check_single_feed(
             await send_telegram_message(context, chat_id, message)
             sent_count += 1
             latest_sent_entry_id_this_cycle = entry_id
+            await db.record_monitor_event("rss", feed_title, title, link, f"推送到 {chat_id}", 1)
 
             if sent_count >= MAX_SEND_PER_CYCLE:
                 # 剩余未处理条目数按"之后仍会实际发送"的条目计算，

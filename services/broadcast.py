@@ -83,14 +83,14 @@ def build_broadcast_panel_text(groups: list[dict]) -> str:
         "广播与分组管理",
         "",
         "广播命令：",
-        "/broadcast all <内容>",
-        "/broadcast group <分组名> <内容>",
-        "也可以回复一条消息后使用 /broadcast all 或 /broadcast group <分组名>，这样会保留媒体与后续编辑同步。",
+        "/announce all <内容>",
+        "/announce group <分组名> <内容>",
+        "也可以回复一条消息后使用 /announce all 或 /announce group <分组名>，这样会保留媒体与后续编辑同步。",
         "",
         "分组命令：",
-        "/group create <分组名>",
-        "/group list",
-        "在用户话题中使用 /group add <分组名> 或点击用户卡片里的“用户分组”。",
+        "/groups create <分组名>",
+        "/groups list",
+        "在用户话题中使用 /groups add <分组名> 或点击用户卡片里的“用户分组”。",
     ]
 
     if groups:
@@ -139,7 +139,7 @@ async def build_user_group_keyboard(user_id: int) -> tuple[str, InlineKeyboardMa
         lines.extend([
             "",
             "还没有可选分组。请先使用：",
-            "/group create <分组名>",
+            "/groups create <分组名>",
         ])
         return "\n".join(lines), InlineKeyboardMarkup([
             [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]

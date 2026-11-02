@@ -10,6 +10,7 @@ from services.verification import miniapp_url
 from services import broadcast as broadcast_service, moderation, restart, safe_update, spam_filter, tg_monitor, web_monitor
 from utils.decorators import admin_only
 from config import config
+from utils import commands as command_catalog
 from utils import copy as copy_text
 from utils import about
 
@@ -38,35 +39,82 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "这里是双向聊天女仆机器人。\n\n"
-        "女仆可代办的事:\n"
-        "- 递送文本、图片、视频、音频和文档\n"
-        "- 保留 Markdown 格式，让消息整整齐齐\n"
-        "- 首次递送前会请客人完成一个小验证\n\n"
-        "管理员女仆长命令:\n"
-        "- `/block` - 在用户话题中把捣乱者请进黑名单小本本\n"
-        "- `/blacklist` - 查看黑名单小本本\n"
-        "- `/stats` - 查看宅邸统计\n"
-        "- `/inbox` - 查看待办小本本\n"
-        "- `/view_filtered` - 查看被女仆拦下的消息\n"
-        "- `/exempt` - 给可信用户发放审查通行证（临时或永久）\n"
-        "- `/unverify` - 收回用户的验证结果，让他重新验证（`/verify` 恢复）\n"
-        "- `/group` - 管理私聊用户分组\n"
-        "- `/broadcast` - 向全部用户或指定分组广播\n"
-        "- `/spamrules` - 管理关键词广告拦截\n"
-        "- `/tgmon` - 管理 TG 群/频道关键词监听\n"
-        "- `/webmon` - 管理网页关键词/变化监控\n"
-        "- `/monitor_status` - 查看监听与 RSS 运行状态\n"
-        "- `/updatebot` - 安全检查/更新/回滚本地代码\n"
-        "- `/restart` - 验证 Bot Token 后重启机器人\n"
+    is_admin = await db.is_admin(update.effective_user.id)
+    if context.args:
+        command = command_catalog.find(context.args[0])
+        if command and (is_admin or command in command_catalog.USER_COMMANDS):
+            await update.message.reply_text(command_catalog.render_command_help(command))
+        else:
+            await update.message.reply_text(copy_text.with_deco(f'女仆没找到 {context.args[0]} 这条命令。', 'ERROR'))
+        return
+
+    intro = (
+        '这里是双向聊天女仆机器人。直接发消息给女仆，女仆就会送到管理员那边。\n'
+        '支持文本、图片、视频、音频和文档，首次递送前要完成一个小验证。'
     )
-    
     await update.message.reply_text(
-        f"{copy_text.with_deco_head(help_text, 'GREET')}\n{about.signature_markdown()}",
-        parse_mode='Markdown',
+        f"{copy_text.with_deco_head(intro, 'GREET')}\n\n{command_catalog.render_help(is_admin)}\n\n{about.signature_plain()}",
         disable_web_page_preview=True,
     )
+
+
+async def handle_unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """打错命令时给出最接近的建议；目录里有的命令由各自的处理器负责。"""
+    name = (update.message.text or '').split()[0].lstrip('/').split('@')[0]
+    if not name or command_catalog.is_known(name):
+        return
+    suggestions = command_catalog.suggest(name, await db.is_admin(update.effective_user.id))
+    hint = '、'.join(f'/{item}' for item in suggestions)
+    text = f'没有 /{name} 这条命令，是不是想用 {hint}？' if suggestions else f'没有 /{name} 这条命令，发 /help 看看女仆会什么吧。'
+    await update.message.reply_text(copy_text.with_deco(text, 'ASK'))
+
+
+@admin_only
+async def restock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(await _handle_restock(update, list(context.args), context.application))
+
+
+STOCK_STATE_LABELS = {'in': '有货', 'out': '缺货'}
+
+
+async def _handle_restock(update, args: list, application) -> str:
+    action = args[0].lower() if args else 'list'
+    if action in ('list', '列表'):
+        monitors = [item for item in await db.list_web_monitors() if item.get('monitor_type') == 'stock']
+        if not monitors:
+            return '还没有补货监控。\n添加：/restock add <名称> <网址> [商品关键词]'
+        lines = ['补货监控']
+        for item in monitors[:30]:
+            state = await db.get_web_monitor_state(item['id'], web_monitor.STOCK_STATE_KEY) or {}
+            label = STOCK_STATE_LABELS.get(state.get('stock'), '未判断')
+            lines.append(f"#{item['id']} {item['name']} [{label}] 每 {item['interval_seconds'] // 60} 分钟")
+        return '\n'.join(lines)
+
+    if action in ('add', '添加') and len(args) >= 3:
+        name, url = args[1], args[2]
+        if not url.lower().startswith(('http://', 'https://')):
+            return '网址需要以 http:// 或 https:// 开头。'
+        monitor_id = await db.create_web_monitor(
+            name=name, url=url, keywords=[], created_by=update.effective_user.id,
+            monitor_type='stock', product_keyword=' '.join(args[3:]),
+        )
+        return f'已添加补货监控 #{monitor_id}，默认每 5 分钟检查一次，可以在 Mini App 里调整。'
+
+    if action in ('check', '检查', 'delete', '删除') and len(args) >= 2 and args[1].isdigit():
+        monitor = await db.get_web_monitor(int(args[1]))
+        if not monitor or monitor.get('monitor_type') != 'stock':
+            return '没有这个补货监控。'
+        if action in ('delete', '删除'):
+            await db.delete_web_monitor(monitor['id'])
+            return f"已删除补货监控 {monitor['name']}。"
+        await web_monitor.run_monitor(application, monitor)
+        current = await db.get_web_monitor(monitor['id'])
+        state = await db.get_web_monitor_state(monitor['id'], web_monitor.STOCK_STATE_KEY) or {}
+        label = STOCK_STATE_LABELS.get(state.get('stock'), '未判断')
+        return f"{monitor['name']}：{label}" + (f"\n{current['last_error']}" if current.get('last_error') else '')
+
+    return '用法：/restock list | add <名称> <网址> [商品关键词] | check <ID> | delete <ID>'
+
 
 @admin_only
 async def blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,7 +146,7 @@ async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             copy_text.with_deco_head(
                 "主人，把主人的 user_id 一起给女仆吧，或者直接在主人的专属会客厅里下这条命令。\n"
-                "女仆小抄：/block <user_id> [reason]",
+                "女仆小抄：/ban <user_id> [reason]",
                 'ASK')
         )
         return
@@ -115,7 +163,7 @@ async def block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            copy_text.with_deco("主人，请告诉女仆要解封的用户 ID。女仆小抄：/unblock <user_id>", 'ASK')
+            copy_text.with_deco("主人，请告诉女仆要解封的用户 ID。女仆小抄：/unban <user_id>", 'ASK')
         )
         return
     
@@ -323,7 +371,7 @@ async def monitor_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         category = "tg_monitor"
     elif category not in {None, "rss", "web", "tg_monitor"}:
         await update.message.reply_text(
-            copy_text.with_deco("女仆小抄：/monitor_status [rss|tg|web]", 'ASK')
+            copy_text.with_deco("女仆小抄：/watch_status [rss|tg|web]", 'ASK')
         )
         return
 
@@ -342,7 +390,7 @@ async def _target_user_for_command(update: Update, context: ContextTypes.DEFAULT
         user = await db.get_user(int(context.args[0]))
     except (IndexError, ValueError):
         await message.reply_text(copy_text.with_deco(
-            "在用户的话题里直接发命令，或者带上用户 ID，例如：/unverify 123456789", 'ASK'))
+            "在用户的话题里直接发命令，或者带上用户 ID，例如：/reverify 123456789", 'ASK'))
         return None
     if not user:
         await message.reply_text(copy_text.user_id_invalid())
@@ -358,7 +406,7 @@ async def unverify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await moderation.revoke_verification(user['user_id'])
     await update.message.reply_text(copy_text.with_deco(
         f"已收回 {user.get('first_name') or user['user_id']}（{user['user_id']}）的验证结果，"
-        "他下次发消息需要重新验证。想恢复的话用 /verify。", 'OK'))
+        "他下次发消息需要重新验证。想恢复的话用 /trust。", 'OK'))
 
 
 @admin_only
@@ -399,18 +447,18 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     copy_text.exempt_title(user_id_to_exempt, status_text, reason)
                     + "\n\n"
                     + "女仆小抄：\n"
-                    + "/exempt permanent [reason] - 发放永久通行证\n"
-                    + "/exempt temp <小时数> [reason] - 发放临时通行证（例如: /exempt temp 24）\n"
-                    + "/exempt remove - 收回通行证"
+                    + "/pass permanent [reason] - 发放永久通行证\n"
+                    + "/pass temp <小时数> [reason] - 发放临时通行证（例如: /pass temp 24）\n"
+                    + "/pass remove - 收回通行证"
                 )
             else:
                 await update.message.reply_text(
                     copy_text.exempt_check_none(user_id_to_exempt)
                     + "\n\n"
                     + "女仆小抄：\n"
-                    + "/exempt permanent [reason] - 发放永久通行证\n"
-                    + "/exempt temp <小时数> [reason] - 发放临时通行证（例如: /exempt temp 24）\n"
-                    + "/exempt remove - 收回通行证"
+                    + "/pass permanent [reason] - 发放永久通行证\n"
+                    + "/pass temp <小时数> [reason] - 发放临时通行证（例如: /pass temp 24）\n"
+                    + "/pass remove - 收回通行证"
                 )
             return
         
@@ -431,7 +479,7 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif subcommand == "temp":
             if len(context.args) < 2:
                 await update.message.reply_text(
-                    copy_text.with_deco("主人，请告诉女仆临时通行证要生效几个小时。女仆小抄：/exempt temp <小时数> [reason]", 'ASK')
+                    copy_text.with_deco("主人，请告诉女仆临时通行证要生效几个小时。女仆小抄：/pass temp <小时数> [reason]", 'ASK')
                 )
                 return
             
@@ -450,9 +498,9 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 copy_text.with_deco(
                     "主人，这个子命令女仆看不懂呢。女仆小抄：\n"
-                    "/exempt permanent [reason] - 发放永久通行证\n"
-                    "/exempt temp <小时数> [reason] - 发放临时通行证\n"
-                    "/exempt remove - 收回通行证",
+                    "/pass permanent [reason] - 发放永久通行证\n"
+                    "/pass temp <小时数> [reason] - 发放临时通行证\n"
+                    "/pass remove - 收回通行证",
                     'ERROR')
             )
         return
@@ -462,8 +510,8 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             copy_text.with_deco_head(
                 "主人，把主人的 ID 一起给女仆吧，或者在主人的专属会客厅里直接吩咐。\n\n"
                 "女仆小抄：\n"
-                "在话题中: /exempt [permanent|temp <小时数>|remove] [reason]\n"
-                "直接使用: /exempt <user_id> [permanent|temp <小时数>|remove] [reason]",
+                "在话题中: /pass [permanent|temp <小时数>|remove] [reason]\n"
+                "直接使用: /pass <user_id> [permanent|temp <小时数>|remove] [reason]",
                 'ASK')
         )
         return
@@ -503,7 +551,7 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif subcommand == "temp":
             if len(context.args) < 3:
                 await update.message.reply_text(
-                    copy_text.with_deco("主人，请告诉女仆临时通行证要生效几个小时。女仆小抄：/exempt <user_id> temp <小时数> [reason]", 'ASK')
+                    copy_text.with_deco("主人，请告诉女仆临时通行证要生效几个小时。女仆小抄：/pass <user_id> temp <小时数> [reason]", 'ASK')
                 )
                 return
             
@@ -522,9 +570,9 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 copy_text.with_deco(
                     "主人，这个子命令女仆看不懂呢。女仆小抄：\n"
-                    "/exempt <user_id> permanent [reason] - 发放永久通行证\n"
-                    "/exempt <user_id> temp <小时数> [reason] - 发放临时通行证\n"
-                    "/exempt <user_id> remove - 收回通行证",
+                    "/pass <user_id> permanent [reason] - 发放永久通行证\n"
+                    "/pass <user_id> temp <小时数> [reason] - 发放临时通行证\n"
+                    "/pass <user_id> remove - 收回通行证",
                     'ERROR')
             )
     except (ValueError, IndexError):
@@ -534,12 +582,12 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _group_help_text() -> str:
     return (
         "分组管理小抄:\n"
-        "/group list - 查看全部分组\n"
-        "/group create <分组名> [说明] - 创建分组\n"
-        "/group delete <分组名> - 删除分组\n"
-        "/group members <分组名> - 查看成员\n"
-        "/group add <分组名> [user_id] - 添加用户；在用户话题里可省略 user_id\n"
-        "/group remove <分组名> [user_id] - 移除用户；在用户话题里可省略 user_id"
+        "/groups list - 查看全部分组\n"
+        "/groups create <分组名> [说明] - 创建分组\n"
+        "/groups delete <分组名> - 删除分组\n"
+        "/groups members <分组名> - 查看成员\n"
+        "/groups add <分组名> [user_id] - 添加用户；在用户话题里可省略 user_id\n"
+        "/groups remove <分组名> [user_id] - 移除用户；在用户话题里可省略 user_id"
     )
 
 
@@ -584,7 +632,7 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "create":
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/group create <分组名> [说明]", 'ASK')
+                copy_text.with_deco("女仆小抄：/groups create <分组名> [说明]", 'ASK')
             )
             return
         name = broadcast_service.normalize_group_name(context.args[1])
@@ -608,7 +656,7 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "delete":
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/group delete <分组名>", 'ASK')
+                copy_text.with_deco("女仆小抄：/groups delete <分组名>", 'ASK')
             )
             return
         name = broadcast_service.normalize_group_name(context.args[1])
@@ -622,7 +670,7 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "members":
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/group members <分组名>", 'ASK')
+                copy_text.with_deco("女仆小抄：/groups members <分组名>", 'ASK')
             )
             return
         name = broadcast_service.normalize_group_name(context.args[1])
@@ -632,7 +680,7 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand in {"add", "remove"}:
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco(f"女仆小抄：/group {subcommand} <分组名> [user_id]", 'ASK')
+                copy_text.with_deco(f"女仆小抄：/groups {subcommand} <分组名> [user_id]", 'ASK')
             )
             return
 
@@ -675,11 +723,11 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _broadcast_help_text() -> str:
     return (
         "广播小抄:\n"
-        "/broadcast all <内容> - 广播给全部未拉黑用户\n"
-        "/broadcast group <分组名> <内容> - 广播给指定分组\n"
+        "/announce all <内容> - 广播给全部未拉黑用户\n"
+        "/announce group <分组名> <内容> - 广播给指定分组\n"
         "也可以回复一条文本、图片、视频、文件、音频、语音、贴纸消息后使用：\n"
-        "/broadcast all\n"
-        "/broadcast group <分组名>\n"
+        "/announce all\n"
+        "/announce group <分组名>\n"
         "回复消息方式支持后续编辑同步。"
     )
 
@@ -702,7 +750,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif scope == "group":
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/broadcast group <分组名> [内容]", 'ASK')
+                copy_text.with_deco("女仆小抄：/announce group <分组名> [内容]", 'ASK')
             )
             return
         group_name = broadcast_service.normalize_group_name(context.args[1])
@@ -768,12 +816,12 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _spamrules_help_text() -> str:
     return (
         "关键词广告拦截小抄:\n"
-        "/spamrules - 查看当前设置\n"
-        "/spamrules on|off - 开关拦截\n"
-        "/spamrules autoblock on|off - 开关命中后自动拉黑\n"
-        "/spamrules add <关键词> - 添加关键词，多个用逗号分隔\n"
-        "/spamrules del <关键词> - 删除关键词\n"
-        "/spamrules clear - 清空全部关键词"
+        "/keywords - 查看当前设置\n"
+        "/keywords on|off - 开关拦截\n"
+        "/keywords autoblock on|off - 开关命中后自动拉黑\n"
+        "/keywords add <关键词> - 添加关键词，多个用逗号分隔\n"
+        "/keywords del <关键词> - 删除关键词\n"
+        "/keywords clear - 清空全部关键词"
     )
 
 
@@ -803,7 +851,7 @@ async def spamrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "autoblock":
         if len(context.args) < 2 or context.args[1].lower() not in {"on", "off"}:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/spamrules autoblock on|off", 'ASK')
+                copy_text.with_deco("女仆小抄：/keywords autoblock on|off", 'ASK')
             )
             return
         enabled = context.args[1].lower() == "on"
@@ -858,15 +906,15 @@ async def spamrules(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _tgmon_help_text() -> str:
     return (
         "TG 群/频道监听小抄:\n"
-        "/tgmon - 打开监听面板\n"
-        "/tgmon list - 查看监听列表\n"
-        "/tgmon discovered - 查看用户会话发现的群/频道\n"
-        "/tgmon add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]\n"
-        "/tgmon on <ID> /tgmon off <ID>\n"
-        "/tgmon delete <ID>\n"
-        "/tgmon keywords <ID> <关键词1,关键词2>\n"
-        "/tgmon exclude <ID> <排除词1,排除词2>\n"
-        "/tgmon interval <ID> <秒数>"
+        "/watch_tg - 打开监听面板\n"
+        "/watch_tg list - 查看监听列表\n"
+        "/watch_tg discovered - 查看用户会话发现的群/频道\n"
+        "/watch_tg add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]\n"
+        "/watch_tg on <ID> /watch_tg off <ID>\n"
+        "/watch_tg delete <ID>\n"
+        "/watch_tg keywords <ID> <关键词1,关键词2>\n"
+        "/watch_tg exclude <ID> <排除词1,排除词2>\n"
+        "/watch_tg interval <ID> <秒数>"
     )
 
 
@@ -913,7 +961,7 @@ async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "add":
         if len(context.args) < 4:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/tgmon add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]", 'ASK')
+                copy_text.with_deco("女仆小抄：/watch_tg add <名称> <chat_id> <关键词1,关键词2> [bot|user_session]", 'ASK')
             )
             return
         name = context.args[1].strip()
@@ -985,7 +1033,7 @@ async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand in {"keywords", "exclude"}:
         if len(context.args) < 3:
             await update.message.reply_text(
-                copy_text.with_deco(f"女仆小抄：/tgmon {subcommand} <ID> <关键词1,关键词2>", 'ASK')
+                copy_text.with_deco(f"女仆小抄：/watch_tg {subcommand} <ID> <关键词1,关键词2>", 'ASK')
             )
             return
         try:
@@ -1003,7 +1051,7 @@ async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "interval":
         if len(context.args) < 3:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/tgmon interval <ID> <秒数>", 'ASK')
+                copy_text.with_deco("女仆小抄：/watch_tg interval <ID> <秒数>", 'ASK')
             )
             return
         try:
@@ -1022,14 +1070,14 @@ async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def _webmon_help_text() -> str:
     return (
         "网页监控小抄:\n"
-        "/webmon - 打开网页监控面板\n"
-        "/webmon list - 查看监控列表\n"
-        "/webmon add <名称> <url> [关键词1,关键词2]\n"
-        "/webmon on <ID> /webmon off <ID>\n"
-        "/webmon run <ID> - 立即检查\n"
-        "/webmon delete <ID>\n"
-        "/webmon keywords <ID> <关键词1,关键词2>\n"
-        "/webmon interval <ID> <秒数>"
+        "/watch_web - 打开网页监控面板\n"
+        "/watch_web list - 查看监控列表\n"
+        "/watch_web add <名称> <url> [关键词1,关键词2]\n"
+        "/watch_web on <ID> /watch_web off <ID>\n"
+        "/watch_web run <ID> - 立即检查\n"
+        "/watch_web delete <ID>\n"
+        "/watch_web keywords <ID> <关键词1,关键词2>\n"
+        "/watch_web interval <ID> <秒数>"
     )
 
 
@@ -1052,7 +1100,7 @@ async def webmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "add":
         if len(context.args) < 3:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/webmon add <名称> <url> [关键词1,关键词2]", 'ASK')
+                copy_text.with_deco("女仆小抄：/watch_web add <名称> <url> [关键词1,关键词2]", 'ASK')
             )
             return
         name = context.args[1].strip()
@@ -1116,7 +1164,7 @@ async def webmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "keywords":
         if len(context.args) < 3:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/webmon keywords <ID> <关键词1,关键词2>", 'ASK')
+                copy_text.with_deco("女仆小抄：/watch_web keywords <ID> <关键词1,关键词2>", 'ASK')
             )
             return
         try:
@@ -1132,7 +1180,7 @@ async def webmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if subcommand == "interval":
         if len(context.args) < 3:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/webmon interval <ID> <秒数>", 'ASK')
+                copy_text.with_deco("女仆小抄：/watch_web interval <ID> <秒数>", 'ASK')
             )
             return
         try:
@@ -1181,7 +1229,7 @@ async def updatebot(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         await status_message.edit_text(
-            copy_text.with_deco("女仆小抄：/updatebot [status|apply|rollback]", 'ASK')
+            copy_text.with_deco("女仆小抄：/upgrade [status|apply|rollback]", 'ASK')
         )
     except safe_update.SafeUpdateError as exc:
         # 拒绝原因（未提交改动 / 无回滚点 等）是主人自查所需信息，照原样给出
@@ -1244,8 +1292,8 @@ async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(context.args) < 3:
             await update.message.reply_text(
                 copy_text.with_deco(
-                    "女仆小抄：/autoreply add <标题> <内容>\n\n"
-                    "示例: /autoreply add 常见问题 这是问题的答案",
+                    "女仆小抄：/aireply add <标题> <内容>\n\n"
+                    "示例: /aireply add 常见问题 这是问题的答案",
                     'ASK')
             )
             return
@@ -1273,8 +1321,8 @@ async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(context.args) < 4:
             await update.message.reply_text(
                 copy_text.with_deco(
-                    "女仆小抄：/autoreply edit <ID> <标题> <内容>\n\n"
-                    "示例: /autoreply edit 1 新标题 新内容",
+                    "女仆小抄：/aireply edit <ID> <标题> <内容>\n\n"
+                    "示例: /aireply edit 1 新标题 新内容",
                     'ASK')
             )
             return
@@ -1300,7 +1348,7 @@ async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif subcommand == "delete":
         if len(context.args) < 2:
             await update.message.reply_text(
-                copy_text.with_deco("女仆小抄：/autoreply delete <ID>", 'ASK')
+                copy_text.with_deco("女仆小抄：/aireply delete <ID>", 'ASK')
             )
             return
         
@@ -1323,12 +1371,12 @@ async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             copy_text.with_deco(
                 "女仆小抄：\n"
-                "/autoreply - 打开管理菜单\n"
-                "/autoreply on - 让自动回复女仆值班\n"
-                "/autoreply off - 让自动回复女仆休息\n"
-                "/autoreply add <标题> <内容> - 新增知识便签\n"
-                "/autoreply edit <ID> <标题> <内容> - 修改知识便签\n"
-                "/autoreply delete <ID> - 删除知识便签\n"
-                "/autoreply list - 列出知识小本本",
+                "/aireply - 打开管理菜单\n"
+                "/aireply on - 让自动回复女仆值班\n"
+                "/aireply off - 让自动回复女仆休息\n"
+                "/aireply add <标题> <内容> - 新增知识便签\n"
+                "/aireply edit <ID> <标题> <内容> - 修改知识便签\n"
+                "/aireply delete <ID> - 删除知识便签\n"
+                "/aireply list - 列出知识小本本",
                 'ASK')
         )

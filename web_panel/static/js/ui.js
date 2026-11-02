@@ -94,6 +94,56 @@ export function modal({ title, body, footer = [], wide = false }) {
   return { close, mask };
 }
 
+/* 暂停审查弹窗：快捷时长 / 自定义时长 / 永久，返回 { minutes } 或 { permanent: true }，取消返回 null */
+export function askPauseDuration({ title, hint }) {
+  return new Promise((resolve) => {
+    const amount = el('input', { class: 'input', type: 'number', min: '1', value: '2', style: { maxWidth: '120px' } });
+    const unit = el('select', { class: 'input', style: { maxWidth: '120px' } },
+      el('option', { value: '1' }, '分钟'),
+      el('option', { value: '60', selected: true }, '小时'),
+      el('option', { value: '1440' }, '天'),
+    );
+    const permanent = el('input', { type: 'checkbox' });
+    const errorNode = el('div', { class: 'login-error' });
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      dialog.close();
+      resolve(value);
+    };
+    const presets = [[30, '30 分钟'], [120, '2 小时'], [1440, '1 天'], [10080, '7 天']].map(([minutes, label]) =>
+      el('button', { class: 'btn sm', onClick: () => finish({ minutes }) }, label));
+    const confirmButton = el('button', {
+      class: 'btn primary',
+      onClick: () => {
+        if (permanent.checked) { finish({ permanent: true }); return; }
+        const value = Number(amount.value);
+        if (!Number.isFinite(value) || value <= 0) {
+          errorNode.textContent = '请填写大于 0 的时长';
+          return;
+        }
+        finish({ minutes: Math.round(value * Number(unit.value)) });
+      },
+    }, '确定');
+    const dialog = modal({
+      title,
+      body: el('div', {},
+        hint ? el('div', { class: 'muted small', style: { marginBottom: '12px' } }, hint) : null,
+        el('div', { class: 'field' }, el('label', {}, '快捷时长'), el('div', { class: 'row' }, presets)),
+        el('div', { class: 'field' },
+          el('label', {}, '自定义时长'),
+          el('div', { class: 'row', style: { alignItems: 'center' } }, amount, unit),
+        ),
+        el('label', { class: 'small', style: { display: 'flex', gap: '6px', alignItems: 'center' } }, permanent, '永久暂停（直到手动恢复审查）'),
+        errorNode,
+      ),
+      footer: [el('button', { class: 'btn', onClick: () => finish(null) }, '取消'), confirmButton],
+    });
+    dialog.mask.addEventListener('click', (event) => { if (event.target === dialog.mask) finish(null); });
+  });
+}
+
 /* ---------- 表格与分页 ---------- */
 
 export function table({ columns, rows, empty = '暂无数据', rowKey }) {

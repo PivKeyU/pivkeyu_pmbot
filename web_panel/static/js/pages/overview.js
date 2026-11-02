@@ -71,11 +71,11 @@ export default {
         body.appendChild(el('div', { class: 'card' },
           el('div', { class: 'card-head' },
             el('h3', {}, '发现新版本'),
-            el('a', { class: 'btn sm primary', href: '#/tools' }, '查看更新'),
+            el('a', { class: 'btn sm primary', href: '#/update' }, '查看更新'),
           ),
           el('div', { class: 'muted small' }, settings.consented
             ? `将在 ${settings.time} 自动更新。`
-            : '还没有同意自动更新，可以手动更新，也可以到「网络与更新」开启自动更新。'),
+            : '还没有同意自动更新，可以手动更新，也可以到「更新部署」开启自动更新。'),
         ));
       }
 

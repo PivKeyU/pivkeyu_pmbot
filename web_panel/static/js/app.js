@@ -13,6 +13,7 @@ import usersPage from './pages/users.js';
 import broadcastPage from './pages/broadcast.js';
 import feedsPage from './pages/feeds.js';
 import toolsPage from './pages/tools.js';
+import updatePage from './pages/update.js';
 
 const root = document.getElementById('app');
 
@@ -50,7 +51,8 @@ const NAV = [
     { id: 'feeds', label: 'RSS / 监控', icon: '📡', page: feedsPage },
   ] },
   { group: '系统', items: [
-    { id: 'tools', label: '网络与更新', icon: '🛠️', page: toolsPage },
+    { id: 'update', label: '更新部署', icon: '🚀', page: updatePage },
+    { id: 'tools', label: '网络工具', icon: '🛠️', page: toolsPage },
   ] },
 ];
 

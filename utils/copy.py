@@ -1050,7 +1050,7 @@ DECISION_SAFE_REASON = '内容未发现违规。'
 
 DECISION_REFUSED_REASON = '内容审查失败，可能包含不当内容。'
 
-AUTO_UPDATE_FOUND_NEEDS_CONSENT = '发现新版本啦。主人还没有同意自动更新，可以在面板「网络与更新」里手动更新，或者开启自动更新。'
+AUTO_UPDATE_FOUND_NEEDS_CONSENT = '发现新版本啦。主人还没有同意自动更新，可以在面板「更新部署」里手动更新，或者开启自动更新。'
 
 AUTO_UPDATE_STARTING = '到设定的时间啦，女仆开始自动更新，机器人和面板会短暂断开。'
 

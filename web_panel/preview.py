@@ -1164,8 +1164,9 @@ async def git_rollback(request):
 async def image_status(request):
     return _ok({'status': {'in_container': True, 'image_repo': 'pivkeyu/pivkeyu_pmbot',
                            'image_tag': 'latest', 'local_sha': 'a1b2c3d4e5f6',
-                           'remote_digest': 'sha256:deadbeef', 'known_digest': 'sha256:deadbeef',
-                           'update_available': False, 'error': ''}})
+                           'remote_digest': f"sha256:{'9f86d081884c7d65' * 4}",
+                           'known_digest': f"sha256:{'2c26b46b68ffc68f' * 4}",
+                           'update_available': True, 'error': ''}})
 
 
 @routes.post('/api/update/image')

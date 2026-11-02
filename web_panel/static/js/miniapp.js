@@ -11,6 +11,7 @@ import automation from './pages/automation.js';
 import broadcastPage from './pages/broadcast.js';
 import feedsPage from './pages/feeds.js';
 import toolsPage from './pages/tools.js';
+import updatePage from './pages/update.js';
 
 const root = document.getElementById('app');
 const telegram = window.Telegram && window.Telegram.WebApp;
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'automation', label: '回复', icon: '💡', page: automation },
   { id: 'broadcast', label: '广播', icon: '📣', page: broadcastPage },
   { id: 'feeds', label: '监控', icon: '📡', page: feedsPage },
+  { id: 'update', label: '更新', icon: '🚀', page: updatePage },
   { id: 'tools', label: '工具', icon: '🛠️', page: toolsPage },
 ];
 

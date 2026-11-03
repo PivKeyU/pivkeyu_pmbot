@@ -54,3 +54,6 @@ logs/
 # 测试（运行时不需要）
 tests/
 .pytest_cache
+
+# 文档和截图运行时用不到
+docs/

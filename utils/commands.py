@@ -45,7 +45,7 @@ ADMIN_SECTIONS = (
     ('消息', (
         Command('announce', '向用户群发公告', '/announce all|group <分组>'),
         Command('aireply', '安排 AI 自动回复'),
-        Command('keywords', '管理关键词拦截', '/keywords list|add|remove|on|off'),
+        Command('keywords', '管理关键词拦截', '/keywords [on|off|autoblock on|off|add <词>|del <词>|clear]'),
     )),
     ('监控', (
         Command('restock', '管理补货监控', '/restock list|add <名称> <网址> [商品关键词]|check <ID>|delete <ID>'),

@@ -78,9 +78,13 @@ def restart_env(tmp_path, monkeypatch):
 
 def _run(db_path, scenario):
     async def main():
-        await DatabaseManager(db_path).initialize()
-        await db.set_app_meta(restart.NOTIFY_META_KEY, '')
-        await scenario()
+        manager = DatabaseManager(db_path)
+        await manager.initialize()
+        try:
+            await db.set_app_meta(restart.NOTIFY_META_KEY, '')
+            await scenario()
+        finally:
+            await manager.close_all()
 
     asyncio.run(main())
 

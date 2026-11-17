@@ -41,7 +41,7 @@
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
 | `BOT_TOKEN` | ✅ | 无 | Telegram Bot Token，从 [@BotFather](https://t.me/BotFather) 获取 |
-| `FORUM_GROUP_ID` | ✅ | 无 | 论坛话题群组 ID（超级群组需开启 Topics），机器人须为该群管理员；**未设置时除 `/myid` 外全部功能禁用** |
+| `FORUM_GROUP_ID` | ✅ | 无 | 论坛话题群组 ID（超级群组需开启 Topics），机器人须为该群管理员；**未设置时私聊收发与核心管理功能禁用，仅 `/start`、`/myid`、网络测试等基础入口可用** |
 | `ADMIN_IDS` | ✅ | 无 | 管理员 Telegram 用户 ID，多个用逗号分隔（如 `123456789,987654321`） |
 
 ## 🧠 AI
@@ -95,7 +95,7 @@
 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
-| `SPAM_KEYWORD_FILTER_ENABLED` | ❌ | `false` | 是否启用关键词广告拦截（也可运行时用 `/keywords on` 开启） |
+| `SPAM_KEYWORD_FILTER_ENABLED` | ❌ | `false` | 首次建库时决定是否默认启用关键词广告拦截；之后以 `/keywords` 或面板保存的运行时开关为准 |
 | `SPAM_KEYWORD_AUTO_BLOCK` | ❌ | `true` | 命中后是否自动拉黑 |
 
 运行时的关键词管理（命中消息会进入拦截篮，可用 `/intercepts` 查看）：
@@ -111,7 +111,7 @@
 
 ## 📰 RSS
 
-以下变量由代码支持，暂未收录于 `.env.example`。
+以下变量均已收录于 [.env.example](../.env.example) 末尾注释区，按需取消注释即可。
 
 | 变量 | 必填 | 默认值 | 说明 |
 | :--- | :---: | :--- | :--- |
@@ -137,11 +137,12 @@
 | :--- | :---: | :--- | :--- |
 | `WATCHTOWER_HTTP_API_URL` | ❌ | `http://watchtower:8080` | Watchtower HTTP API 地址；用仓库的 compose 时按服务名访问，不用改 |
 | `WATCHTOWER_HTTP_API_TOKEN` | ❌（使用 watchtower compose 时**必填**） | 空 | 与 compose 里 `WATCHTOWER_HTTP_API_TOKEN` 同值；用 `openssl rand -hex 32` 生成。**它等于容器重建权限，不要泄露、不要用弱口令** |
-| `UPDATE_IMAGE_REPO` | ❌ | `pivkeyu/pivkeyu_pmbot` | 覆盖要检查的镜像仓库名 |
-| `UPDATE_IMAGE_TAG` | ❌ | `latest` | 覆盖要检查的镜像 tag |
+| `UPDATE_IMAGE` | ❌ | 空 | 组合覆盖要检查的镜像（格式 `repo:tag`，优先级高于下方仓库/标签两项） |
+| `UPDATE_IMAGE_REPO` | ❌ | 空（回退 `pivkeyu/pivkeyu_pmbot`） | 覆盖要检查的镜像仓库名 |
+| `UPDATE_IMAGE_TAG` | ❌ | 空（回退 `latest`） | 覆盖要检查的镜像 tag |
 | `RUNNING_IN_DOCKER` | ❌ | 自动检测 | 非容器部署时设为 `1`，让面板显示「镜像更新」而非「Git 更新」 |
 
-> 配置文件里这三项默认是注释状态；不配 token 时面板的「检查镜像更新」仍可查看状态，但「确认更新」会提示没配口令。
+> `.env.example` 中 `UPDATE_IMAGE`、`UPDATE_IMAGE_REPO`、`UPDATE_IMAGE_TAG`、`RUNNING_IN_DOCKER` 默认是注释状态；不配 token 时面板的「检查镜像更新」仍可查看状态，但「确认更新」会提示没配口令。
 
 ## 🌐 Web 管理面板
 

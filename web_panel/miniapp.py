@@ -159,6 +159,7 @@ CONTENT_SECURITY_POLICY = (
 )
 
 _sessions: dict = {}
+_used_admin_init_hashes: dict[str, float] = {}
 
 
 def parse_init_data(init_data: str, bot_token: str, now: float = None):
@@ -174,18 +175,44 @@ def parse_init_data(init_data: str, bot_token: str, now: float = None):
         return None
 
     try:
-        age = (time.time() if now is None else now) - int(fields.get('auth_date', 0))
+        current_now = time.time() if now is None else now
+        age = current_now - int(fields.get('auth_date', 0))
         user = json.loads(fields.get('user', ''))
+        if not isinstance(user, dict):
+            return None
         user['id'] = int(user['id'])
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, IndexError, json.JSONDecodeError):
         return None
-    return user if age <= INIT_DATA_MAX_AGE_SECONDS else None
+    if age < -60 or age > INIT_DATA_MAX_AGE_SECONDS:
+        return None
+    return user
+
+
+def _claim_admin_init_hash(init_data: str) -> bool:
+    """防止拦截到的管理员 initData 被重复用于签发新的 Bearer Token。"""
+    fields = dict(parse_qsl(init_data or '', keep_blank_values=True))
+    raw_hash = fields.get('hash', '')
+    if not raw_hash:
+        return False
+    now = time.time()
+    for h_key in [k for k, exp in _used_admin_init_hashes.items() if exp <= now]:
+        _used_admin_init_hashes.pop(h_key, None)
+    if raw_hash in _used_admin_init_hashes:
+        return False
+    while len(_used_admin_init_hashes) >= 2048:
+        oldest = next(iter(_used_admin_init_hashes))
+        _used_admin_init_hashes.pop(oldest, None)
+    _used_admin_init_hashes[raw_hash] = now + INIT_DATA_MAX_AGE_SECONDS
+    return True
 
 
 def create_session(user_id: int) -> str:
     now = time.time()
     for token in [t for t, s in _sessions.items() if s['expires_at'] <= now]:
         _sessions.pop(token, None)
+    while len(_sessions) >= 512:
+        oldest = next(iter(_sessions))
+        _sessions.pop(oldest, None)
     token = secrets.token_urlsafe(32)
     _sessions[token] = {'user_id': user_id, 'expires_at': now + SESSION_TTL_SECONDS}
     return token
@@ -206,7 +233,8 @@ def _read_user(request, data: dict):
 @routes.post('/api/session')
 async def open_session(request):
     data = await http_utils.read_json(request)
-    user = _read_user(request, data)
+    raw_init_data = str(data.get('init_data') or '')
+    user = parse_init_data(raw_init_data, request.app[keys.BOT_KEY].token)
     if not user:
         return http_utils.fail('身份校验失败，请从 Telegram 重新打开', status=401)
 
@@ -222,6 +250,8 @@ async def open_session(request):
         'turnstile_action': TURNSTILE_ACTION,
     }
     if is_admin:
+        if not _claim_admin_init_hash(raw_init_data):
+            return http_utils.fail('认证凭据已使用，请重新打开 Mini App', status=401)
         payload['token'] = create_session(user_id)
         payload['bot_username'] = config.BOT_USERNAME
     return http_utils.ok(payload)

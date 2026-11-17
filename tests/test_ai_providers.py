@@ -212,9 +212,10 @@ async def _panel_flow(tmp_path):
     finally:
         await client.close()
         await http_session.close()
+        config.clear_override('ANTHROPIC_API_KEY')
         for key, value in saved.items():
             setattr(config, key, value)
-        ai_service.close_clients()
+        await ai_service.aclose_clients()
         await db_manager.close_all()
 
 

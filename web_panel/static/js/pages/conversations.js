@@ -115,7 +115,11 @@ export default {
 
     /* ---------------- 会话列表 ---------------- */
 
+    let listReqSeq = 0;
+    let detailReqSeq = 0;
+
     async function loadList() {
+      const seq = ++listReqSeq;
       clear(listNode);
       listNode.appendChild(spinner());
       let data;
@@ -124,10 +128,12 @@ export default {
         if (state.query) query.set('q', state.query);
         data = await api.get(`/api/conversations?${query}`);
       } catch (err) {
+        if (seq !== listReqSeq) return;
         clear(listNode);
         listNode.appendChild(el('div', { class: 'muted small', style: { padding: '10px' } }, err.message));
         return;
       }
+      if (seq !== listReqSeq) return;
 
       clear(listNode);
       if (data.items.length === 0) {
@@ -139,7 +145,11 @@ export default {
           : (item.last_media_type ? `[${item.last_media_type}]` : '（还没有消息）');
         const isUnread = item.is_unread !== undefined ? !!item.is_unread : item.last_direction === 'user_to_admin';
         const badges = userBadges({
-          ...item, exempted: false, is_verified: !!item.is_verified, pending_appeal: !!item.pending_appeal,
+          ...item,
+          is_blacklisted: !!(item.is_blacklisted ?? item.blacklisted),
+          exempted: !!(item.exempted ?? false),
+          is_verified: !!item.is_verified,
+          pending_appeal: !!item.pending_appeal,
         });
         if (isUnread) badges.unshift(badge('待回复', 'accent'));
         const node = el('div', {
@@ -173,16 +183,20 @@ export default {
 
     async function loadDetail({ keepScroll = false, prependOlder = false } = {}) {
       if (!state.selectedUserId) return;
+      const targetUserId = state.selectedUserId;
+      const seq = ++detailReqSeq;
       if (!keepScroll && !prependOlder) chatBody.appendChild(spinner());
       const requestPage = prependOlder ? state.history.page : 1;
       let data;
       try {
-        data = await api.get(`/api/conversations/${state.selectedUserId}?page=${requestPage}&per_page=${HISTORY_SIZE}`);
+        data = await api.get(`/api/conversations/${targetUserId}?page=${requestPage}&per_page=${HISTORY_SIZE}`);
       } catch (err) {
+        if (seq !== detailReqSeq || targetUserId !== state.selectedUserId) return;
         clear(chatBody);
         chatBody.appendChild(el('div', { class: 'muted' }, err.message));
         return;
       }
+      if (seq !== detailReqSeq || targetUserId !== state.selectedUserId) return;
 
       const user = data.user;
       state.history.totalPages = data.messages.total_pages;
@@ -221,24 +235,32 @@ export default {
       button.disabled = true;
       try {
         const result = await task();
+        if (result === null) return;
         if (okText) toast(typeof okText === 'function' ? okText(result) : okText, 'ok');
         loadDetail({ keepScroll: true });
         loadList();
       } catch (err) {
         toast(err.message, 'error');
+      } finally {
         button.disabled = false;
       }
     }
 
-    async function pauseReview(user, appeal) {
-      const choice = await askPauseDuration({
+    function promptPauseReview(appeal) {
+      return askPauseDuration({
         title: appeal ? '批准暂停审查' : '暂停 AI 审查',
         hint: appeal
           ? `用户申请暂停审查。拦截理由：${appeal.blocked_reason || '（未记录）'}`
           : '暂停期间该用户的消息不经过 AI 审查，到期自动恢复；会通知用户。',
       });
-      if (!choice) return null;
-      return api.post(`/api/conversations/${user.user_id}/review-pause`, choice);
+    }
+
+    async function pauseWithPrompt(button, user, appeal) {
+      const choice = await promptPauseReview(appeal);
+      if (!choice) return;
+      return runAction(button,
+        () => api.post(`/api/conversations/${user.user_id}/review-pause`, choice),
+        (r) => r && `已暂停审查 ${r.duration_text}`);
     }
 
     function renderChatHead(user) {
@@ -258,8 +280,7 @@ export default {
         actions.push(resumeButton);
       } else {
         const pauseButton = el('button', { class: 'btn sm' }, '暂停审查');
-        pauseButton.addEventListener('click', () => runAction(pauseButton,
-          () => pauseReview(user, null), (r) => r && `已暂停审查 ${r.duration_text}`));
+        pauseButton.addEventListener('click', () => pauseWithPrompt(pauseButton, user, null));
         actions.push(pauseButton);
       }
 
@@ -304,8 +325,7 @@ export default {
       const appeal = user.pending_appeal;
       if (appeal) {
         const approveButton = el('button', { class: 'btn sm primary' }, '批准…');
-        approveButton.addEventListener('click', () => runAction(approveButton,
-          () => pauseReview(user, appeal), (r) => r && `已暂停审查 ${r.duration_text}`));
+        approveButton.addEventListener('click', () => pauseWithPrompt(approveButton, user, appeal));
         const rejectButton = el('button', { class: 'btn sm' }, '拒绝');
         rejectButton.addEventListener('click', () => runAction(rejectButton,
           () => api.post(`/api/conversations/${uid}/appeal/reject`), '已拒绝申请'));

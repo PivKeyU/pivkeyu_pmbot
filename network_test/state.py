@@ -80,6 +80,11 @@ class _TTLDict(dict):
 
     # ---------- 删路径：同步清时间戳，不留幽灵 ----------
 
+    def touch(self, key):
+        """就地修改嵌套状态后刷新该会话的活跃时间戳。"""
+        if key in self:
+            self._touched[key] = time.time()
+
     def __delitem__(self, key):
         super().__delitem__(key)        # key 不存在时照常抛 KeyError
         self._touched.pop(key, None)
@@ -148,3 +153,32 @@ def cleanup_cooldown(ts_dict: dict, max_age: float = COOLDOWN_MAX_AGE):
     for uid in list(ts_dict.keys()):
         if now - ts_dict[uid] > max_age:
             del ts_dict[uid]
+
+
+background_tasks = set()
+
+
+def track_task(task):
+    """追踪后台网络测试任务，记录未捕获异常并支持关机时取消。"""
+    import logging
+    background_tasks.add(task)
+
+    def _on_done(done_task):
+        background_tasks.discard(done_task)
+        if not done_task.cancelled():
+            exc = done_task.exception()
+            if exc is not None:
+                logging.error(f"network_test 后台任务异常: {exc}", exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+async def cancel_background_tasks():
+    """取消并等待所有运行中的网络测试后台任务退出。"""
+    import asyncio
+    tasks = [t for t in list(background_tasks) if not t.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)

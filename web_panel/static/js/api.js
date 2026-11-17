@@ -64,16 +64,24 @@ export const api = {
 export function connectEvents({ onEvent, onStatus }) {
   let socket = null;
   let heartbeat = null;
+  let retryTimer = null;
   let retry = 0;
   let closed = false;
+  let hasConnectedOnce = false;
 
   const open = () => {
+    if (closed) return;
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     socket = new WebSocket(`${protocol}//${location.host}/ws`);
 
     socket.onopen = () => {
+      const wasReconnect = hasConnectedOnce;
+      hasConnectedOnce = true;
       retry = 0;
       if (onStatus) onStatus(true);
+      if (wasReconnect && onEvent) {
+        onEvent({ type: 'ws_reconnected', ts: Date.now() / 1000 });
+      }
       heartbeat = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) socket.send('ping');
       }, 25000);
@@ -87,10 +95,12 @@ export function connectEvents({ onEvent, onStatus }) {
     };
     socket.onclose = () => {
       clearInterval(heartbeat);
+      heartbeat = null;
       if (onStatus) onStatus(false);
       if (!closed) {
         const delay = Math.min(15000, 1000 * 2 ** Math.min(retry++, 4));
-        setTimeout(open, delay);
+        clearTimeout(retryTimer);
+        retryTimer = setTimeout(open, delay);
       }
     };
     socket.onerror = () => socket && socket.close();
@@ -101,6 +111,7 @@ export function connectEvents({ onEvent, onStatus }) {
     close() {
       closed = true;
       clearInterval(heartbeat);
+      clearTimeout(retryTimer);
       if (socket) socket.close();
     },
   };

@@ -48,24 +48,6 @@ DECISION_PROTOCOLS = {
 }
 
 PROVIDERS = {
-    'inception': {
-        'label': 'Inception Mercury',
-        'base_url': 'https://api.inceptionlabs.ai/v1',
-        'default_model': 'mercury-decide',
-    },
-    'openai': {
-        'label': 'OpenAI Decisions',
-        'base_url': 'https://api.openai.com/v1',
-        'default_model': 'gpt-6-luna',
-    },
-    'typesafe': {
-        'label': 'TypeSafe Jev',
-        'base_url': 'https://api.typesafe.ai/v1',
-        'default_model': 'jev-latest',
-    },
-}
-
-PROVIDERS = {
     'gemini': {
         'label': 'Google Gemini',
         'short': 'Gemini',

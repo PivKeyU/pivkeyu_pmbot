@@ -1,58 +1,73 @@
+import asyncio
 import json
-import os
-import socket
-import time
 import logging
-from typing import Dict, Optional, Any
+import os
+import threading
+import time
+from typing import Any, Dict, Optional
 import feedparser
 
 logger = logging.getLogger(__name__)
 
-# 抓取订阅源标题的超时（秒），防止 feed 服务器挂起时工作线程被永久占用
+# 抓取订阅源标题的超时（秒）与最大字节上限
 FETCH_TITLE_TIMEOUT = 15
+_MAX_TITLE_FETCH_BYTES = 2 * 1024 * 1024
 
 subscriptions_data: Dict[str, Dict[str, Any]] = {}
+_save_lock = threading.RLock()
 
 
-def get_feed_title(feed_url: str) -> Optional[str]:
+async def fetch_feed_title(feed_url: str) -> Optional[str]:
+    """异步安全抓取订阅源标题（复用 pinned-DNS 公网校验与大小限制，不修改全局 socket 超时）。"""
     try:
-        # feedparser 自身不支持 timeout 参数，临时设置 socket 默认超时兜底
-        old_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(FETCH_TITLE_TIMEOUT)
-        try:
-            feed = feedparser.parse(feed_url)
-        finally:
-            socket.setdefaulttimeout(old_timeout)
-        if feed.feed and feed.feed.title:
-            return feed.feed.title
+        from services.web_monitor import fetch_public_bytes
+        raw_bytes, _status, _final_url, _charset = await fetch_public_bytes(
+            feed_url,
+            timeout_seconds=FETCH_TITLE_TIMEOUT,
+            max_bytes=_MAX_TITLE_FETCH_BYTES,
+        )
+        feed = await asyncio.to_thread(feedparser.parse, raw_bytes)
+        if feed.feed and feed.feed.get("title"):
+            return str(feed.feed["title"]).strip()
         logger.warning("无法获取订阅源的标题: %s", feed_url)
     except Exception as exc:
         logger.error("获取订阅源 %s 标题时出错: %s", feed_url, exc)
     return None
 
 
-def _ensure_feed_data_structure(feed_data: Dict[str, Any], feed_url: str) -> None:
-    if "keywords" not in feed_data:
+def _ensure_feed_data_structure(
+    feed_data: Dict[str, Any],
+    feed_url: str,
+    *,
+    skip_title_fetch: bool = False,
+) -> None:
+    if "keywords" not in feed_data or not isinstance(feed_data["keywords"], list):
         feed_data["keywords"] = []
     if "last_entry_id" not in feed_data:
         feed_data["last_entry_id"] = None
-    if "title" not in feed_data:
-        feed_data["title"] = get_feed_title(feed_url) or "未知标题"
+    if "seen_entry_ids" not in feed_data or not isinstance(feed_data["seen_entry_ids"], list):
+        feed_data["seen_entry_ids"] = []
+    if "title" not in feed_data or not feed_data["title"]:
+        feed_data["title"] = feed_url if skip_title_fetch else "未知标题"
 
 
-def _ensure_user_data_structure(user_config: Dict[str, Any]) -> Dict[str, Any]:
+def _ensure_user_data_structure(
+    user_config: Dict[str, Any],
+    *,
+    skip_title_fetch: bool = False,
+) -> Dict[str, Any]:
     if "rss_feeds" not in user_config:
         user_config["rss_feeds"] = {}
     else:
         for feed_url, feed_data in user_config["rss_feeds"].items():
-            _ensure_feed_data_structure(feed_data, feed_url)
+            _ensure_feed_data_structure(feed_data, feed_url, skip_title_fetch=skip_title_fetch)
 
     user_config.setdefault("custom_footer", None)
     user_config.setdefault("link_preview_enabled", True)
     return user_config
 
 
-def load_subscriptions(data_file: str) -> Dict[str, Dict[str, Any]]:
+def load_subscriptions(data_file: str, *, skip_title_fetch: bool = False) -> Dict[str, Dict[str, Any]]:
     global subscriptions_data
 
     if not os.path.exists(data_file):
@@ -67,7 +82,10 @@ def load_subscriptions(data_file: str) -> Dict[str, Dict[str, Any]]:
         subscriptions_data = {}
         for chat_id_str, user_config in loaded_data.items():
             chat_id = str(chat_id_str)
-            subscriptions_data[chat_id] = _ensure_user_data_structure(user_config.copy())
+            subscriptions_data[chat_id] = _ensure_user_data_structure(
+                user_config.copy(),
+                skip_title_fetch=skip_title_fetch,
+            )
 
         logger.info("订阅已成功从 %s 加载", data_file)
     except json.JSONDecodeError as exc:
@@ -96,27 +114,27 @@ def load_subscriptions(data_file: str) -> Dict[str, Dict[str, Any]]:
 
 
 def save_subscriptions(data_file: str) -> None:
-    global subscriptions_data
-
-    temp_file = data_file + ".tmp"
-    try:
-        data_dir = os.path.dirname(data_file)
-        if data_dir:
-            os.makedirs(data_dir, exist_ok=True)
-
-        # 先写入临时文件，再通过 os.replace 原子替换，
-        # 避免进程中断时留下损坏的 JSON
-        with open(temp_file, "w", encoding="utf-8") as file:
-            json.dump(subscriptions_data, file, indent=4, ensure_ascii=False)
-        os.replace(temp_file, data_file)
-        logger.debug("订阅已成功保存到 %s", data_file)
-    except Exception as exc:
+    with _save_lock:
+        temp_file = data_file + ".tmp"
         try:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-        except OSError:
-            pass
-        logger.error("保存订阅到 %s 时出错: %s", data_file, exc)
+            data_dir = os.path.dirname(data_file)
+            if data_dir:
+                os.makedirs(data_dir, exist_ok=True)
+
+            # 先写入临时文件，再通过 os.replace 原子替换，
+            # 避免进程中断或并发写入时留下损坏的 JSON
+            snapshot = json.dumps(subscriptions_data, indent=4, ensure_ascii=False)
+            with open(temp_file, "w", encoding="utf-8") as file:
+                file.write(snapshot)
+            os.replace(temp_file, data_file)
+            logger.debug("订阅已成功保存到 %s", data_file)
+        except Exception as exc:
+            try:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            except OSError:
+                pass
+            logger.error("保存订阅到 %s 时出错: %s", data_file, exc)
 
 
 def get_subscriptions() -> Dict[str, Dict[str, Any]]:

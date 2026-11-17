@@ -62,7 +62,7 @@ async def _ensure_access(update: Update):
 def is_valid_url(url_string: str) -> bool:
     try:
         result = urlparse(url_string)
-        return all([result.scheme, result.netloc])
+        return result.scheme.lower() in ("http", "https") and bool(result.netloc)
     except ValueError:
         return False
 
@@ -115,7 +115,14 @@ async def add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     feed_url = context.args[0]
     if not is_valid_url(feed_url):
         await message.reply_text(copy_text.with_deco(
-            f"这条链接 '{feed_url}' 看起来不太对，{_who(chat_id)}检查一下再交给女仆吧。", 'ERROR'))
+            f"这条链接 '{feed_url}' 看起来不太对（仅支持 http/https），{_who(chat_id)}检查一下再交给女仆吧。", 'ERROR'))
+        return
+
+    from services import web_monitor
+    try:
+        await web_monitor._assert_public_url(feed_url)
+    except ValueError as exc:
+        await message.reply_text(copy_text.with_deco(str(exc), 'ERROR'))
         return
 
     subscriptions_data = data_manager.get_subscriptions()
@@ -126,16 +133,13 @@ async def add_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"这份茶点 {feed_url} 已经在{_who(chat_id)}的订阅单里啦。", 'OK'))
         return
 
-    if hasattr(asyncio, "to_thread"):
-        feed_title = await asyncio.to_thread(data_manager.get_feed_title, feed_url) or "未命名茶点"
-    else:
-        loop = asyncio.get_event_loop()
-        feed_title = await loop.run_in_executor(None, data_manager.get_feed_title, feed_url) or "未命名茶点"
+    feed_title = await data_manager.fetch_feed_title(feed_url) or "未命名茶点"
 
     subscriptions_data[chat_id]["rss_feeds"][feed_url] = {
         "title": feed_title,
         "keywords": [],
         "last_entry_id": None,
+        "seen_entry_ids": [],
     }
     data_manager.save_subscriptions(_get_data_file(context))
 
@@ -159,14 +163,21 @@ async def list_feeds(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             f"{_who(chat_id)}还没有任何 RSS 茶点。使用 /rss_add <链接> 添加一份吧。", 'EMPTY'))
         return
 
-    message_content = f"{_who(chat_id)}当前的 RSS 茶点单:\n"
+    lines = [f"{_who(chat_id)}当前的 RSS 茶点单:"]
+    total = len(feeds)
+    shown = 0
     for idx, (url, data) in enumerate(feeds.items(), 1):
         title = data.get("title", "N/A")
         keywords_list = data.get("keywords", [])
         keywords_str = f" (口味词: {', '.join(keywords_list)})" if keywords_list else ""
-        message_content += f"{idx}. {title} - {url}{keywords_str}\n"
+        entry_line = f"{idx}. {title} - {url}{keywords_str}"
+        if len("\n".join(lines + [entry_line])) > 3700:
+            lines.append(f"...（其余 {total - shown} 份请到 Web 面板查看）")
+            break
+        lines.append(entry_line)
+        shown += 1
 
-    await message.reply_text(copy_text.with_deco_head(message_content, 'GREET'))
+    await message.reply_text(copy_text.with_deco_head("\n".join(lines), 'GREET'))
 
 
 async def remove_feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -240,8 +251,9 @@ async def add_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     feed_data = subscriptions_data[chat_id]["rss_feeds"][target_feed_url]
     feed_data.setdefault("keywords", [])
+    existing_lower = {k.lower() for k in feed_data["keywords"]}
 
-    if keyword_to_add in feed_data["keywords"]:
+    if keyword_to_add in existing_lower:
         feed_title = feed_data.get("title", target_feed_url)
         await message.reply_text(copy_text.with_deco(
             f"口味词 '{keyword_to_add}' 已经在 '{feed_title}' 里啦。", 'OK'))
@@ -267,7 +279,7 @@ async def remove_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     feed_identifier = context.args[0]
-    keyword_to_remove = " ".join(context.args[1:]).lower()
+    keyword_to_remove = " ".join(context.args[1:]).strip()
     subscriptions_data = data_manager.get_subscriptions()
     feeds = subscriptions_data.get(chat_id, {}).get("rss_feeds", {})
 
@@ -282,12 +294,8 @@ async def remove_keyword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await message.reply_text(copy_text.rss_feed_not_found(feed_identifier))
         return
 
-    feed_data = subscriptions_data[chat_id]["rss_feeds"][target_feed_url]
-    feed_title = feed_data.get("title", target_feed_url)
-
-    if keyword_to_remove in feed_data.get("keywords", []):
-        feed_data["keywords"].remove(keyword_to_remove)
-        data_manager.save_subscriptions(_get_data_file(context))
+    feed_title = feeds[target_feed_url].get("title", target_feed_url)
+    if data_manager.remove_keyword(chat_id, target_feed_url, keyword_to_remove, _get_data_file(context)):
         await message.reply_text(copy_text.with_deco(
             f"口味词 '{keyword_to_remove}' 已从 '{feed_title}' 删除。", 'OK'))
         logger.info("用户 %s 从订阅源 %s 移除了关键词 '%s'", chat_id, target_feed_url, keyword_to_remove)

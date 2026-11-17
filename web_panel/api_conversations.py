@@ -3,7 +3,7 @@
 import logging
 import mimetypes
 
-from aiohttp import web
+from aiohttp import ClientTimeout, web
 from telegram.error import BadRequest, TelegramError
 
 from config import config
@@ -35,7 +35,7 @@ async def _get_user_or_404(user_id: int):
 @routes.get('/api/conversations')
 async def list_conversations(request):
     page, per_page, offset = http_utils.pagination(request, default_per=20)
-    query = (request.query.get('q') or '').strip() or None
+    query = http_utils.search_query(request)
     items = await db.get_conversation_summaries(limit=per_page, offset=offset, query=query)
     total = await db.get_conversation_summaries_count(query=query)
     return http_utils.ok(http_utils.page_payload(items, total, page, per_page))
@@ -252,6 +252,9 @@ async def unblock_user(request):
     return http_utils.ok({'message': message})
 
 
+_MEDIA_PROXY_MAX_BYTES = 25 * 1024 * 1024
+
+
 @routes.get('/api/media/{file_id}')
 async def media_proxy(request):
     file_id = request.match_info['file_id']
@@ -262,20 +265,39 @@ async def media_proxy(request):
     except TelegramError as exc:
         return http_utils.fail(f'获取文件失败: {exc}', status=404)
 
-    base_file_url = getattr(bot, 'base_file_url', None) or f"{bot.base_url}bot{bot.token}/"
-    url = f"{base_file_url}{tg_file.file_path}"
-    guessed_type = mimetypes.guess_type(tg_file.file_path or '')[0]
+    file_path = str(getattr(tg_file, 'file_path', '') or '')
+    if file_path.startswith(('http://', 'https://')):
+        url = file_path
+    else:
+        base_file_url = getattr(bot, 'base_file_url', None)
+        if not base_file_url:
+            base_root = str(getattr(bot, 'base_url', 'https://api.telegram.org/bot')).rstrip('/')
+            if base_root.endswith('/bot'):
+                base_root = base_root[:-4] + '/file/bot'
+            base_file_url = f"{base_root}{bot.token}"
+        url = f"{base_file_url.rstrip('/')}/{file_path.lstrip('/')}"
+
+    guessed_type = mimetypes.guess_type(file_path)[0]
     content_type = guessed_type if guessed_type in INLINE_MEDIA_TYPES else 'application/octet-stream'
 
     try:
-        upstream = await session.get(url)
+        upstream = await session.get(
+            url,
+            timeout=ClientTimeout(connect=10, sock_read=30, total=60),
+        )
     except Exception as exc:
-        logger.warning('媒体代理请求失败: %s', exc)
+        safe_err = str(exc).replace(getattr(bot, 'token', '') or '', '***')
+        logger.warning('媒体代理请求失败: %s', safe_err)
         return http_utils.fail('拉取媒体失败', status=502)
 
     if upstream.status != 200:
         upstream.release()
         return http_utils.fail('拉取媒体失败', status=502)
+
+    content_len = upstream.headers.get('Content-Length')
+    if content_len and content_len.isdigit() and int(content_len) > _MEDIA_PROXY_MAX_BYTES:
+        upstream.release()
+        return http_utils.fail('媒体文件过大', status=413)
 
     response = web.StreamResponse(
         status=200,
@@ -286,8 +308,12 @@ async def media_proxy(request):
         },
     )
     await response.prepare(request)
+    written = 0
     try:
         async for chunk in upstream.content.iter_chunked(64 * 1024):
+            written += len(chunk)
+            if written > _MEDIA_PROXY_MAX_BYTES:
+                break
             await response.write(chunk)
     finally:
         upstream.release()

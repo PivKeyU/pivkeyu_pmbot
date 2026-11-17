@@ -5,6 +5,7 @@ Telegram 话题里的按钮 / 命令和 Web 面板调的是同一组函数，两
 - 申诉记录在 review_appeals 表，处理后同步改掉话题里那条申请消息的按钮。
 """
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,18 @@ from utils import copy as copy_text
 from web_panel import events as panel_events
 
 logger = logging.getLogger(__name__)
+_appeal_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_appeal_lock(user_id: int) -> asyncio.Lock:
+    lock = _appeal_locks.get(user_id)
+    if lock is None:
+        if len(_appeal_locks) >= 5000:
+            for uid in [uid for uid, lck in _appeal_locks.items() if not lck.locked()]:
+                _appeal_locks.pop(uid, None)
+        lock = asyncio.Lock()
+        _appeal_locks[user_id] = lock
+    return lock
 
 EXEMPTION_PRUNE_JOB_KEY = 'exemption_prune_job'
 EXEMPTION_PRUNE_SECONDS = 3600
@@ -177,11 +190,26 @@ async def _send_released(bot, row: dict, thread_id: int):
         lines.append(row['content'])
     text = '\n'.join(lines)
     target = {'chat_id': config.FORUM_GROUP_ID, 'message_thread_id': thread_id}
-    if row.get('media_type') == 'photo' and row.get('media_file_id'):
-        return await bot.send_photo(photo=row['media_file_id'], caption=text[:1024], **target)
-    if row.get('media_type') == 'sticker' and row.get('media_file_id'):
-        await bot.send_message(text=text, **target)
-        return await bot.send_sticker(sticker=row['media_file_id'], **target)
+    media_type = row.get('media_type')
+    file_id = row.get('media_file_id')
+    if media_type == 'photo' and file_id:
+        return await bot.send_photo(photo=file_id, caption=text[:1024], **target)
+    if media_type == 'video' and file_id and hasattr(bot, 'send_video'):
+        return await bot.send_video(video=file_id, caption=text[:1024], **target)
+    if media_type == 'animation' and file_id and hasattr(bot, 'send_animation'):
+        return await bot.send_animation(animation=file_id, caption=text[:1024], **target)
+    if media_type == 'document' and file_id and hasattr(bot, 'send_document'):
+        return await bot.send_document(document=file_id, caption=text[:1024], **target)
+    if media_type == 'audio' and file_id and hasattr(bot, 'send_audio'):
+        return await bot.send_audio(audio=file_id, caption=text[:1024], **target)
+    if media_type == 'voice' and file_id and hasattr(bot, 'send_voice'):
+        return await bot.send_voice(voice=file_id, caption=text[:1024], **target)
+    if media_type == 'video_note' and file_id and hasattr(bot, 'send_video_note'):
+        await bot.send_message(text=text[:4096], **target)
+        return await bot.send_video_note(video_note=file_id, **target)
+    if media_type == 'sticker' and file_id:
+        await bot.send_message(text=text[:4096], **target)
+        return await bot.send_sticker(sticker=file_id, **target)
     return await bot.send_message(text=text[:4096], **target)
 
 
@@ -314,35 +342,46 @@ async def create_appeal(bot, user_id: int, ensure_thread) -> tuple:
     """
     if not await ai_options.appeal_enabled():
         return False, copy_text.with_deco('申请通道暂时关闭啦，客人稍后再试嘛。', 'ERROR')
-    user = await db.get_user(user_id)
-    if not user:
-        return False, copy_text.with_deco('女仆找不到客人的登记信息，请重新发一条消息。', 'ERROR')
-    if await db.get_pending_review_appeal(user_id):
-        return False, copy_text.with_deco('客人的申请已经送到管理员手上啦，耐心等一下嘛。', 'WAIT')
-    latest = await db.get_latest_review_appeal(user_id)
-    created = _parse_db_time(latest.get('created_at')) if latest else None
-    if created and datetime.now(timezone.utc) - created < timedelta(minutes=APPEAL_COOLDOWN_MINUTES):
-        return False, copy_text.with_deco(f'申请太频繁啦，{APPEAL_COOLDOWN_MINUTES} 分钟后再试吧。', 'WAIT')
+    async with _get_appeal_lock(user_id):
+        user = await db.get_user(user_id)
+        if not user:
+            return False, copy_text.with_deco('女仆找不到客人的登记信息，请重新发一条消息。', 'ERROR')
+        if await db.get_pending_review_appeal(user_id):
+            return False, copy_text.with_deco('客人的申请已经送到管理员手上啦，耐心等一下嘛。', 'WAIT')
+        latest = await db.get_latest_review_appeal(user_id)
+        created = _parse_db_time(latest.get('created_at')) if latest else None
+        if created and datetime.now(timezone.utc) - created < timedelta(minutes=APPEAL_COOLDOWN_MINUTES):
+            return False, copy_text.with_deco(f'申请太频繁啦，{APPEAL_COOLDOWN_MINUTES} 分钟后再试吧。', 'WAIT')
 
-    filtered = await db.get_latest_filtered_message(user_id)
-    reason = (filtered or {}).get('reason') or '（未记录）'
-    appeal_id = await db.create_review_appeal(user_id, reason)
+        filtered = await db.get_latest_filtered_message(user_id)
+        reason = (filtered or {}).get('reason') or '（未记录）'
+        appeal_id = await db.create_review_appeal(user_id, reason)
 
-    if not user.get('thread_id'):
-        user['thread_id'] = await ensure_thread(user)
-    preview = ((filtered or {}).get('content') or '').strip()
-    lines = [
-        f'🙋 {_user_label(user)} 认为自己的消息被 AI 误拦，申请暂停审查。',
-        f'拦截理由：{reason}',
-    ]
-    if preview:
-        lines.append(f'被拦消息：{preview[:300]}')
-    lines.append('请选择暂停时长（期间该用户的消息不经过 AI 审查，到期自动恢复）：')
-    sent = await _notify_topic(bot, user, '\n'.join(lines), _appeal_admin_keyboard(appeal_id))
-    if sent:
-        await db.set_review_appeal_topic_message(appeal_id, sent.message_id)
-    panel_events.publish('appeal', user_id=user_id, appeal_id=appeal_id)
-    return True, copy_text.with_deco('申请已经交给管理员啦，处理好之后女仆会第一时间告诉客人。', 'OK')
+        if not user.get('thread_id'):
+            user['thread_id'] = await ensure_thread(user)
+        preview = ((filtered or {}).get('content') or '').strip()
+        lines = [
+            f'🙋 {_user_label(user)} 认为自己的消息被 AI 误拦，申请暂停审查。',
+            f'拦截理由：{reason}',
+        ]
+        if preview:
+            lines.append(f'被拦消息：{preview[:300]}')
+        lines.append('请选择暂停时长（期间该用户的消息不经过 AI 审查，到期自动恢复）：')
+        text = '\n'.join(lines)
+        markup = _appeal_admin_keyboard(appeal_id)
+        sent = await _notify_topic(bot, user, text, markup)
+        if sent is None and user.get('thread_id') and config.FORUM_GROUP_ID:
+            # 话题可能已被管理员删除，清空并重建一次重试
+            await db.update_user_thread_id(user_id, None)
+            user['thread_id'] = None
+            new_thread = await ensure_thread(user)
+            if new_thread:
+                user['thread_id'] = new_thread
+                sent = await _notify_topic(bot, user, text, markup)
+        if sent:
+            await db.set_review_appeal_topic_message(appeal_id, sent.message_id)
+        panel_events.publish('appeal', user_id=user_id, appeal_id=appeal_id)
+        return True, copy_text.with_deco('申请已经交给管理员啦，处理好之后女仆会第一时间告诉客人。', 'OK')
 
 
 async def _close_topic_appeal_message(bot, appeal: Optional[dict], text: str, reply_markup=None) -> None:
@@ -437,19 +476,27 @@ async def reject_appeal(bot, user_id: int, handled_by: int, source: str) -> bool
     return True
 
 
-async def ask_custom_duration(bot, application, appeal: dict) -> None:
+async def ask_custom_duration(bot, application, appeal: dict) -> bool:
     """话题里点了「自定义时长」：发一条 ForceReply，管理员回复它即可输入时长。"""
     user = await db.get_user(appeal['user_id'])
     if not user or not user.get('thread_id'):
-        return
-    sent = await bot.send_message(
-        chat_id=config.FORUM_GROUP_ID, message_thread_id=user['thread_id'],
-        text=copy_text.with_deco(
-            '请直接回复这条消息告诉女仆要暂停多久，例如：45m、3h、1h30m、2d、7天（纯数字按分钟算），'
-            '回复「永久」则一直不审查。这条回复不会转发给用户。', 'ASK'),
-        reply_markup=ForceReply(selective=True, input_field_placeholder='例如 3h'),
-    )
-    application.bot_data.setdefault(CUSTOM_PROMPTS_KEY, {})[sent.message_id] = appeal['id']
+        return False
+    try:
+        sent = await bot.send_message(
+            chat_id=config.FORUM_GROUP_ID, message_thread_id=user['thread_id'],
+            text=copy_text.with_deco(
+                '请直接回复这条消息告诉女仆要暂停多久，例如：45m、3h、1h30m、2d、7天（纯数字按分钟算），'
+                '回复「永久」则一直不审查。这条回复不会转发给用户。', 'ASK'),
+            reply_markup=ForceReply(selective=True, input_field_placeholder='例如 3h'),
+        )
+    except TelegramError as exc:
+        logger.warning('发送自定义暂停时长提示失败 user_id=%s: %s', appeal['user_id'], exc)
+        return False
+    prompts = application.bot_data.setdefault(CUSTOM_PROMPTS_KEY, {})
+    if len(prompts) >= 500:
+        prompts.pop(next(iter(prompts)), None)
+    prompts[sent.message_id] = appeal['id']
+    return True
 
 
 async def handle_custom_duration_reply(message, bot, application) -> bool:
@@ -461,6 +508,10 @@ async def handle_custom_duration_reply(message, bot, application) -> bool:
     if not message.from_user or not await db.is_admin(message.from_user.id):
         return False
     appeal = await db.get_review_appeal(prompts[reply_to.message_id])
+    if not appeal or appeal.get('status') != 'pending':
+        prompts.pop(reply_to.message_id, None)
+        await message.reply_text(copy_text.with_deco('这条申请已经处理过或不存在啦。', 'ERROR'))
+        return True
     text = (message.text or '').strip()
     if text in ('永久', 'permanent', 'forever'):
         minutes = None
@@ -471,9 +522,6 @@ async def handle_custom_duration_reply(message, bot, application) -> bool:
                 '这个时长女仆看不懂呢，换成 45m / 3h / 2d 这样的写法再回复一次嘛。', 'ERROR'))
             return True
     prompts.pop(reply_to.message_id, None)
-    if not appeal:
-        await message.reply_text(copy_text.with_deco('这条申请找不到啦。', 'ERROR'))
-        return True
     result = await grant_review_pause(bot, appeal['user_id'], minutes, message.from_user.id, 'TG 话题')
     await message.reply_text(copy_text.with_deco(f"好的，已暂停审查 {result['duration_text']}。", 'OK'))
     return True

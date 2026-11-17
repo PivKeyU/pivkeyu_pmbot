@@ -1,16 +1,27 @@
+import asyncio
 import time
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.helpers import escape_markdown
 from database import models as db
 from database.db_manager import db_manager
 from services.gemini_service import gemini_service
 from config import config
 from utils import copy as copy_text
+from utils.markdown import escape_markdown as _escape_md
 
 pending_unblocks = {}
+_MAX_PENDING_UNBLOCKS = 5000
+_unblock_locks: dict[int, asyncio.Lock] = {}
 
-# 解封小验证允许的答错次数（与主验证一致，达到上限才升级永久拉黑）
-MAX_UNBLOCK_ATTEMPTS = config.MAX_VERIFICATION_ATTEMPTS
+
+def _get_unblock_lock(user_id: int) -> asyncio.Lock:
+    lock = _unblock_locks.get(user_id)
+    if lock is None:
+        if len(_unblock_locks) >= _MAX_PENDING_UNBLOCKS:
+            for uid in [uid for uid, lck in _unblock_locks.items() if not lck.locked()]:
+                _unblock_locks.pop(uid, None)
+        lock = asyncio.Lock()
+        _unblock_locks[user_id] = lock
+    return lock
 
 
 def _cleanup_expired_unblocks() -> None:
@@ -19,18 +30,44 @@ def _cleanup_expired_unblocks() -> None:
     expired = [uid for uid, session in pending_unblocks.items() if now > session.get('expires_at', now)]
     for uid in expired:
         del pending_unblocks[uid]
+    while len(pending_unblocks) > _MAX_PENDING_UNBLOCKS:
+        oldest = next(iter(pending_unblocks))
+        pending_unblocks.pop(oldest, None)
+
+
+def _clear_user_challenges(user_id: int) -> None:
+    pending_unblocks.pop(user_id, None)
+    try:
+        from services import verification
+        verification.pending_verifications.pop(user_id, None)
+    except Exception:
+        pass
+
+
+def _build_unblock_keyboard(options: list[str]) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(option, callback_data=f"unblock_idx:{idx}")
+        for idx, option in enumerate(options)
+    ]
+    per_row = 4 if options and max(len(option) for option in options) <= 4 else 2
+    return InlineKeyboardMarkup([buttons[i:i + per_row] for i in range(0, len(buttons), per_row)])
+
 
 async def block_user(user_id: int, reason: str, admin_id: int, permanent: bool = False):
     await db.add_to_blacklist(user_id, reason, admin_id, permanent)
+    _clear_user_challenges(user_id)
     # 锁门是不可撤销的：用「别扭的关心」语气，同时完整保留 user_id / 永久与否 / reason
     return (
         f"哼，既然管理员开口了……已经把 {user_id} 请进黑名单小本本啦"
         f"{'，这次是永久锁门哦。' if permanent else '。'}\n登记理由: {reason}"
     )
 
+
 async def unblock_user(user_id: int):
+    _clear_user_challenges(user_id)
     await db.remove_from_blacklist(user_id)
-    await db.set_user_blacklist_strikes(user_id, 0)
+    if await db.get_user(user_id):
+        await db.set_user_blacklist_strikes(user_id, 0)
     return f"哼，既然管理员开口了……女仆已经替 {user_id} 把通道打开了，进去吧。"
 
 def is_unblock_pending(user_id: int) -> tuple[bool, bool]:
@@ -59,99 +96,123 @@ def get_pending_unblock_message(user_id: int):
     if time.time() > session['expires_at']:
         del pending_unblocks[user_id]
         return None
-    
-    question = session['question']
-    options = session['options']
-    
-    keyboard = [
-        [InlineKeyboardButton(option, callback_data=f"unblock_{option}") for option in options]
-    ]
-    
-    return question, InlineKeyboardMarkup(keyboard)
+    if session.get('needs_refresh'):
+        return None
+
+    return session['question'], _build_unblock_keyboard(session['options'])
+
 
 async def start_unblock_process(user_id: int):
-    _cleanup_expired_unblocks()
+    async with _get_unblock_lock(user_id):
+        _cleanup_expired_unblocks()
 
-    is_blocked, is_permanent = await db.is_blacklisted(user_id)
-    
-    if is_permanent:
-        return "客人已被管理员永久锁门，这条自动申诉通道打不开呢，得请管理员女仆长亲自出手才行。", None
+        is_blocked, is_permanent = await db.is_blacklisted(user_id)
+        if is_permanent:
+            pending_unblocks.pop(user_id, None)
+            return "客人已被管理员永久锁门，这条自动申诉通道打不开呢，得请管理员女仆长亲自出手才行。", None
+        if not is_blocked:
+            pending_unblocks.pop(user_id, None)
+            return "客人的通道已经是打开的啦。", None
 
-    has_pending, is_expired = is_unblock_pending(user_id)
-    
-    if has_pending and not is_expired:
-        unblock_data = get_pending_unblock_message(user_id)
-        if unblock_data:
-            question, keyboard = unblock_data
-            # 沿用会话里累计的错误次数：首次温柔邀请，第 2 次起升级为傲娇
-            attempts = pending_unblocks.get(user_id, {}).get('attempts', 1)
-            return (
-                "客人还有解封小验证没完成，先答完再继续发消息嘛。\n\n"
-                f"客人暂时被请到门外等候啦。\n\n"
-                f"{copy_text.unblock_question(question, attempts)}"
-            ), keyboard
-    
-    challenge = await gemini_service.generate_unblock_question()
-    question = challenge['question']
-    correct_answer = challenge['correct_answer']
-    options = challenge['options']
-    
-    pending_unblocks[user_id] = {
-        'answer': correct_answer,
-        'question': question,
-        'options': options,
-        'attempts': 0,
-        'created_at': time.time(),
-        'expires_at': time.time() + config.VERIFICATION_TIMEOUT
-    }
-    
-    keyboard = [
-        [InlineKeyboardButton(option, callback_data=f"unblock_{option}") for option in options]
-    ]
-    
-    # 首次提问统一用温柔邀请，不赌会话里是否残留旧计数
-    return (
-        "客人暂时被请到门外等候啦。\n\n"
-        f"{copy_text.unblock_question(question, 1)}"
-    ), InlineKeyboardMarkup(keyboard)
+        existing = pending_unblocks.get(user_id)
+        existing_attempts = 0
+        if existing and time.time() <= existing.get('expires_at', 0):
+            if not existing.get('needs_refresh'):
+                unblock_data = get_pending_unblock_message(user_id)
+                if unblock_data:
+                    question, keyboard = unblock_data
+                    attempts = existing.get('attempts', 0) + 1
+                    return (
+                        "客人还有解封小验证没完成，先答完再继续发消息嘛。\n\n"
+                        f"客人暂时被请到门外等候啦。\n\n"
+                        f"{copy_text.unblock_question(question, attempts)}"
+                    ), keyboard
+            else:
+                existing_attempts = existing.get('attempts', 0)
+
+        challenge = await gemini_service.generate_unblock_question()
+        question = challenge['question']
+        correct_answer = challenge['correct_answer']
+        options = challenge['options']
+
+        pending_unblocks[user_id] = {
+            'answer': correct_answer,
+            'question': question,
+            'options': options,
+            'attempts': existing_attempts,
+            'needs_refresh': False,
+            'created_at': time.time(),
+            'expires_at': time.time() + config.VERIFICATION_TIMEOUT,
+        }
+
+        keyboard = _build_unblock_keyboard(options)
+        display_attempt = existing_attempts + 1 if existing_attempts else 1
+        return (
+            "客人暂时被请到门外等候啦。\n\n"
+            f"{copy_text.unblock_question(question, display_attempt)}"
+        ), keyboard
+
 
 async def verify_unblock_answer(user_id: int, user_answer: str):
-    _cleanup_expired_unblocks()
+    async with _get_unblock_lock(user_id):
+        _cleanup_expired_unblocks()
 
-    if user_id not in pending_unblocks:
-        return "解封小会话已经过期或不见啦，客人重新发一条消息再领一次题目嘛。", False
+        is_blocked, is_permanent = await db.is_blacklisted(user_id)
+        if is_permanent:
+            pending_unblocks.pop(user_id, None)
+            return "客人已被管理员永久锁门，这条自动申诉通道打不开呢，得请管理员女仆长亲自出手才行。", False
+        if not is_blocked:
+            pending_unblocks.pop(user_id, None)
+            return "客人的通道已经是打开的啦。", False
 
-    session = pending_unblocks[user_id]
+        if user_id not in pending_unblocks:
+            return "解封小会话已经过期或不见啦，客人重新发一条消息再领一次题目嘛。", False
 
-    if time.time() > session['expires_at']:
-        del pending_unblocks[user_id]
-        return "解封验证超时啦，客人重新发一条消息，女仆再给一份新题目。", False
+        session = pending_unblocks[user_id]
 
-    if user_answer == session['answer']:
-        del pending_unblocks[user_id]
-        await db.remove_from_blacklist(user_id)
-        await db.set_user_blacklist_strikes(user_id, 0)
-        return "哼，答对啦……才不是女仆担心客人在外面冻着呢。通道已经打开，客人进去吧。", True
-    else:
-        # 与主验证一致：累计答错次数，答错一次不直接永久拉黑
+        if time.time() > session['expires_at']:
+            del pending_unblocks[user_id]
+            return "解封验证超时啦，客人重新发一条消息，女仆再给一份新题目。", False
+
+        if session.get('needs_refresh'):
+            return "这道旧题目已经作废啦，客人重新发一条消息领新题目嘛。", False
+
+        resolved_answer = user_answer
+        if str(user_answer).startswith('idx:'):
+            try:
+                idx = int(str(user_answer).split(':', 1)[1])
+                resolved_answer = session['options'][idx]
+            except (ValueError, IndexError):
+                return "这道旧题目已经失效啦，客人重新发一条消息领新题目嘛。", False
+
+        if resolved_answer == session['answer']:
+            del pending_unblocks[user_id]
+            await db.remove_from_blacklist(user_id)
+            await db.set_user_blacklist_strikes(user_id, 0)
+            return "哼，答对啦……才不是女仆担心客人在外面冻着呢。通道已经打开，客人进去吧。", True
+
+        max_attempts = max(1, int(getattr(config, 'MAX_VERIFICATION_ATTEMPTS', 3) or 3))
         session['attempts'] += 1
-        if session['attempts'] >= MAX_UNBLOCK_ATTEMPTS:
+        if session['attempts'] >= max_attempts:
             del pending_unblocks[user_id]
             await _escalate_to_permanent(user_id)
             return "不是女仆狠心……答案错太多次了，女仆只能按规则把通道永久锁上。", False
-        # 保留会话，答错次数累计；客人重新发一条消息即可再试
-        remaining = MAX_UNBLOCK_ATTEMPTS - session['attempts']
+
+        # 答错后作废本题，下次发消息重新换题（防止排除法蒙题）
+        session['needs_refresh'] = True
+        remaining = max_attempts - session['attempts']
         return copy_text.unblock_wrong(remaining, session['attempts']), False
 
 
 async def _escalate_to_permanent(user_id: int) -> None:
     """把用户升级为永久拉黑；已有黑名单记录时保留原 reason/blocked_by，不覆盖。"""
-    async with db_manager.get_connection() as db:
-        cursor = await db.execute(
+    _clear_user_challenges(user_id)
+    async with db_manager.get_connection() as db_conn:
+        cursor = await db_conn.execute(
             'UPDATE blacklist SET permanent = 1 WHERE user_id = ?',
             (user_id,)
         )
-        await db.commit()
+        await db_conn.commit()
         if cursor.rowcount == 0:
             # 无历史记录（竞态兜底），此时不存在可覆盖的旧记录
             await db.add_to_blacklist(user_id, reason="解封小验证失败次数过多", blocked_by=config.BOT_ID, permanent=True)
@@ -159,9 +220,7 @@ async def _escalate_to_permanent(user_id: int) -> None:
 def _safe_text_for_markdown(text: str) -> str:
     if not text:
         return text
-    
-    dangerous_chars = r'_*[]()`'
-    return "".join(f"\\{char}" if char in dangerous_chars else char for char in text)
+    return _escape_md(text, version=1)
 
 async def get_blacklist_keyboard(page: int = 1, per_page: int = 5):
     total_count = await db.get_blacklist_count()

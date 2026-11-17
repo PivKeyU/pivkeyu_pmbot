@@ -84,7 +84,7 @@ async def setup(request):
         max_age=auth.SESSION_TTL_SECONDS,
         httponly=True,
         samesite='Strict',
-        secure=(request.scheme == 'https'),
+        secure=auth.is_https_request(request),
         path='/',
     )
     http_utils.audit(request, 'panel.setup', '首次访问完成密码初始化')
@@ -121,7 +121,7 @@ async def login(request):
         max_age=auth.SESSION_TTL_SECONDS,
         httponly=True,
         samesite='Strict',
-        secure=(request.scheme == 'https'),
+        secure=auth.is_https_request(request),
         path='/',
     )
     logger.info('Web 面板登录成功 ip=%s', ip)
@@ -131,12 +131,20 @@ async def login(request):
 @routes.post('/api/password')
 async def change_password(request):
     """已登录用户随时更换面板密码，不受首次初始化窗口限制。"""
+    ip = auth.client_ip(request)
+    remaining = auth.login_lock_remaining(ip)
+    if remaining > 0:
+        minutes = max(1, (remaining + 59) // 60)
+        return http_utils.fail(f'尝试次数过多，请 {minutes} 分钟后再试', status=429)
+
     data = await http_utils.read_json(request)
     current_password = str(data.get('current_password') or '')
     new_password = str(data.get('new_password') or '')
 
     if not auth.verify_password(current_password):
+        auth.record_login_failure(ip)
         return http_utils.fail('当前密码不正确', status=401)
+    auth.record_login_success(ip)
     if len(new_password) < SETUP_PASSWORD_MIN:
         return http_utils.fail(f'新密码至少 {SETUP_PASSWORD_MIN} 位')
     if len(new_password) > SETUP_PASSWORD_MAX:
@@ -148,6 +156,8 @@ async def change_password(request):
 
     token = request.cookies.get(auth.SESSION_COOKIE, '')
     auth.destroy_other_sessions(token)
+    from . import ws
+    await ws.close_session_websockets(keep_token=token)
     http_utils.audit(request, 'panel.password.change', '已更改 Web 面板密码')
     logger.info('Web 面板密码已更改')
     return http_utils.ok({'password_changed': True})
@@ -157,6 +167,8 @@ async def change_password(request):
 async def logout(request):
     token = request.cookies.get(auth.SESSION_COOKIE, '')
     auth.destroy_session(token)
+    from . import ws
+    await ws.close_session_websockets(token=token)
     response = http_utils.ok()
     response.del_cookie(auth.SESSION_COOKIE, path='/')
     return response

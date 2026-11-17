@@ -33,11 +33,11 @@
 | 用户 | `/trust` | 恢复用户的验证 | `/verify` |
 | 用户 | `/groups` | 管理用户分组 | `/group` |
 | 消息 | `/announce` | 向用户群发公告 | `/broadcast` |
-| 消息 | `/aireply` | 安排 AI 自动回复 | `/autoreply` |
+| 消息 | `/aireply` | 安排 AI 自动回复：`on`、`off`、`list`、`add`、`del <ID>` | `/autoreply` |
 | 消息 | `/keywords` | 管理关键词拦截 | `/spamrules` |
 | 监控 | `/restock` | 管理补货监控：`list`、`add <名称> <网址> [商品关键词]`、`check <ID>`、`delete <ID>` | |
-| 监控 | `/watch_web` | 管理网页监控 | `/webmon` |
-| 监控 | `/watch_tg` | 管理 TG 群监听 | `/tgmon` |
+| 监控 | `/watch_web` | 管理网页监控：`list`、`add <名称> <网址> [关键词]`、`run <ID>`、`keywords`、`interval`、`on`/`off`、`delete` | `/webmon` |
+| 监控 | `/watch_tg` | 管理 TG 群监听：`list`、`discovered`、`add`、`keywords`、`exclude`、`interval`、`on`/`off`、`delete` | `/tgmon` |
 | 监控 | `/watch_status` | 查看监控运行状态 | `/monitor_status` |
 | 维护 | `/upgrade` | 检查并更新机器人；面板还提供 Docker 镜像更新 | `/updatebot` |
 | 维护 | `/restart` | 验证 Bot Token 后重启 | |

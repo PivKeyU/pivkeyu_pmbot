@@ -1,10 +1,12 @@
 import time
 import ipaddress
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from .config import SERVERS, ADMIN_USERS, AUTHORIZED_USERS, save_config
+from .config import SERVERS, get_admin_users, AUTHORIZED_USERS, save_config
 from .state import user_data, last_ping_command_time, last_nexttrace_command_time, cleanup_cooldown
-from .tasks import do_ping_in_background, do_nexttrace_in_background
-from .utils import schedule_delete_message, check_authorization, check_is_admin, validate_target
+from .utils import (
+    schedule_delete_message, check_authorization, check_is_admin,
+    validate_target, validate_port,
+)
 from utils import copy as copy_text
 
 
@@ -13,11 +15,12 @@ def _who(user_id) -> str:
 
     ping / nexttrace 这两条命令授权用户也能用，读者不一定是管理员。
     """
-    return copy_text.address(check_is_admin(user_id, ADMIN_USERS))
+    return copy_text.address(check_is_admin(user_id, get_admin_users()))
+
 
 async def start_command(update, context):
     user_id = update.effective_user.id
-    if not check_authorization(user_id, AUTHORIZED_USERS, ADMIN_USERS):
+    if not check_authorization(user_id, AUTHORIZED_USERS, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_no_pass(user_id),
             parse_mode="Markdown"
@@ -34,9 +37,11 @@ async def start_command(update, context):
             'GREET')
     )
 
+
 async def ping_command(update, context):
     user_id = update.effective_user.id
-    if not check_authorization(user_id, AUTHORIZED_USERS, ADMIN_USERS):
+    admins = get_admin_users()
+    if not check_authorization(user_id, AUTHORIZED_USERS, admins):
         await update.message.reply_text(
             copy_text.nt_no_pass(user_id),
             parse_mode="Markdown"
@@ -53,20 +58,16 @@ async def ping_command(update, context):
                     f"{_who(user_id)}还需要等 {15 - int(elapsed)} 秒才能再次使用 /ping（每 15 秒一次）。",
                     'WAIT'))
             return
-    last_ping_command_time[user_id] = now_ts
 
     if not SERVERS:
         await update.message.reply_text(copy_text.nt_no_servers(_who(user_id)))
         return
 
-    if user_id in user_data:
-        del user_data[user_id]
-
     args = context.args
     if len(args) >= 1:
         ip_or_domain = args[0]
-        # 校验目标地址，防止 SSH 命令注入
-        ok, err = validate_target(ip_or_domain, _who(user_id))
+        # 校验目标地址，防止 SSH 命令注入（非管理员禁止测试内网/本机保留地址）
+        ok, err = validate_target(ip_or_domain, _who(user_id), allow_private=check_is_admin(user_id, admins))
         if not ok:
             await update.message.reply_text(err)
             return
@@ -80,6 +81,10 @@ async def ping_command(update, context):
             await update.message.reply_text(
                 copy_text.with_deco(f"Ping 次数要在 1 到 50 之间哦，{_who(user_id)}。", 'ERROR'))
             return
+
+        if user_id in user_data:
+            del user_data[user_id]
+        last_ping_command_time[user_id] = now_ts
 
         keyboard = []
         for idx, server_info in enumerate(SERVERS):
@@ -98,6 +103,17 @@ async def ping_command(update, context):
             "message_id": msg.message_id
         }
     else:
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text(
+                copy_text.with_deco(
+                    f"交互式模式需要发送目标文本，请私聊女仆使用 /ping，或直接带参数调用（如 `/ping 8.8.8.8`）。",
+                    'ASK'
+                )
+            )
+            return
+        if user_id in user_data:
+            del user_data[user_id]
+        last_ping_command_time[user_id] = now_ts
         keyboard = []
         for idx, server_info in enumerate(SERVERS):
             btn = InlineKeyboardButton(server_info['name'], callback_data=f"nt_server_{idx}")
@@ -115,9 +131,11 @@ async def ping_command(update, context):
             "message_id": msg.message_id
         }
 
+
 async def nexttrace_command(update, context):
     user_id = update.effective_user.id
-    if not check_authorization(user_id, AUTHORIZED_USERS, ADMIN_USERS):
+    admins = get_admin_users()
+    if not check_authorization(user_id, AUTHORIZED_USERS, admins):
         await update.message.reply_text(
             copy_text.nt_no_pass(user_id),
             parse_mode="Markdown"
@@ -134,24 +152,24 @@ async def nexttrace_command(update, context):
                     f"{_who(user_id)}还需要等 {10 - int(elapsed)} 秒才能再次使用命令（每 10 秒一次）。",
                     'WAIT'))
             return
-    last_nexttrace_command_time[user_id] = now_ts
 
     if not SERVERS:
         await update.message.reply_text(copy_text.nt_no_servers(_who(user_id)))
         return
 
-    if user_id in user_data:
-        del user_data[user_id]
-
     args = context.args
     if len(args) >= 1:
         target = args[0]
-        # 校验目标地址，防止 SSH 命令注入
-        ok, err = validate_target(target, _who(user_id))
+        # 校验目标地址，防止 SSH 命令注入（非管理员禁止探测内网/本机保留地址）
+        ok, err = validate_target(target, _who(user_id), allow_private=check_is_admin(user_id, admins))
         if not ok:
             await update.message.reply_text(err)
             return
-        
+
+        if user_id in user_data:
+            del user_data[user_id]
+        last_nexttrace_command_time[user_id] = now_ts
+
         keyboard = [
             [
                 InlineKeyboardButton(copy_text.BTN_NT_ICMP, callback_data="nt_trace_mode_icmp"),
@@ -172,6 +190,17 @@ async def nexttrace_command(update, context):
             "message_id": msg.message_id
         }
     else:
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text(
+                copy_text.with_deco(
+                    f"交互式模式需要发送目标文本，请私聊女仆使用 /trace，或直接带参数调用（如 `/trace 8.8.8.8`）。",
+                    'ASK'
+                )
+            )
+            return
+        if user_id in user_data:
+            del user_data[user_id]
+        last_nexttrace_command_time[user_id] = now_ts
         keyboard = [
             [
                 InlineKeyboardButton(copy_text.BTN_NT_ICMP, callback_data="nt_trace_mode_icmp"),
@@ -192,9 +221,10 @@ async def nexttrace_command(update, context):
             "message_id": msg.message_id
         }
 
+
 async def add_user_command(update, context):
     user_id = update.effective_user.id
-    if not check_is_admin(user_id, ADMIN_USERS):
+    if not check_is_admin(user_id, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_not_admin(user_id),
             parse_mode="Markdown"
@@ -219,9 +249,10 @@ async def add_user_command(update, context):
         save_config()
         await update.message.reply_text(copy_text.auth_granted(new_user_id, copy_text.AUTH_LIST_NETWORK_TEST))
 
+
 async def rm_user_command(update, context):
     user_id = update.effective_user.id
-    if not check_is_admin(user_id, ADMIN_USERS):
+    if not check_is_admin(user_id, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_not_admin(user_id),
             parse_mode="Markdown"
@@ -246,17 +277,75 @@ async def rm_user_command(update, context):
     else:
         await update.message.reply_text(copy_text.auth_missing(del_user_id, copy_text.AUTH_LIST_NETWORK_TEST))
 
+
+async def cancel_command(update, context):
+    """取消当前进行中的网络测试或服务器登记向导。"""
+    user_id = update.effective_user.id
+    info = user_data.get(user_id)
+    if not info:
+        await update.message.reply_text(copy_text.with_deco("当前没有正在进行的服务器登记或网络测试操作。", 'EMPTY'))
+        return
+
+    prompt_id = info.get("prompt_message_id")
+    msg_chat_id = info.get("chat_id") or update.effective_chat.id
+    op = info.get("operation")
+    user_data.pop(user_id, None)
+
+    if prompt_id:
+        try:
+            await context.bot.delete_message(chat_id=msg_chat_id, message_id=prompt_id)
+        except Exception:
+            pass
+
+    if op == "addserver":
+        text = copy_text.nt_server_reg_cancelled()
+    elif op == "rmserver":
+        text = copy_text.nt_remove_cancelled()
+    elif op == "installnexttrace":
+        text = copy_text.nt_install_cancelled()
+    else:
+        text = copy_text.with_deco("已取消当前的网络测试流程。", 'OK')
+
+    cancel_msg = await update.message.reply_text(text)
+    app = getattr(context, 'application', None)
+    if app is not None:
+        app.create_task(
+            schedule_delete_message(context, update.effective_chat.id, cancel_msg.message_id, delay=5)
+        )
+    try:
+        await context.bot.delete_message(
+            chat_id=update.message.chat_id,
+            message_id=update.message.message_id
+        )
+    except Exception:
+        pass
+
+
 async def add_server_command(update, context):
     user_id = update.effective_user.id
-    if not check_is_admin(user_id, ADMIN_USERS):
+    if not check_is_admin(user_id, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_not_admin(user_id),
             parse_mode="Markdown"
         )
         return
 
+    if update.effective_chat.type != 'private':
+        # 若用户在群聊附带了凭据，尝试立即撤回原消息防泄漏
+        try:
+            await context.bot.delete_message(
+                chat_id=update.message.chat_id,
+                message_id=update.message.message_id
+            )
+        except Exception:
+            pass
+        await update.message.reply_text(
+            copy_text.with_deco("为避免在群聊中泄露 SSH 密码，请私聊女仆使用 /net_server_add 登记服务器。", 'ERROR')
+        )
+        return
+
     message_text = update.message.text.strip()
-    
+
     if not context.args:
         msg = await update.message.reply_text(
             copy_text.with_deco_head(
@@ -266,8 +355,7 @@ async def add_server_command(update, context):
                 "主人可以随时输入 /cancel 取消登记流程",
                 'GREET')
         )
-        
-        from .state import user_data
+
         user_data[user_id] = {
             "operation": "addserver",
             "step": 1,
@@ -276,7 +364,7 @@ async def add_server_command(update, context):
             "message_id": msg.message_id,
             "prompt_message_id": msg.message_id
         }
-        
+
         try:
             await context.bot.delete_message(
                 chat_id=update.message.chat_id,
@@ -284,37 +372,9 @@ async def add_server_command(update, context):
             )
         except Exception:
             pass
-            
+
         return
-    
-    if message_text == "/cancel":
-        from .state import user_data
-        if user_id in user_data and user_data[user_id].get("operation") == "addserver":
-            if user_data[user_id].get("prompt_message_id"):
-                try:
-                    await context.bot.delete_message(
-                        chat_id=update.message.chat_id,
-                        message_id=user_data[user_id]["prompt_message_id"]
-                    )
-                except Exception:
-                    pass
-                    
-            del user_data[user_id]
-            cancel_msg = await update.message.reply_text(copy_text.nt_server_reg_cancelled())
-            
-            context.application.create_task(schedule_delete_message(context, update.message.chat_id, cancel_msg.message_id, delay=5))
-            
-            try:
-                await context.bot.delete_message(
-                    chat_id=update.message.chat_id,
-                    message_id=update.message.message_id
-                )
-            except Exception:
-                pass
-        else:
-            await update.message.reply_text(copy_text.with_deco("当前没有正在进行的服务器登记。", 'EMPTY'))
-        return
-    
+
     if ' ' in message_text:
         args_text = message_text.split(' ', 1)[1]
     else:
@@ -322,14 +382,23 @@ async def add_server_command(update, context):
             copy_text.nt_addserver_hint()
         )
         return
-    
+
+    # 立即尝试删除含明文密码的命令消息
+    try:
+        await context.bot.delete_message(
+            chat_id=update.message.chat_id,
+            message_id=update.message.message_id
+        )
+    except Exception:
+        pass
+
     try:
         import shlex
         args = shlex.split(args_text)
     except Exception as e:
         await update.message.reply_text(copy_text.nt_arg_parse_error(str(e)))
         return
-    
+
     if len(args) < 5:
         await update.message.reply_text(
             copy_text.nt_addserver_hint()
@@ -338,10 +407,14 @@ async def add_server_command(update, context):
 
     name = args[0]
     host = args[1]
-    try:
-        port = int(args[2])
-    except ValueError:
-        await update.message.reply_text(copy_text.with_deco("端口号必须是数字，请主人重新输入。", 'ERROR'))
+    host_ok, host_err = validate_target(host, _who(user_id), allow_private=True)
+    if not host_ok:
+        await update.message.reply_text(copy_text.with_deco(f"服务器主机地址格式不对：{host_err}", 'ERROR'))
+        return
+
+    port_ok, port, port_err = validate_port(args[2])
+    if not port_ok:
+        await update.message.reply_text(copy_text.with_deco(port_err, 'ERROR'))
         return
     username = args[3]
     password = args[4]
@@ -359,9 +432,10 @@ async def add_server_command(update, context):
 
     await update.message.reply_text(copy_text.with_deco(f"服务器已登记：{name} ({host}:{port})", 'OK'))
 
+
 async def rm_server_command(update, context):
     user_id = update.effective_user.id
-    if not check_is_admin(user_id, ADMIN_USERS):
+    if not check_is_admin(user_id, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_not_admin(user_id),
             parse_mode="Markdown"
@@ -369,12 +443,12 @@ async def rm_server_command(update, context):
         return
 
     message_text = update.message.text.strip()
-    
+
     if not context.args:
         if not SERVERS:
             await update.message.reply_text(copy_text.nt_no_servers_registered())
             return
-            
+
         keyboard = []
         for idx, server_info in enumerate(SERVERS):
             btn = InlineKeyboardButton(
@@ -382,23 +456,22 @@ async def rm_server_command(update, context):
                 callback_data=f"nt_rmserver_{idx}"
             )
             keyboard.append([btn])
-        
+
         keyboard.append([InlineKeyboardButton(copy_text.BTN_CANCEL, callback_data="nt_rmserver_cancel")])
-        
+
         reply_markup = InlineKeyboardMarkup(keyboard)
         msg = await update.message.reply_text(
             copy_text.nt_pick_remove_target(),
             reply_markup=reply_markup
         )
-        
-        from .state import user_data
+
         user_data[user_id] = {
             "operation": "rmserver",
             "chat_id": msg.chat_id,
             "message_id": msg.message_id,
             "prompt_message_id": msg.message_id
         }
-        
+
         try:
             await context.bot.delete_message(
                 chat_id=update.message.chat_id,
@@ -406,9 +479,9 @@ async def rm_server_command(update, context):
             )
         except Exception:
             pass
-        
+
         return
-    
+
     if ' ' in message_text:
         args_text = message_text.split(' ', 1)[1]
         try:
@@ -420,8 +493,8 @@ async def rm_server_command(update, context):
     else:
         await update.message.reply_text(copy_text.nt_rmserver_hint())
         return
-    
-    if len(args) < 1:
+
+    if not args:
         await update.message.reply_text(copy_text.nt_rmserver_hint())
         return
 
@@ -438,9 +511,9 @@ async def rm_server_command(update, context):
         removed_server = SERVERS.pop(found_index)
         save_config()
         result_msg = await update.message.reply_text(copy_text.nt_server_removed(removed_server['name'], removed_server['host']))
-        
+
         context.application.create_task(schedule_delete_message(context, update.message.chat_id, result_msg.message_id, delay=5))
-        
+
         try:
             await context.bot.delete_message(
                 chat_id=update.message.chat_id,
@@ -449,9 +522,10 @@ async def rm_server_command(update, context):
         except Exception:
             pass
 
+
 async def install_nexttrace_command(update, context):
     user_id = update.effective_user.id
-    if not check_is_admin(user_id, ADMIN_USERS):
+    if not check_is_admin(user_id, get_admin_users()):
         await update.message.reply_text(
             copy_text.nt_not_admin(user_id),
             parse_mode="Markdown"
@@ -464,7 +538,7 @@ async def install_nexttrace_command(update, context):
                 "当前还没有登记任何服务器。\n请先使用 /net_server_add 登记服务器，女仆才好端出 NextTrace 茶具哦。",
                 'EMPTY'))
         return
-        
+
     try:
         await context.bot.delete_message(
             chat_id=update.message.chat_id,
@@ -472,7 +546,7 @@ async def install_nexttrace_command(update, context):
         )
     except Exception:
         pass
-        
+
     keyboard = []
     for idx, server_info in enumerate(SERVERS):
         btn = InlineKeyboardButton(
@@ -480,16 +554,15 @@ async def install_nexttrace_command(update, context):
             callback_data=f"nt_installnexttrace_{idx}"
         )
         keyboard.append([btn])
-    
+
     keyboard.append([InlineKeyboardButton(copy_text.BTN_CANCEL, callback_data="nt_installnexttrace_cancel")])
-    
+
     reply_markup = InlineKeyboardMarkup(keyboard)
     msg = await update.message.reply_text(
         copy_text.nt_pick_install_target(),
         reply_markup=reply_markup
     )
-    
-    from .state import user_data
+
     user_data[user_id] = {
         "operation": "installnexttrace",
         "chat_id": msg.chat_id,

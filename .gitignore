@@ -30,6 +30,8 @@ env/
 network_test_config.json
 rss_subscriptions.json
 rss_settings.json
+data/*.json
+data/*.tmp*
 
 # 数据库
 data/*.db
@@ -57,5 +59,6 @@ Thumbs.db
 # NS.md
 ns.md
 CHANGELOG.md
-# ZCode 工作区元数据
+# ZCode / Codex 工作区元数据
 .zcode/
+.codex/

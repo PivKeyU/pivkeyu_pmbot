@@ -622,8 +622,9 @@ def nt_server_list_stale() -> str:
 def nt_rmserver_hint() -> str:
     """网络测试：/net_server_del 用法提示（含命令语法）。"""
     return with_deco_head(
-'直接输入 /net_server_del 可以查看所有服务器并选择要撤下的服务器。\n\n如果要直接指定撤下，女仆小抄：/net_server_del <服务器名字>\n'
-        '如果服务器名称包含空格，请用引号括起来，例如：\n/rmserver "香港 - GCP"',
+        '直接输入 /net_server_del 可以查看所有服务器并选择要撤下的服务器。\n\n'
+        '如果要直接指定撤下，女仆小抄：/net_server_del <服务器名字>\n'
+        '如果服务器名称包含空格，请用引号括起来，例如：\n/net_server_del "香港 - GCP"',
         'ASK',
     )
   # 2 处

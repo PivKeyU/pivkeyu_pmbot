@@ -86,11 +86,27 @@ def item_state(key: str) -> dict:
     return _item_state(config_meta.META_BY_KEY[key])
 
 
-def _clear_ai_cache_if_needed(key: str) -> None:
+URL_CONFIG_KEYS = {
+    'GEMINI_BASE_URL', 'OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL',
+    'DECISION_BASE_URL', 'WATCHTOWER_HTTP_API_URL', 'MINIAPP_PUBLIC_URL',
+}
+
+
+def _validate_url_override(key: str, raw: str) -> None:
+    if key not in URL_CONFIG_KEYS or not raw:
+        return
+    from urllib.parse import urlparse
+
+    parsed = urlparse(raw)
+    if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+        raise ValueError(f'{key} 必须是有效的 http:// 或 https:// 地址')
+
+
+async def _clear_ai_cache_if_needed(key: str) -> None:
     if key in AI_CLIENT_KEYS:
         from services import ai_service
 
-        ai_service.close_clients()
+        await ai_service.aclose_clients()
 
 
 @routes.get('/api/config')
@@ -119,12 +135,13 @@ async def update_config(request):
     raw = '' if raw is None else str(raw)
 
     try:
+        _validate_url_override(key, raw)
         config.apply_override(key, raw)
     except (ValueError, TypeError) as exc:
         return http_utils.fail(str(exc))
 
     await db.set_setting(key, raw, f'Web 面板覆盖: {meta["label"]}')
-    _clear_ai_cache_if_needed(key)
+    await _clear_ai_cache_if_needed(key)
     http_utils.audit(request, 'config.update', f'{key}（敏感值不记录内容）' if meta.get('secret') else f'{key}={raw}')
     return http_utils.ok(_item_state(meta))
 
@@ -140,6 +157,6 @@ async def reset_config(request):
 
     config.clear_override(key)
     await db.delete_setting(key)
-    _clear_ai_cache_if_needed(key)
+    await _clear_ai_cache_if_needed(key)
     http_utils.audit(request, 'config.reset', key)
     return http_utils.ok(_item_state(meta))

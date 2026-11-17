@@ -32,8 +32,17 @@ const TABS = [
 ];
 
 let cleanup = null;
+let routeHandler = null;
 
 function renderNotice(title, message) {
+  if (routeHandler) {
+    window.removeEventListener('hashchange', routeHandler);
+    routeHandler = null;
+  }
+  if (cleanup) {
+    try { cleanup(); } catch (err) { console.error(err); }
+    cleanup = null;
+  }
   clear(root);
   root.className = '';
   root.appendChild(el('div', { class: 'login-wrap' },
@@ -167,7 +176,8 @@ function renderAdmin(session) {
     window.scrollTo(0, 0);
   };
 
-  window.addEventListener('hashchange', renderRoute);
+  routeHandler = renderRoute;
+  window.addEventListener('hashchange', routeHandler);
   renderRoute();
 }
 
@@ -193,7 +203,10 @@ async function boot() {
   }
 
   if (session.token) setMiniAppToken(session.token);
-  setUnauthorizedHandler(() => renderNotice('会话已过期', '请关闭后从 Telegram 重新打开。'));
+  setUnauthorizedHandler(() => {
+    setMiniAppToken('');
+    renderNotice('会话已过期', '请关闭后从 Telegram 重新打开。');
+  });
 
   if (session.verification_pending) renderVerify(session);
   else if (session.is_admin) renderAdmin(session);

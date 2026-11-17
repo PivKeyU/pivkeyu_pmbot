@@ -22,7 +22,7 @@ flowchart LR
 
 > 管理员在话题中的回复与**编辑**都会被同步回用户的私聊会话；用户的编辑同样会同步到话题中。
 
-一条消息在抵达管理员之前，要**按固定顺序**依次穿过四道关卡，全部通过后才会被转发到话题群：
+一条消息在抵达管理员之前，要**按固定顺序**依次穿过四道安全关卡（其中 AI 关卡包含人机验证与内容审查两层），全部通过后才会被转发到话题群：
 
 ```text
 限速 → 黑名单 → 关键词广告拦截 → AI 人机验证 → AI 内容审查 → 通过后转发到话题
@@ -35,7 +35,8 @@ flowchart LR
 ```text
 pivkeyu_pmbot/
 ├── bot.py                  # 启动入口：初始化数据库、注册命令/处理器、启动轮询
-├── config.py               # 环境变量加载与配置校验（python-dotenv）
+├── config.py               # 环境变量加载、数据库覆盖层与配置校验
+├── config_meta.py          # 配置中心元数据注册表（类型、分类、热生效/脱敏标记）
 ├── handlers/               # Telegram 事件处理器
 │   ├── command_handler.py  #   /manage /todo /pass /groups /announce 等命令
 │   ├── user_handler.py     #   用户私聊消息：限速→黑名单→验证→审查→转发
@@ -43,7 +44,10 @@ pivkeyu_pmbot/
 │   └── callback_handler.py #   内联键盘回调（面板、模型衣柜、分页等）
 ├── services/               # 核心业务服务
 │   ├── ai_providers.py     #   AI 协议注册表（协议、预设地址、默认模型）
-│   ├── ai_service.py       #   AI 提供商实现（Gemini / OpenAI 兼容 / Claude）+ 本地题库兜底
+│   ├── ai_options.py       #   AI 功能开关、生成参数与提示词动态配置
+│   ├── ai_service.py       #   AI 提供商调度（Gemini / OpenAI 兼容 / Claude）+ 本地题库兜底
+│   ├── decision_review.py  #   独立决策审查协议客户端（Inception / OpenAI / System One / Workers AI）
+│   ├── gemini_service.py   #   Gemini 客户端兼容包装层
 │   ├── verification.py     #   人机验证（图片 / 文字随机、换题、超限拉黑）
 │   ├── captcha_image.py    #   图片验证码生成（Pillow）
 │   ├── text_questions.py   #   文字题库与程序化出题器

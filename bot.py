@@ -20,9 +20,12 @@ async def post_init(app: Application):
     await web_panel.start(app)
     await restart.announce_restart(app)
 async def post_shutdown(app: Application):
-    from services.ai_service import close_clients
-    close_clients()
+    from services.ai_service import aclose_clients
+    from network_test.state import cancel_background_tasks
+    await cancel_background_tasks()
+    await aclose_clients()
     await web_panel.stop(app)
+    await web_monitor.close_http_session()
     await tg_monitor.stop_user_session_listener(app)
     await DatabaseManager().close_all()
     logging.info("所有连接与资源已成功释放。")
@@ -33,8 +36,6 @@ def main():
         level=logging.INFO
     )
 
-    config.validate()
-
     # Python 3.14 不再为主线程隐式创建事件循环，显式设置可兼容 PTB 的 run_polling。
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -43,6 +44,7 @@ def main():
     loop.run_until_complete(db_manager.initialize())
     # 数据库就绪后加载 Web 面板写入的配置覆盖（覆盖优先于 .env）
     loop.run_until_complete(config.load_overrides())
+    config.validate()
 
     app = (
         Application.builder()

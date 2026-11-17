@@ -215,11 +215,12 @@ async def send_text_broadcast(
                 break
             except RetryAfter as exc:
                 retries -= 1
-                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
-                await asyncio.sleep(exc.retry_after + 1)
                 if retries < 0:
                     await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=f"Flood control: {exc}")
                     failed += 1
+                    break
+                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
+                await asyncio.sleep(float(exc.retry_after) + 1)
             except (Forbidden, BadRequest, TelegramError) as exc:
                 await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
                 failed += 1
@@ -231,65 +232,60 @@ async def send_text_broadcast(
 
 
 async def _ensure_thread_for_recipient(context: ContextTypes.DEFAULT_TYPE, recipient: dict) -> Optional[int]:
-    thread_id = recipient.get('thread_id')
-    if thread_id:
-        return thread_id
+    from services.thread_manager import ensure_user_thread
 
-    if not config.FORUM_GROUP_ID:
-        return None
-
-    first_name = recipient.get('first_name') or str(recipient['user_id'])
-    topic_name = f"{first_name} (ID: {recipient['user_id']})"
-    try:
-        topic = await context.bot.create_forum_topic(
-            chat_id=config.FORUM_GROUP_ID,
-            name=topic_name,
-        )
-        await db.update_user_thread_id(recipient['user_id'], topic.message_thread_id)
-        recipient['thread_id'] = topic.message_thread_id
-        return topic.message_thread_id
-    except TelegramError as exc:
-        print(f"创建广播用户话题失败: {exc}")
-        return None
+    return await ensure_user_thread(context.bot, recipient)
 
 
 async def _send_text_mirror(context: ContextTypes.DEFAULT_TYPE, recipient: dict, text: str):
     thread_id = await _ensure_thread_for_recipient(context, recipient)
     if not thread_id:
         return None
-    try:
-        return await context.bot.send_message(
-            chat_id=config.FORUM_GROUP_ID,
-            text=text,
-            message_thread_id=thread_id,
-            disable_web_page_preview=True,
-        )
-    except RetryAfter as exc:
-        logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
-        return None
-    except TelegramError as exc:
-        print(f"发送广播话题镜像失败: {exc}")
-        return None
+    for attempt in range(2):
+        try:
+            return await context.bot.send_message(
+                chat_id=config.FORUM_GROUP_ID,
+                text=text,
+                message_thread_id=thread_id,
+                disable_web_page_preview=True,
+            )
+        except RetryAfter as exc:
+            wait_sec = float(exc.retry_after)
+            if attempt == 0 and wait_sec <= 30:
+                logger.warning(f"话题镜像遭遇限频，等待 {wait_sec} 秒后重试")
+                await asyncio.sleep(wait_sec + 1.0)
+                continue
+            logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
+            return None
+        except TelegramError as exc:
+            print(f"发送广播话题镜像失败: {exc}")
+            return None
 
 
 async def _send_message_mirror(context: ContextTypes.DEFAULT_TYPE, recipient: dict, source_message):
     thread_id = await _ensure_thread_for_recipient(context, recipient)
     if not thread_id:
         return None
-    try:
-        return await send_message_by_type(
-            context.bot,
-            source_message,
-            config.FORUM_GROUP_ID,
-            thread_id=thread_id,
-            disable_web_page_preview=True,
-        )
-    except RetryAfter as exc:
-        logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
-        return None
-    except TelegramError as exc:
-        print(f"发送广播话题镜像失败: {exc}")
-        return None
+    for attempt in range(2):
+        try:
+            return await send_message_by_type(
+                context.bot,
+                source_message,
+                config.FORUM_GROUP_ID,
+                thread_id=thread_id,
+                disable_web_page_preview=True,
+            )
+        except RetryAfter as exc:
+            wait_sec = float(exc.retry_after)
+            if attempt == 0 and wait_sec <= 30:
+                logger.warning(f"话题镜像遭遇限频，等待 {wait_sec} 秒后重试")
+                await asyncio.sleep(wait_sec + 1.0)
+                continue
+            logger.warning(f"话题镜像遭遇限频，跳过该镜像: {exc}")
+            return None
+        except TelegramError as exc:
+            print(f"发送广播话题镜像失败: {exc}")
+            return None
 
 
 @_tracked
@@ -384,11 +380,12 @@ async def send_message_broadcast(
                 break
             except RetryAfter as exc:
                 retries -= 1
-                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
-                await asyncio.sleep(exc.retry_after + 1)
                 if retries < 0:
                     await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=f"Flood control: {exc}")
                     failed += 1
+                    break
+                logger.warning(f"广播遭遇限频，等待 {exc.retry_after} 秒后重试...")
+                await asyncio.sleep(float(exc.retry_after) + 1)
             except (Forbidden, BadRequest, TelegramError) as exc:
                 await db.save_broadcast_delivery(broadcast_id, user_id, "failed", error=str(exc)[:500])
                 failed += 1
@@ -409,11 +406,16 @@ async def format_group_members(group_name: str) -> str:
         return f"分组 {group['name']} 暂时没有成员。"
 
     lines = [f"分组 {group['name']} 成员（{len(members)} 人）", ""]
+    shown = 0
     for member in members[:50]:
         name = member.get('first_name') or str(member['user_id'])
         username = f" @{member['username']}" if member.get('username') else ""
         blocked = " 已拉黑" if member.get('is_blacklisted') else ""
-        lines.append(f"- {name}{username} ({member['user_id']}){blocked}")
-    if len(members) > 50:
-        lines.append(f"... 还有 {len(members) - 50} 人")
+        entry = f"- {name}{username} ({member['user_id']}){blocked}"
+        if len("\n".join(lines + [entry])) > 3800:
+            break
+        lines.append(entry)
+        shown += 1
+    if len(members) > shown:
+        lines.append(f"... 还有 {len(members) - shown} 人")
     return "\n".join(lines)

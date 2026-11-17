@@ -12,7 +12,13 @@ logger = logging.getLogger(__name__)
 _subscribers: set = set()
 
 
+MAX_SUBSCRIBERS = 128
+
+
 def subscribe(maxsize: int = 200) -> asyncio.Queue:
+    if len(_subscribers) >= MAX_SUBSCRIBERS:
+        oldest = next(iter(_subscribers))
+        _subscribers.discard(oldest)
     queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
     _subscribers.add(queue)
     return queue

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -8,6 +9,19 @@ from telegram.helpers import escape_markdown
 
 from config import config
 from database import models as db
+
+_thread_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_thread_lock(user_id: int) -> asyncio.Lock:
+    lock = _thread_locks.get(user_id)
+    if lock is None:
+        if len(_thread_locks) >= 5000:
+            for uid in [uid for uid, lck in _thread_locks.items() if not lck.locked()]:
+                _thread_locks.pop(uid, None)
+        lock = asyncio.Lock()
+        _thread_locks[user_id] = lock
+    return lock
 
 
 def build_direct_contact_url(username: Optional[str]) -> Optional[str]:
@@ -35,35 +49,32 @@ def build_user_info_markdown(user) -> str:
     )
 
 
-async def get_or_create_thread(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[int, bool]:
+async def get_or_create_thread(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple[Optional[int], bool]:
     user = update.effective_user
-    user_data = await db.get_user(user.id)
+    async with _get_thread_lock(user.id):
+        user_data = await db.get_user(user.id)
 
-    if user_data and user_data.get('thread_id'):
-        return user_data['thread_id'], False
+        if user_data and user_data.get('thread_id'):
+            return user_data['thread_id'], False
 
-    topic_name = f"{user.first_name} (ID: {user.id})"
-    try:
-        topic = await context.bot.create_forum_topic(
-            chat_id=config.FORUM_GROUP_ID,
-            name=topic_name
-        )
-        thread_id = topic.message_thread_id
-
-        await db.update_user_thread_id(user.id, thread_id)
+        topic_name = f"{user.first_name} (ID: {user.id})"
+        try:
+            topic = await context.bot.create_forum_topic(
+                chat_id=config.FORUM_GROUP_ID,
+                name=topic_name
+            )
+            thread_id = topic.message_thread_id
+            await db.update_user_thread_id(user.id, thread_id)
+        except Exception as e:
+            print(f"创建话题失败: {e}")
+            return None, False
 
         try:
             await send_user_info_card(update, context, thread_id)
         except Exception as e:
             print(f"发送用户信息卡片失败: {e}")
 
-        from handlers.user_handler import _resend_message
-        await _resend_message(update, context, thread_id)
-
         return thread_id, True
-    except Exception as e:
-        print(f"创建话题失败: {e}")
-        return None, False
 
 
 async def build_user_info_card_keyboard(
@@ -134,23 +145,26 @@ async def send_user_info_card(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def ensure_user_thread(bot, user: dict) -> Optional[int]:
     """确保用户在论坛群中有对应的话题 thread_id；若尚未创建则尝试新建。"""
-    thread_id = user.get('thread_id')
-    if thread_id:
-        return thread_id
     if not config.FORUM_GROUP_ID or not hasattr(bot, 'create_forum_topic'):
-        return None
+        return user.get('thread_id')
     user_id = user['user_id']
-    first_name = user.get('first_name') or str(user_id)
-    topic_name = f'{first_name} (ID: {user_id})'
-    try:
-        topic = await bot.create_forum_topic(
-            chat_id=config.FORUM_GROUP_ID,
-            name=topic_name,
-        )
-        thread_id = topic.message_thread_id
-        await db.update_user_thread_id(user_id, thread_id)
-        user['thread_id'] = thread_id
-        return thread_id
-    except Exception as exc:
-        print(f'为用户 {user_id} 创建论坛话题失败: {exc}')
-        return None
+    async with _get_thread_lock(user_id):
+        fresh = await db.get_user(user_id)
+        thread_id = (fresh or user).get('thread_id')
+        if thread_id:
+            user['thread_id'] = thread_id
+            return thread_id
+        first_name = user.get('first_name') or str(user_id)
+        topic_name = f'{first_name} (ID: {user_id})'
+        try:
+            topic = await bot.create_forum_topic(
+                chat_id=config.FORUM_GROUP_ID,
+                name=topic_name,
+            )
+            thread_id = topic.message_thread_id
+            await db.update_user_thread_id(user_id, thread_id)
+            user['thread_id'] = thread_id
+            return thread_id
+        except Exception as exc:
+            print(f'为用户 {user_id} 创建论坛话题失败: {exc}')
+            return None

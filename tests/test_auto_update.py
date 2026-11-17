@@ -64,12 +64,16 @@ def _run(db_path, monkeypatch, scenario, status=None, triggered=(True, 'ok')):
     monkeypatch.setattr(image_update, 'trigger_watchtower_update', trigger)
 
     async def main():
-        await DatabaseManager(db_path).initialize()
-        for key in (auto_update.SETTINGS_META_KEY, auto_update.STATE_META_KEY, restart.NOTIFY_META_KEY):
-            await db.set_app_meta(key, '')
-        await db.set_app_meta(image_update.IMAGE_DIGEST_META_KEY, 'sha256:old')
-        application = SimpleNamespace(bot=FakeBot())
-        await scenario(application, calls)
+        manager = DatabaseManager(db_path)
+        await manager.initialize()
+        try:
+            for key in (auto_update.SETTINGS_META_KEY, auto_update.STATE_META_KEY, restart.NOTIFY_META_KEY):
+                await db.set_app_meta(key, '')
+            await db.set_app_meta(image_update.IMAGE_DIGEST_META_KEY, 'sha256:old')
+            application = SimpleNamespace(bot=FakeBot())
+            await scenario(application, calls)
+        finally:
+            await manager.close_all()
 
     asyncio.run(main())
     return calls

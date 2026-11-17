@@ -6,6 +6,7 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import ContextTypes
+from telegram.helpers import escape_markdown
 from services.verification import verify_answer, fallback_verification
 from services import moderation
 from services.thread_manager import ensure_user_thread
@@ -13,6 +14,7 @@ from database import models as db
 from services.thread_manager import build_user_info_card_keyboard
 from services import broadcast as broadcast_service, safe_update, spam_filter, tg_monitor, web_monitor
 from services import image_update
+from .command_handler import _format_runtime_statuses
 from .user_handler import deliver_pending_update
 from config import config
 from rss import data_manager as rss_data_manager, settings as rss_settings
@@ -24,16 +26,27 @@ RSS_PANEL_CACHE_KEY = "rss_panel_cache"
 RSS_FEEDS_PER_PAGE = 4
 AI_MODELS_PER_PAGE = 5
 UPDATE_STATUS_TIMEOUT = 20
-RSS_DOC_URL = "https://github.com/Hamster-Prime/Telegram_Anti-harassment_two-way_chatbot#-rss-%E8%AE%A2%E9%98%85%E5%8A%9F%E8%83%BD"
+RSS_DOC_URL = "https://github.com/PivKeyU/pivkeyu_pmbot#-rss-%E8%AE%A2%E9%98%85%E5%8A%9F%E8%83%BD"
 
 
 def _cache_rss_reference(application, kind, payload):
     token = secrets.token_hex(6)
     cache = application.bot_data.setdefault(RSS_PANEL_CACHE_KEY, {})
     if len(cache) >= 500:
-        cache.clear()
+        for old_key in list(cache.keys())[:250]:
+            cache.pop(old_key, None)
     cache[token] = (kind, payload)
     return token
+
+
+async def _safe_edit_text(query, text: str, **kwargs):
+    """忽略内容未变化导致的 Message is not modified 错误。"""
+    try:
+        return await query.edit_message_text(text=text, **kwargs)
+    except BadRequest as exc:
+        if "message is not modified" in str(exc).lower():
+            return None
+        raise
 
 
 def _resolve_rss_reference(application, token, expected_kind):
@@ -258,28 +271,6 @@ def _build_rss_feed_detail(application, chat_id: str, feed_url: str):
     return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
 
 
-def _format_runtime_statuses(statuses: list[dict]) -> str:
-    if not statuses:
-        return "暂时还没有运行状态记录。"
-
-    lines = ["运行状态", ""]
-    for item in statuses[:30]:
-        failures = int(item.get("consecutive_failures") or 0)
-        badge = "正常" if failures == 0 else f"异常 x{failures}"
-        lines.extend([
-            f"{item.get('name')} [{badge}]",
-            f"  类别: {item.get('category')}",
-            f"  最近运行: {item.get('last_run_at') or '-'}",
-            f"  最近成功: {item.get('last_success_at') or '-'}",
-            f"  最近失败: {item.get('last_error_at') or '-'}",
-            f"  耗时: {item.get('last_duration_ms') or 0} ms, 推送: {item.get('last_sent_count') or 0}",
-        ])
-        if item.get("last_error"):
-            lines.append(f"  错误: {str(item['last_error'])[:180]}")
-        lines.append("")
-    return "\n".join(lines).strip()
-
-
 async def _build_spamrules_view():
     text = await spam_filter.format_settings()
     settings = await db.get_spam_keyword_filter_settings()
@@ -396,7 +387,10 @@ async def _show_next_verification(query, prompt, text: str):
         await query.message.delete()
     except TelegramError:
         # 删不掉旧题就把按钮收起来，避免客人点到已失效的选项
-        await _show_verification_result(query, copy_text.with_deco("这道题作废啦，请看下面的新题。", 'ASK'))
+        try:
+            await _show_verification_result(query, copy_text.with_deco("这道题作废啦，请看下面的新题。", 'ASK'))
+        except TelegramError:
+            pass
     if prompt.image:
         await bot.send_photo(chat_id=chat_id, photo=prompt.image, caption=text, reply_markup=prompt.keyboard)
     else:
@@ -421,7 +415,7 @@ async def _build_ai_settings_view():
         current_provider = 'gemini'
 
     lines = [
-        "**AI 模型衣柜**",
+        "*AI 模型衣柜*",
         "",
         f"当前侍奉提供商: `{PROVIDERS[current_provider]['label']}`",
         "",
@@ -429,7 +423,7 @@ async def _build_ai_settings_view():
     for provider_type, meta in PROVIDERS.items():
         api_key, _ = provider_credentials(provider_type)
         status = "已配置 Key" if api_key else "未配置 Key"
-        lines.append(f"**{meta['label']} 衣架**（{status}）:")
+        lines.append(f"*{meta['label']} 衣架*（{status}）:")
         lines.append(f"• 审查: `{settings.get(model_setting_key(provider_type, 'filter'), 'N/A')}`")
         lines.append(f"• 验证: `{settings.get(model_setting_key(provider_type, 'verification'), 'N/A')}`")
         lines.append(f"• 回复: `{settings.get(model_setting_key(provider_type, 'autoreply'), 'N/A')}`")
@@ -518,7 +512,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
-        await _handle_callback_impl(update, context, answer_callback=safe_answer)
+        try:
+            await _handle_callback_impl(update, context, answer_callback=safe_answer)
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
     finally:
         if not answered:
             try:
@@ -532,19 +530,15 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
     if answer_callback is None:
         answer_callback = query.answer
     data = query.data
+    if not data:
+        return
     user_id = query.from_user.id
-    
+
     if data.startswith("nt_"):
         # 委派的网络测试回调也使用同一应答函数，避免重复应答。
         from network_test.handlers import callback_handler as network_callback_handler
         handled = await network_callback_handler(update, context, answer_callback=answer_callback)
-        if not handled:
-            if data in ["nt_rmserver_cancel", "nt_installnexttrace_cancel"]:
-                from network_test.state import user_data
-                if user_id in user_data and user_data[user_id].get("from_panel"):
-                    del user_data[user_id]
-                    data = "panel_network_test"
-        else:
+        if handled:
             return
 
     if data == "appeal_req":
@@ -563,7 +557,12 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-        appeal = await db.get_review_appeal(int(data.split(":")[1]))
+        try:
+            appeal_id = int(data.split(":", 1)[1])
+        except (IndexError, ValueError):
+            await answer_callback(copy_text.with_deco("这条申请参数无效。", 'ERROR'), show_alert=True)
+            return
+        appeal = await db.get_review_appeal(appeal_id)
         if not appeal:
             await answer_callback(copy_text.with_deco("这条申请找不到啦。", 'ERROR'), show_alert=True)
             return
@@ -576,7 +575,12 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
         parts = data.split(":")
-        appeal = await db.get_review_appeal(int(parts[1]))
+        try:
+            appeal_id = int(parts[1])
+        except (IndexError, ValueError):
+            await answer_callback(copy_text.with_deco("这条申请参数无效。", 'ERROR'), show_alert=True)
+            return
+        appeal = await db.get_review_appeal(appeal_id)
         if not appeal or appeal['status'] != 'pending':
             await answer_callback(copy_text.with_deco("这条申请已经处理过啦。", 'ERROR'), show_alert=True)
             try:
@@ -585,8 +589,13 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                 pass
             return
         if parts[0] == "appeal_ok":
+            try:
+                minutes = int(parts[2])
+            except (IndexError, ValueError):
+                await answer_callback(copy_text.with_deco("暂停时长参数无效。", 'ERROR'), show_alert=True)
+                return
             result = await moderation.grant_review_pause(
-                context.bot, appeal['user_id'], int(parts[2]), user_id, 'TG 话题')
+                context.bot, appeal['user_id'], minutes, user_id, 'TG 话题')
             await answer_callback(copy_text.with_deco(f"已暂停审查 {result['duration_text']}。", 'OK'))
         elif parts[0] == "appeal_no":
             await moderation.reject_appeal(context.bot, appeal['user_id'], user_id, 'TG 话题')
@@ -595,8 +604,11 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             await moderation.cancel_appeal(context.bot, appeal['user_id'], user_id, 'TG 话题')
             await answer_callback(copy_text.with_deco("已取消这条申请。", 'OK'))
         else:
-            await moderation.ask_custom_duration(context.bot, context.application, appeal)
-            await answer_callback(copy_text.with_deco("请回复女仆刚发的那条消息，告诉女仆要暂停多久。", 'ASK'))
+            ok = await moderation.ask_custom_duration(context.bot, context.application, appeal)
+            if ok:
+                await answer_callback(copy_text.with_deco("请回复女仆刚发的那条消息，告诉女仆要暂停多久。", 'ASK'))
+            else:
+                await answer_callback(copy_text.with_deco("该用户还没有可用会客厅或发送提示失败。", 'ERROR'), show_alert=True)
         return
 
     if data == "verify_fallback":
@@ -706,7 +718,11 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         message, keyboard = await broadcast_service.build_user_group_keyboard(target_user_id)
-        await query.message.reply_text(message, reply_markup=keyboard)
+        markup_str = str(query.message.reply_markup) if query.message and query.message.reply_markup else ""
+        if "usergroup_toggle_" in markup_str or "usercard_groups_" in markup_str and "usercard_block_" not in markup_str:
+            await _safe_edit_text(query, message, reply_markup=keyboard)
+        else:
+            await query.message.reply_text(message, reply_markup=keyboard)
 
     elif data.startswith("usergroup_toggle_"):
         if not await db.is_admin(user_id):
@@ -1073,7 +1089,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(copy_text.BTN_REFRESH, callback_data="panel_monitor_status")],
             [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
         ])
-        await query.edit_message_text(_format_runtime_statuses(statuses), reply_markup=keyboard)
+        await _safe_edit_text(query, _format_runtime_statuses(statuses), reply_markup=keyboard)
 
     elif data in {"panel_monitor_status_rss", "panel_monitor_status_tg", "panel_monitor_status_web"}:
         if not await db.is_admin(user_id):
@@ -1091,7 +1107,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("全部状态", callback_data="panel_monitor_status")],
             [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
         ])
-        await query.edit_message_text(_format_runtime_statuses(statuses), reply_markup=keyboard)
+        await _safe_edit_text(query, _format_runtime_statuses(statuses), reply_markup=keyboard)
 
     elif data == "panel_updatebot":
         if not await db.is_admin(user_id):
@@ -1169,81 +1185,79 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         # 反过来的话主人什么都收不到，只会看到机器人凭空消失。
         await query.edit_message_text(copy_text.image_update_started())
         try:
-            ok, detail = await image_update.trigger_watchtower_update()
+            ok, detail = await image_update.trigger_and_remember_watchtower_update()
         except Exception as exc:
             logging.exception("触发 watchtower 更新失败")
             ok, detail = False, str(exc)[:160]
         if not ok:
             # 失败时把「已开始」改成失败说明，避免主人以为更新在跑
-            await query.edit_message_text(copy_text.image_update_failed(detail))
+            await _safe_edit_text(query, copy_text.image_update_failed(detail))
             return
-        # 触发成功：把远端 digest 记为已知基线，免得重建后又报一次「有更新」
-        try:
-            repo, tag = image_update.resolve_image()
-            digest = await image_update.fetch_remote_digest(repo, tag)
-            await image_update.remember_current_digest(digest)
-        except Exception:
-            logging.exception("更新后刷新镜像指纹基线失败（不影响本次更新）")
     elif data == "panel_ai_settings":
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
 
         message, keyboard = await _build_ai_settings_view()
-        await query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
+        await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
 
     elif data.startswith("ai_set_provider_"):
-        if not await db.is_admin(user_id): return
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
 
         from services.ai_providers import PROVIDERS
 
-        new_provider = data[len("ai_set_provider_"):]
+        new_provider = data.removeprefix("ai_set_provider_")
         if new_provider not in PROVIDERS:
             await answer_callback(copy_text.with_deco("这个提供商女仆不认识呢，主人。", 'ERROR'), show_alert=True)
             return
-        async with db.db_manager.get_connection() as conn:
-            await conn.execute("UPDATE settings SET value = ? WHERE key = 'ai_provider'", (new_provider,))
-            await conn.commit()
+        await db.set_setting('ai_provider', new_provider)
 
         await answer_callback(copy_text.with_deco(
             f"AI 提供商已经替主人换成 {PROVIDERS[new_provider]['label']} 啦。", 'OK'))
 
         message, keyboard = await _build_ai_settings_view()
-        await query.edit_message_text(message, reply_markup=keyboard, parse_mode='Markdown')
+        await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
 
     elif data.startswith("ai_config_models_"):
-        if not await db.is_admin(user_id): return
-        
-        provider_type = data.split("_")[3]
-        
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
+
+        provider_type = data.removeprefix("ai_config_models_")
+
         message = f"主人，请挑选要整理的 {provider_type.upper()} 功能模型:"
-        
+
         keyboard = [
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_FILTER_MODEL, callback_data=f"ai_select_model_{provider_type}_filter")],
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_VERIFY_MODEL, callback_data=f"ai_select_model_{provider_type}_verification")],
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_AUTOREPLY_MODEL, callback_data=f"ai_select_model_{provider_type}_autoreply")],
             [InlineKeyboardButton(copy_text.BTN_BACK_AI, callback_data="panel_ai_settings")]
         ]
-        
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        await _safe_edit_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("ai_select_model_"):
-        if not await db.is_admin(user_id): return
-        
-        parts = data.split("_")
-        provider_type = parts[3]
-        feature_type = parts[4]
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
+
+        parts = data.removeprefix("ai_select_model_").split("_")
+        if len(parts) < 2:
+            await answer_callback(copy_text.with_deco("模型请求参数不对劲哦，主人。", 'ERROR'), show_alert=True)
+            return
+        provider_type = parts[0]
+        feature_type = parts[1]
         page = 1
-        if len(parts) > 5:
+        if len(parts) > 2:
             try:
-                page = int(parts[5])
+                page = int(parts[2])
             except ValueError:
                 page = 1
-        
+
         from services.ai_service import ai_service
-        
-        await answer_callback(copy_text.with_deco("女仆正在帮主人翻模型衣柜...", 'WAIT'), show_alert=False)
-        
+
         try:
             models = await ai_service.get_available_models(provider_type)
         except Exception:
@@ -1253,9 +1267,10 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         if not models:
-             await answer_callback(copy_text.with_deco("女仆没能翻到模型列表呢，主人检查一下 API Key 配置嘛。", 'ERROR'), show_alert=True)
-             return
-        
+            await answer_callback(copy_text.with_deco("女仆没能翻到模型列表呢，主人检查一下 API Key 配置嘛。", 'ERROR'), show_alert=True)
+            return
+
+        await answer_callback()
         message, keyboard = _build_ai_model_selection_view(
             context.application,
             provider_type,
@@ -1263,11 +1278,13 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             models,
             page,
         )
-        await query.edit_message_text(message, reply_markup=keyboard)
+        await _safe_edit_text(query, message, reply_markup=keyboard)
         return
 
     elif data.startswith("setmref:"):
-        if not await db.is_admin(user_id): return
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
 
         token = data.split(":", 1)[1]
         payload = _resolve_rss_reference(context.application, token, "ai_model")
@@ -1280,9 +1297,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         model_name = payload["model_name"]
         setting_key = f"{provider_type}_model_{feature_type}"
 
-        async with db.db_manager.get_connection() as conn:
-            await conn.execute("UPDATE settings SET value = ? WHERE key = ?", (model_name, setting_key))
-            await conn.commit()
+        await db.set_setting(setting_key, model_name)
 
         await answer_callback(copy_text.ai_model_set(provider_type, feature_type, model_name))
 
@@ -1293,31 +1308,31 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_AUTOREPLY_MODEL, callback_data=f"ai_select_model_{provider_type}_autoreply")],
             [InlineKeyboardButton(copy_text.BTN_BACK_AI, callback_data="panel_ai_settings")]
         ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        await _safe_edit_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("setm:"):
-        if not await db.is_admin(user_id): return
-        
+        if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
+            return
+
         try:
             _, p_code, f_code, model_name = data.split(":", 3)
         except ValueError:
             await answer_callback(copy_text.with_deco("这份请求数据不对劲哦，主人。", 'ERROR'), show_alert=True)
             return
-            
+
         p_map = {'g': 'gemini', 'o': 'openai', 'a': 'anthropic'}
         f_map = {'f': 'filter', 'v': 'verification', 'a': 'autoreply'}
-        
+
         provider_type = p_map.get(p_code, 'gemini')
         feature_type = f_map.get(f_code, 'filter')
-        
+
         setting_key = f"{provider_type}_model_{feature_type}"
-        
-        async with db.db_manager.get_connection() as conn:
-            await conn.execute("UPDATE settings SET value = ? WHERE key = ?", (model_name, setting_key))
-            await conn.commit()
-            
+
+        await db.set_setting(setting_key, model_name)
+
         await answer_callback(copy_text.ai_model_set(provider_type, feature_type, model_name))
-        
+
         message = f"主人，请挑选要整理的 {provider_type.upper()} 功能模型:"
         keyboard = [
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_FILTER_MODEL, callback_data=f"ai_select_model_{provider_type}_filter")],
@@ -1325,7 +1340,7 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(copy_text.BTN_PANEL_AI_AUTOREPLY_MODEL, callback_data=f"ai_select_model_{provider_type}_autoreply")],
             [InlineKeyboardButton(copy_text.BTN_BACK_AI, callback_data="panel_ai_settings")]
         ]
-        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+        await _safe_edit_text(query, message, reply_markup=InlineKeyboardMarkup(keyboard))
 
     
     elif data == "panel_rss_toggle":
@@ -1546,15 +1561,17 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             await answer_callback(copy_text.kb_entry_missing(), show_alert=True)
             return
         
+        safe_title = escape_markdown(str(entry['title']), version=1)
+        safe_content = escape_markdown(str(entry['content']), version=1)
         message = (
             f"知识便签详情\n\n"
             f"ID: {entry['id']}\n"
-            f"标题: {entry['title']}\n"
-            f"内容: {entry['content']}\n\n"
+            f"标题: {safe_title}\n"
+            f"内容: {safe_content}\n\n"
             f"创建时间: {entry['created_at']}\n"
             f"更新时间: {entry['updated_at']}"
         )
-        
+
         keyboard = [
             [
                 InlineKeyboardButton(copy_text.BTN_KB_EDIT, callback_data=f"panel_autoreply_kb_edit_{entry_id}"),
@@ -1563,32 +1580,37 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton(copy_text.BTN_BACK_KB_LIST, callback_data="panel_autoreply_kb_list_page_1")],
             [InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")],
         ]
-        
+
         await query.edit_message_text(
             message,
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
-    
+
     elif data.startswith("panel_autoreply_kb_edit_"):
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-        
+
         try:
             entry_id = int(data.split("_")[4])
         except (ValueError, IndexError):
             await answer_callback(copy_text.kb_entry_id_invalid(), show_alert=True)
             return
-        
+
         entry = await db.get_knowledge_entry(entry_id)
         if not entry:
             await answer_callback(copy_text.kb_entry_missing(), show_alert=True)
             return
-        
+
         back_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]])
         await query.edit_message_text(
-            copy_text.kb_edit_hint(entry['id'], entry['title'], entry['content'], entry_id),
+            copy_text.kb_edit_hint(
+                entry['id'],
+                escape_markdown(str(entry['title']), version=1),
+                escape_markdown(str(entry['content']), version=1),
+                entry_id,
+            ),
             parse_mode='Markdown',
             reply_markup=back_keyboard
         )
@@ -1695,13 +1717,13 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                         pass
                 del user_data[user_id]
         
-        from network_test.config import SERVERS, AUTHORIZED_USERS, ADMIN_USERS
+        from network_test.config import SERVERS, AUTHORIZED_USERS, get_admin_users
         from network_test.utils import check_is_admin
-        
-        is_admin = check_is_admin(user_id, ADMIN_USERS)
+
+        is_admin = check_is_admin(user_id, get_admin_users())
         server_count = len(SERVERS) if SERVERS else 0
         user_count = len(AUTHORIZED_USERS) if AUTHORIZED_USERS else 0
-        
+
         message = (
             f"网络测试茶具管理\n\n"
             f"宅邸统计:\n"
@@ -1709,20 +1731,20 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             f"授权主人数: {user_count}\n\n"
             f"主人，请挑选要执行的工作："
         )
-        
+
         keyboard = [
             [InlineKeyboardButton("Ping 测试", callback_data="panel_nt_ping"), InlineKeyboardButton("路由追踪", callback_data="panel_nt_nexttrace")],
         ]
-        
+
         if is_admin:
             keyboard.extend([
                 [InlineKeyboardButton("登记授权主人", callback_data="panel_nt_adduser"), InlineKeyboardButton("移除授权主人", callback_data="panel_nt_rmuser")],
                 [InlineKeyboardButton("登记服务器", callback_data="panel_nt_addserver"), InlineKeyboardButton("撤下服务器", callback_data="panel_nt_rmserver")],
                 [InlineKeyboardButton("安装 NextTrace", callback_data="panel_nt_install")],
             ])
-        
+
         keyboard.append([InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")])
-        
+
         try:
             await query.edit_message_text(
                 message,
@@ -1730,7 +1752,10 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                 parse_mode='Markdown'
             )
         except BadRequest as e:
-            if "Message to edit not found" in str(e) or "message is not modified" in str(e).lower():
+            err_msg = str(e).lower()
+            if "message is not modified" in err_msg:
+                pass
+            elif "message to edit not found" in err_msg:
                 await query.message.reply_text(
                     message,
                     reply_markup=InlineKeyboardMarkup(keyboard),
@@ -1787,12 +1812,12 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         from network_test.utils import check_is_admin
-        from network_test.config import ADMIN_USERS
-        
-        if not check_is_admin(user_id, ADMIN_USERS):
+        from network_test.config import get_admin_users
+
+        if not check_is_admin(user_id, get_admin_users()):
             await answer_callback(copy_text.nt_panel_not_admin(), show_alert=True)
             return
-        
+
         back_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]])
         await query.edit_message_text(
             copy_text.with_deco_head(
@@ -1806,19 +1831,19 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown',
             reply_markup=back_keyboard
         )
-    
+
     elif data == "panel_nt_rmuser":
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-        
+
         from network_test.utils import check_is_admin
-        from network_test.config import ADMIN_USERS
-        
-        if not check_is_admin(user_id, ADMIN_USERS):
+        from network_test.config import get_admin_users
+
+        if not check_is_admin(user_id, get_admin_users()):
             await answer_callback(copy_text.nt_panel_not_admin(), show_alert=True)
             return
-        
+
         back_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]])
         await query.edit_message_text(
             copy_text.with_deco_head(
@@ -1832,18 +1857,18 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             parse_mode='Markdown',
             reply_markup=back_keyboard
         )
-    
+
     elif data == "panel_nt_addserver":
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-        
+
         from network_test.utils import check_is_admin
-        from network_test.config import ADMIN_USERS, SERVERS
+        from network_test.config import get_admin_users, SERVERS
         from network_test.state import user_data
         from network_test.utils import schedule_delete_message
-        
-        if not check_is_admin(user_id, ADMIN_USERS):
+
+        if not check_is_admin(user_id, get_admin_users()):
             await answer_callback(copy_text.nt_panel_not_admin(), show_alert=True)
             return
         
@@ -1882,10 +1907,10 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         from network_test.utils import check_is_admin
-        from network_test.config import ADMIN_USERS, SERVERS
+        from network_test.config import get_admin_users, SERVERS
         from network_test.state import user_data
-        
-        if not check_is_admin(user_id, ADMIN_USERS):
+
+        if not check_is_admin(user_id, get_admin_users()):
             await answer_callback(copy_text.nt_panel_not_admin(), show_alert=True)
             return
         
@@ -1929,10 +1954,10 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
             return
         
         from network_test.utils import check_is_admin
-        from network_test.config import ADMIN_USERS, SERVERS
+        from network_test.config import get_admin_users, SERVERS
         from network_test.state import user_data
-        
-        if not check_is_admin(user_id, ADMIN_USERS):
+
+        if not check_is_admin(user_id, get_admin_users()):
             await answer_callback(copy_text.nt_panel_not_admin(), show_alert=True)
             return
         
@@ -1974,11 +1999,13 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         from services.blacklist import block_user, unblock_user
 
         if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
 
         try:
             user_id_to_block = int(data.split("_")[2])
         except (ValueError, IndexError):
+            await answer_callback(copy_text.user_id_invalid(), show_alert=True)
             return
 
         is_blocked, _ = await db.is_blacklisted(user_id_to_block)
@@ -1996,11 +2023,13 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data.startswith("usercard_exempt_"):
         if not await db.is_admin(user_id):
+            await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
 
         try:
             user_id_to_exempt = int(data.split("_")[2])
         except (ValueError, IndexError):
+            await answer_callback(copy_text.user_id_invalid(), show_alert=True)
             return
 
         is_exempted = await db.is_exempted(user_id_to_exempt)
@@ -2020,50 +2049,50 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
         from services.blacklist import verify_unblock_answer
         answer = data.split("_", 1)[1]
         message, success = await verify_unblock_answer(user_id, answer)
-        
+
         await query.edit_message_text(text=message, reply_markup=None)
-        
+
     elif data.startswith("admin_unblock_"):
         from services import blacklist
-        
-        user_id_to_unblock = int(data.split("_")[2])
-        
+
         if not await db.is_admin(user_id):
             await answer_callback(copy_text.perm_denied(), show_alert=True)
             return
-            
+
+        try:
+            user_id_to_unblock = int(data.split("_")[2])
+        except (ValueError, IndexError):
+            await answer_callback(copy_text.user_id_invalid(), show_alert=True)
+            return
+
         response = await blacklist.unblock_user(user_id_to_unblock)
         await answer_callback(response, show_alert=True)
 
         current_page = 1
         message_text = query.message.text or ""
         reply_markup_str = str(query.message.reply_markup) if query.message.reply_markup else ""
-        
-        is_panel = "panel_blacklist" in reply_markup_str or "panel_stats_blacklist" in reply_markup_str
-        is_stats_page = "黑名单小本本" in message_text or "stats_list_blacklist" in reply_markup_str
-        
+
+        is_panel = (
+            "panel_blacklist" in reply_markup_str
+            or "panel_stats_blacklist" in reply_markup_str
+            or "panel_back" in reply_markup_str
+        )
+        is_stats_page = (
+            "stats_list_blacklist" in reply_markup_str
+            or "stats_back_to_menu" in reply_markup_str
+            or "锁门类型:" in message_text
+            or "可疑消息条数:" in message_text
+        )
+
         if "第" in message_text and "/" in message_text:
             try:
                 match = re.search(r'第\s*(\d+)/', message_text)
                 if match:
                     current_page = int(match.group(1))
-            except:
+            except Exception:
                 pass
-        
-        if is_panel:
-            message, keyboard = await blacklist.get_blacklist_keyboard(page=current_page)
-            if keyboard:
-                keyboard_buttons = [list(row) for row in keyboard.inline_keyboard]
-                keyboard_buttons.append([InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")])
-                keyboard = InlineKeyboardMarkup(keyboard_buttons)
-            else:
-                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]])
-            await query.edit_message_text(
-                text=message,
-                reply_markup=keyboard,
-                parse_mode='Markdown'
-            )
-        elif is_stats_page:
+
+        if is_panel and is_stats_page:
             message, keyboard = await blacklist.get_blacklist_keyboard_detailed(page=current_page)
             if keyboard:
                 keyboard_buttons = [list(row) for row in keyboard.inline_keyboard]
@@ -2075,21 +2104,28 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                 keyboard = InlineKeyboardMarkup(keyboard_buttons)
             else:
                 keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]])
-            await query.edit_message_text(
-                text=message,
-                reply_markup=keyboard,
-                parse_mode='Markdown'
-            )
+            await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
+        elif is_panel:
+            message, keyboard = await blacklist.get_blacklist_keyboard(page=current_page)
+            if keyboard:
+                keyboard_buttons = [list(row) for row in keyboard.inline_keyboard]
+                keyboard_buttons.append([InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")])
+                keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            else:
+                keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(copy_text.BTN_BACK_PANEL, callback_data="panel_back")]])
+            await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
+        elif is_stats_page:
+            message, keyboard = await blacklist.get_blacklist_keyboard_detailed(page=current_page)
+            if keyboard:
+                await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
+            else:
+                await _safe_edit_text(query, message)
         else:
             message, keyboard = await blacklist.get_blacklist_keyboard(page=current_page)
             if keyboard:
-                await query.edit_message_text(
-                    text=message,
-                    reply_markup=keyboard,
-                    parse_mode='Markdown'
-                )
+                await _safe_edit_text(query, message, reply_markup=keyboard, parse_mode='Markdown')
             else:
-                await query.edit_message_text(text=message)
+                await _safe_edit_text(query, message)
     
     elif data.startswith("blacklist_page_"):
         from services import blacklist
@@ -2418,15 +2454,17 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                 await answer_callback(copy_text.kb_entry_missing(), show_alert=True)
                 return
             
+            safe_title = escape_markdown(str(entry['title']), version=1)
+            safe_content = escape_markdown(str(entry['content']), version=1)
             message = (
                 f"知识便签详情\n\n"
                 f"ID: {entry['id']}\n"
-                f"标题: {entry['title']}\n"
-                f"内容: {entry['content']}\n\n"
+                f"标题: {safe_title}\n"
+                f"内容: {safe_content}\n\n"
                 f"创建时间: {entry['created_at']}\n"
                 f"更新时间: {entry['updated_at']}"
             )
-            
+
             keyboard = [
                 [
                     InlineKeyboardButton(copy_text.BTN_KB_EDIT, callback_data=f"autoreply_kb_edit_{entry_id}"),
@@ -2434,27 +2472,32 @@ async def _handle_callback_impl(update: Update, context: ContextTypes.DEFAULT_TY
                 ],
                 [InlineKeyboardButton(copy_text.BTN_BACK_KB_LIST, callback_data="autoreply_kb_list_page_1")]
             ]
-            
+
             await query.edit_message_text(
                 message,
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown'
             )
-        
+
         elif data.startswith("autoreply_kb_edit_"):
             try:
                 entry_id = int(data.split("_")[3])
             except (ValueError, IndexError):
                 await answer_callback(copy_text.kb_entry_id_invalid(), show_alert=True)
                 return
-            
+
             entry = await db.get_knowledge_entry(entry_id)
             if not entry:
                 await answer_callback(copy_text.kb_entry_missing(), show_alert=True)
                 return
-            
+
             await query.edit_message_text(
-                copy_text.kb_edit_hint(entry['id'], entry['title'], entry['content'], entry_id),
+                copy_text.kb_edit_hint(
+                    entry['id'],
+                    escape_markdown(str(entry['title']), version=1),
+                    escape_markdown(str(entry['content']), version=1),
+                    entry_id,
+                ),
                 parse_mode='Markdown'
             )
         

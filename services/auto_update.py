@@ -160,6 +160,11 @@ async def _notify_admins(application: Application, text: str) -> None:
 async def check_now(application: Application, state: dict, settings: dict, now: float) -> dict:
     """检测一次并记录结果；同一个版本只提醒一次。"""
     result = await _detect()
+    if result.get('error'):
+        # 瞬时网络/拉取错误时保留已检测到的待更新状态，仅记录本次错误与时间
+        state = {**state, 'error': result['error'], 'last_checked_at': now}
+        await _save_json(STATE_META_KEY, state)
+        return state
     state = {**state, **result, 'last_checked_at': now}
     version = result['version']
     if result['update_available'] and version and state.get('notified_version') != version:
@@ -199,6 +204,10 @@ async def _apply_git_update(application: Application) -> str:
 async def run_update(application: Application, state: dict, now: float) -> dict:
     """执行更新前重新确认一次版本，失败时通知管理员，当天不再重试。"""
     result = await _detect()
+    if result.get('error'):
+        state = {**state, 'error': result['error'], 'last_checked_at': now, 'last_attempt_at': now}
+        await _save_json(STATE_META_KEY, state)
+        return state
     state = {**state, **result, 'last_checked_at': now, 'last_attempt_at': now}
     await _save_json(STATE_META_KEY, state)
     if not result['update_available']:

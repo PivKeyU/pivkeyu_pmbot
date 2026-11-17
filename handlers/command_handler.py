@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,10 +14,11 @@ from config import config
 from utils import commands as command_catalog
 from utils import copy as copy_text
 from utils import about
+from web_panel import keys as panel_keys
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
+
     if not await db.get_user(user.id):
         await db.add_user(
             user_id=user.id,
@@ -25,11 +27,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             last_name=user.last_name,
             language_code=user.language_code
         )
-    
+
+    is_admin_user = await db.is_admin(user.id)
+    who = copy_text.address(is_admin_user)
     welcome_message = (
-        f"客人好呀，{user.first_name}！\n\n"
+        f"{who}好呀，{user.first_name}！\n\n"
         "这里是随时待命的双向聊天女仆。\n"
-        "客人可以直接把消息交给女仆，女仆会乖乖送到管理员那边。\n\n"
+        f"{who}可以直接把消息交给女仆，女仆会乖乖送到管理员那边。\n\n"
         "输入 /help 可以查看女仆小手册。"
     )
     
@@ -349,18 +353,22 @@ def _format_runtime_statuses(statuses: list[dict]) -> str:
     for item in statuses[:30]:
         failures = int(item.get('consecutive_failures') or 0)
         badge = "正常" if failures == 0 else f"异常 x{failures}"
-        lines.extend([
+        entry = [
             f"{item.get('name')} [{badge}]",
             f"  类别: {item.get('category')}",
             f"  最近运行: {item.get('last_run_at') or '-'}",
             f"  最近成功: {item.get('last_success_at') or '-'}",
             f"  最近失败: {item.get('last_error_at') or '-'}",
             f"  耗时: {item.get('last_duration_ms') or 0} ms, 推送: {item.get('last_sent_count') or 0}",
-        ])
+        ]
         if item.get('last_error'):
             error_text = str(item['last_error'])
-            lines.append(f"  错误: {error_text[:180]}")
-        lines.append("")
+            entry.append(f"  错误: {error_text[:180]}")
+        entry.append("")
+        if len("\n".join(lines + entry)) > 3800:
+            lines.append("...（状态较多，已截断，完整信息请查看 Web 面板）")
+            break
+        lines.extend(entry)
     return "\n".join(lines).strip()
 
 
@@ -485,6 +493,9 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 hours = int(context.args[1])
+                if hours <= 0:
+                    await update.message.reply_text(copy_text.exempt_hours_invalid())
+                    return
                 expires_at = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
                 reason = " ".join(context.args[2:]) if len(context.args) > 2 else "管理员发放临时通行证"
                 
@@ -557,6 +568,9 @@ async def exempt(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 hours = int(context.args[2])
+                if hours <= 0:
+                    await update.message.reply_text(copy_text.exempt_hours_invalid())
+                    return
                 expires_at = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
                 reason = " ".join(context.args[3:]) if len(context.args) > 3 else "管理员发放临时通行证"
                 
@@ -674,6 +688,11 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         name = broadcast_service.normalize_group_name(context.args[1])
+        if not name:
+            await update.message.reply_text(
+                copy_text.with_deco("分组名字得写点实质内容呀，主人。", 'ASK')
+            )
+            return
         await update.message.reply_text(await broadcast_service.format_group_members(name))
         return
 
@@ -685,6 +704,11 @@ async def group(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         name = broadcast_service.normalize_group_name(context.args[1])
+        if not name:
+            await update.message.reply_text(
+                copy_text.with_deco("分组名字得写点实质内容呀，主人。", 'ASK')
+            )
+            return
         target_user_id = await _resolve_group_target_user_id(update, context, 2)
         if not target_user_id:
             await update.message.reply_text(
@@ -773,44 +797,73 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    source_message = update.message.reply_to_message
-    text = " ".join(context.args[text_start:]).strip()
-    status_message = await update.message.reply_text(
-        copy_text.with_deco(f"广播开始啦，目标 {len(recipients)} 人，请主人稍等。", 'WAIT')
+    raw_reply = update.message.reply_to_message
+    is_service_reply = bool(
+        raw_reply is not None
+        and (
+            getattr(raw_reply, "forum_topic_created", None) is not None
+            or getattr(raw_reply, "forum_topic_closed", None) is not None
+            or getattr(raw_reply, "forum_topic_reopened", None) is not None
+            or getattr(raw_reply, "general_forum_topic_hidden", None) is not None
+            or getattr(raw_reply, "general_forum_topic_unhidden", None) is not None
+        )
     )
-
-    if source_message:
-        result = await broadcast_service.send_message_broadcast(
-            context=context,
-            recipients=recipients,
-            source_message=source_message,
-            admin_id=admin_id,
-            scope=broadcast_scope,
-            group_id=group_data['id'] if group_data else None,
-        )
-    elif text:
-        result = await broadcast_service.send_text_broadcast(
-            context=context,
-            recipients=recipients,
-            text=text,
-            admin_id=admin_id,
-            scope=broadcast_scope,
-            group_id=group_data['id'] if group_data else None,
-        )
-    else:
-        await status_message.edit_text(_broadcast_help_text())
+    source_message = None if is_service_reply else raw_reply
+    text = " ".join(context.args[text_start:]).strip()
+    if not source_message and not text:
+        await update.message.reply_text(_broadcast_help_text())
         return
 
-    target = "全部主人" if scope == "all" else f"分组 {group_data['name']}"
-    await status_message.edit_text(
-        copy_text.with_deco_head(
-            f"广播完成：{target}\n"
-            f"任务 ID: {result.broadcast_id}\n"
-            f"目标: {result.total}\n"
-            f"成功: {result.success}\n"
-            f"失败: {result.failed}",
-            'OK')
+    if broadcast_service.is_running() or any(not t.done() for t in panel_keys.BROADCAST_TASKS):
+        await update.message.reply_text(
+            copy_text.with_deco("当前宅邸里已经在发一条广播啦，等这一轮发完再继续哦。", 'WAIT')
+        )
+        return
+
+    status_message = await update.message.reply_text(
+        copy_text.with_deco(f"广播已在后台启动，目标 {len(recipients)} 人，请主人稍等。", 'WAIT')
     )
+    target_label = "全部主人" if scope == "all" else f"分组 {group_data['name']}"
+
+    async def _run_broadcast():
+        try:
+            if source_message:
+                result = await broadcast_service.send_message_broadcast(
+                    context=context,
+                    recipients=recipients,
+                    source_message=source_message,
+                    admin_id=admin_id,
+                    scope=broadcast_scope,
+                    group_id=group_data['id'] if group_data else None,
+                )
+            else:
+                result = await broadcast_service.send_text_broadcast(
+                    context=context,
+                    recipients=recipients,
+                    text=text,
+                    admin_id=admin_id,
+                    scope=broadcast_scope,
+                    group_id=group_data['id'] if group_data else None,
+                )
+            await status_message.edit_text(
+                copy_text.with_deco_head(
+                    f"广播完成：{target_label}\n"
+                    f"任务 ID: {result.broadcast_id}\n"
+                    f"目标: {result.total}\n"
+                    f"成功: {result.success}\n"
+                    f"失败: {result.failed}",
+                    'OK')
+            )
+        except Exception as exc:
+            logging.exception("命令触发后台广播异常")
+            try:
+                await status_message.edit_text(copy_text.with_deco(f"广播执行出错：{exc}", 'ERROR'))
+            except Exception:
+                pass
+
+    task = asyncio.create_task(_run_broadcast())
+    panel_keys.BROADCAST_TASKS.add(task)
+    task.add_done_callback(panel_keys.BROADCAST_TASKS.discard)
 
 
 def _spamrules_help_text() -> str:
@@ -826,7 +879,7 @@ def _spamrules_help_text() -> str:
 
 
 def _parse_keyword_args(raw_text: str) -> list[str]:
-    return [item.strip() for item in raw_text.replace(",", "\n").splitlines() if item.strip()]
+    return [item.strip() for item in raw_text.replace("，", ",").replace(",", "\n").splitlines() if item.strip()]
 
 
 @admin_only
@@ -950,11 +1003,15 @@ async def tgmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines = ["发现的 TG 群/频道", ""]
         for chat in chats:
             username = f" @{chat['username']}" if chat.get('username') else ""
-            lines.append(
+            entry = (
                 f"- {chat.get('title') or chat['chat_id']}{username}\n"
                 f"  chat_id: {chat['chat_id']}\n"
                 f"  最近看到: {chat.get('last_seen_at') or '-'}"
             )
+            if len("\n".join(lines + [entry])) > 3800:
+                lines.append("...（数量较多已截断，更多请到 Web 面板查看）")
+                break
+            lines.append(entry)
         await update.message.reply_text("\n".join(lines))
         return
 
@@ -1105,6 +1162,11 @@ async def webmon(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         name = context.args[1].strip()
         url = context.args[2].strip()
+        if not url.lower().startswith(('http://', 'https://')):
+            await update.message.reply_text(
+                copy_text.with_deco("网址需要以 http:// 或 https:// 开头哦，主人。", 'ERROR')
+            )
+            return
         keywords = web_monitor.parse_keywords(" ".join(context.args[3:])) if len(context.args) > 3 else []
         try:
             monitor_id = await db.create_web_monitor(
@@ -1310,13 +1372,19 @@ async def autoreply(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(copy_text.kb_empty())
             return
         
-        message = "知识小本本条目:\n\n"
+        lines = ["知识小本本条目:\n"]
         for entry in entries:
-            message += f"ID: {entry['id']}\n"
-            message += f"标题: {entry['title']}\n"
-            message += f"内容摘要: {entry['content'][:50]}...\n\n"
-        
-        await update.message.reply_text(message)
+            item = (
+                f"ID: {entry['id']}\n"
+                f"标题: {entry['title']}\n"
+                f"内容摘要: {entry['content'][:50]}...\n"
+            )
+            if len("\n".join(lines) + item) > 3800:
+                lines.append("...（条目较多已截断，可通过 Web 面板或面板分页查看全部）")
+                break
+            lines.append(item)
+
+        await update.message.reply_text("\n".join(lines))
     elif subcommand == "edit":
         if len(context.args) < 4:
             await update.message.reply_text(

@@ -51,6 +51,16 @@ def _on_check_interval_changed(_seconds: int) -> None:
         logger.info("RSS 检查间隔已更新，任务已按新间隔重新调度。")
 
 
+def _on_enabled_changed(enabled: bool) -> None:
+    """开关状态被修改后，自动调度或停止 RSS 检查任务。"""
+    if _current_app is None:
+        return
+    if enabled:
+        _schedule_feed_job(_current_app)
+    else:
+        _cancel_feed_job(_current_app)
+
+
 def setup(app: Application) -> None:
     global _current_app
     _current_app = app
@@ -60,7 +70,7 @@ def setup(app: Application) -> None:
     if data_dir:
         os.makedirs(data_dir, exist_ok=True)
 
-    data_manager.load_subscriptions(data_file)
+    data_manager.load_subscriptions(data_file, skip_title_fetch=True)
     app.bot_data["rss_data_file"] = data_file
 
     for command, handler in rss_handlers.COMMAND_MAP.items():
@@ -72,8 +82,9 @@ def setup(app: Application) -> None:
             filters=filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE,
         ))
 
-    # 注册间隔变化回调，面板修改检查间隔后按新间隔重建任务
+    # 注册开关与间隔变化回调
     settings.set_check_interval_callback(_on_check_interval_changed)
+    settings.set_enabled_callback(_on_enabled_changed)
 
     if settings.is_enabled():
         _schedule_feed_job(app)
@@ -82,19 +93,23 @@ def setup(app: Application) -> None:
         logger.info("RSS 订阅功能当前为关闭状态，可在面板中开启。")
 
 
-def enable_feature(app: Application) -> bool:
+def enable_feature(app: Optional[Application] = None) -> bool:
     if settings.is_enabled():
         return False
+    target_app = app or _current_app
     settings.set_enabled(True)
-    _schedule_feed_job(app)
+    if target_app is not None and RSS_JOB_KEY not in target_app.bot_data:
+        _schedule_feed_job(target_app)
     logger.info("RSS 订阅功能已在运行时开启。")
     return True
 
 
-def disable_feature(app: Application) -> bool:
+def disable_feature(app: Optional[Application] = None) -> bool:
     if not settings.is_enabled():
         return False
+    target_app = app or _current_app
     settings.set_enabled(False)
-    _cancel_feed_job(app)
+    if target_app is not None:
+        _cancel_feed_job(target_app)
     logger.info("RSS 订阅功能已在运行时关闭。")
     return True

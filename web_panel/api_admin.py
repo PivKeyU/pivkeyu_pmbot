@@ -7,6 +7,7 @@
 import asyncio
 import dataclasses
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,12 +15,14 @@ from types import SimpleNamespace
 from aiohttp import web
 
 from database import models as db
+import rss as rss_module
 from rss import data_manager as rss_data
 from rss import settings as rss_settings
 from rss.handlers import ensure_user_data, is_valid_url
 from config import config
 from services import broadcast as broadcast_service
-from services import auto_update, image_update, moderation, monitor_push, restart, safe_update, web_monitor
+from services import auto_update, image_update, moderation, monitor_push, restart, safe_update, tg_monitor, web_monitor
+from services.ai_service import _redact_secret
 from services.ai_providers import (
     AI_FEATURES, DECISION_PROTOCOLS, PROVIDER_IDS, PROVIDERS, all_model_setting_keys, is_decision_model,
     model_setting_key,
@@ -60,11 +63,11 @@ TIMELINE_CONTEXT = 6
 
 
 def _parse_keywords(raw) -> list:
-    """把逗号/换行分隔的字符串或数组统一成去重列表。"""
+    """把逗号（含中文逗号）/换行分隔的字符串或数组统一成去重列表。"""
     if isinstance(raw, (list, tuple)):
         items = list(raw)
     else:
-        items = str(raw or '').replace('\n', ',').split(',')
+        items = str(raw or '').replace('，', ',').replace('\n', ',').split(',')
     result = []
     for item in items:
         item = str(item).strip()
@@ -125,7 +128,7 @@ async def update_user_profile(request):
         return http_utils.fail(f'备注最多 {USER_NOTE_MAX_CHARS} 个字符')
     if len(tags) > USER_TAGS_MAX or any(len(tag) > USER_TAG_MAX_CHARS for tag in tags):
         return http_utils.fail(f'最多 {USER_TAGS_MAX} 个标签，每个不超过 {USER_TAG_MAX_CHARS} 个字符')
-    if not await db.update_user_profile(user_id, note, tags):
+    if not await db.update_user_metadata(user_id, note, tags):
         return http_utils.fail('用户不存在', status=404)
     http_utils.audit(request, 'user.profile', f'user_id={user_id} 标签数={len(tags)}')
     return http_utils.ok({'note': note, 'tags': tags})
@@ -228,6 +231,8 @@ async def list_exemptions(request):
 async def add_exemption(request):
     data = await http_utils.read_json(request)
     user_id = _require_int(data, 'user_id')
+    if not await db.get_user(user_id):
+        return http_utils.fail('该用户尚未与机器人建立档案', status=404)
     permanent = bool(data.get('permanent'))
     reason = str(data.get('reason') or '').strip() or None
     expires_at = None
@@ -563,8 +568,9 @@ async def test_ai_connection(request):
     except asyncio.TimeoutError:
         return http_utils.fail('连接超时：超过了该功能设置的超时秒数，请检查 Base URL、网络或调低思考等级', status=502)
     except Exception as exc:
-        logger.warning('AI 连接测试失败 provider=%s: %s', provider, exc)
-        return http_utils.fail(f'连接失败：{str(exc)[:300]}', status=502)
+        safe_err = _redact_secret(exc)
+        logger.warning('AI 连接测试失败 provider=%s: %s', provider, safe_err)
+        return http_utils.fail(f'连接失败：{safe_err[:200]}', status=502)
     http_utils.audit(request, 'ai_settings.test', f'provider={provider} model={result["model"]}')
     return http_utils.ok({'provider': provider, 'feature': feature, **result})
 
@@ -578,8 +584,9 @@ async def test_decision_connection(request):
     except asyncio.TimeoutError:
         return http_utils.fail('连接超时，请检查 Base URL 和网络', status=502)
     except Exception as exc:
-        logger.warning('决策审查连接测试失败: %s', exc)
-        return http_utils.fail(f'连接失败：{str(exc)[:300]}', status=502)
+        safe_err = _redact_secret(exc)
+        logger.warning('决策审查连接测试失败: %s', safe_err)
+        return http_utils.fail(f'连接失败：{safe_err[:200]}', status=502)
     http_utils.audit(request, 'ai_settings.decision_test', f'{result["protocol"]} model={result["model"]}')
     return http_utils.ok(result)
 
@@ -672,6 +679,10 @@ async def bulk_add_group_members(request):
         if not await db.get_user_group_by_name(name):
             return http_utils.fail(f'分组不存在：{name}', status=404)
 
+    missing_users = [uid for uid in user_ids if not await db.get_user(uid)]
+    if missing_users:
+        return http_utils.fail(f'存在未建档用户：{missing_users[0]}', status=404)
+
     added = 0
     for name in groups:
         for user_id in user_ids:
@@ -706,6 +717,8 @@ async def add_group_member(request):
     user_id = _require_int(data, 'user_id')
     if not await db.get_user_group_by_name(name):
         return http_utils.fail('分组不存在', status=404)
+    if not await db.get_user(user_id):
+        return http_utils.fail('该用户尚未与机器人建立档案', status=404)
     _, _, added = await db.add_user_to_group(name, user_id, 0)
     if not added:
         return http_utils.fail('该用户已在分组中', status=409)
@@ -783,7 +796,7 @@ async def start_broadcast(request):
         return http_utils.fail('没有可投递的对象（该分组或标签暂无成员，或已全部拉黑）')
 
     tasks = request.app[keys.BROADCAST_TASKS_KEY]
-    if tasks:
+    if tasks or broadcast_service.is_running():
         return http_utils.fail('已有广播任务进行中，请等待完成', status=409)
 
     scope = 'group' if group_name else (f'tag:{tag}' if tag else 'all')
@@ -831,7 +844,15 @@ async def get_rss(request):
 async def update_rss_settings(request):
     data = await http_utils.read_json(request)
     if 'enabled' in data:
-        rss_settings.set_enabled(bool(data['enabled']))
+        want_enabled = bool(data['enabled'])
+        application = request.app.get(keys.APPLICATION_KEY)
+        if application is not None:
+            if want_enabled:
+                rss_module.enable_feature(application)
+            else:
+                rss_module.disable_feature(application)
+        else:
+            rss_settings.set_enabled(want_enabled)
     if 'check_interval' in data:
         try:
             interval = int(data['check_interval'])
@@ -858,18 +879,20 @@ async def add_rss_feed(request):
     if not chat_id:
         return http_utils.fail('chat_id 不能为空')
     if not is_valid_url(feed_url):
-        return http_utils.fail('订阅链接格式不正确')
+        return http_utils.fail('订阅链接格式不正确（仅支持 http/https）')
+    await web_monitor._assert_public_url(feed_url)
 
     subscriptions = rss_data.get_subscriptions()
     ensure_user_data(chat_id, subscriptions)
     if feed_url in subscriptions[chat_id]['rss_feeds']:
         return http_utils.fail('该订阅已存在', status=409)
 
-    title = await asyncio.to_thread(rss_data.get_feed_title, feed_url) or '未命名茶点'
+    title = await asyncio.wait_for(rss_data.fetch_feed_title(feed_url), timeout=16) or '未命名茶点'
     subscriptions[chat_id]['rss_feeds'][feed_url] = {
         'title': title,
         'keywords': [],
         'last_entry_id': None,
+        'seen_entry_ids': [],
     }
     rss_data.save_subscriptions(rss_settings.get_data_file())
     http_utils.audit(request, 'rss.feed_add', f'chat={chat_id} url={feed_url}')
@@ -879,8 +902,8 @@ async def add_rss_feed(request):
 @routes.delete('/api/rss/feeds')
 async def remove_rss_feed(request):
     data = await http_utils.read_json(request)
-    chat_id = str(data.get('chat_id') or '').strip()
-    feed_url = str(data.get('url') or '').strip()
+    chat_id = str(data.get('chat_id') or request.query.get('chat_id') or '').strip()
+    feed_url = str(data.get('url') or request.query.get('url') or '').strip()
     removed = rss_data.remove_feed(chat_id, feed_url, rss_settings.get_data_file())
     if not removed:
         return http_utils.fail('订阅不存在', status=404)
@@ -902,7 +925,7 @@ async def add_rss_keyword(request):
     if not feed:
         return http_utils.fail('订阅不存在', status=404)
     keywords = feed.setdefault('keywords', [])
-    if keyword in keywords:
+    if any(existing.lower() == keyword.lower() for existing in keywords):
         return http_utils.fail('关键词已存在', status=409)
     keywords.append(keyword)
     rss_data.save_subscriptions(rss_settings.get_data_file())
@@ -913,9 +936,9 @@ async def add_rss_keyword(request):
 @routes.delete('/api/rss/keywords')
 async def remove_rss_keyword(request):
     data = await http_utils.read_json(request)
-    chat_id = str(data.get('chat_id') or '').strip()
-    feed_url = str(data.get('url') or '').strip()
-    keyword = str(data.get('keyword') or '').strip()
+    chat_id = str(data.get('chat_id') or request.query.get('chat_id') or '').strip()
+    feed_url = str(data.get('url') or request.query.get('url') or '').strip()
+    keyword = str(data.get('keyword') or request.query.get('keyword') or '').strip()
     removed = rss_data.remove_keyword(chat_id, feed_url, keyword, rss_settings.get_data_file())
     if not removed:
         return http_utils.fail('关键词不存在', status=404)
@@ -957,20 +980,33 @@ async def create_tg_monitor(request):
         return http_utils.fail('监控名不能为空')
     if await db.get_tg_group_monitor_by_name(name):
         return http_utils.fail('同名监控已存在', status=409)
-    monitor_id = await db.create_tg_group_monitor(
-        name=name,
-        chat_id=_require_int(data, 'chat_id'),
-        keywords=_parse_keywords(data.get('keywords')),
-        created_by=0,
-        chat_title=str(data.get('chat_title') or '').strip() or None,
-        listen_source=str(data.get('listen_source') or 'user_session').strip().lower(),
-        exclude_keywords=_parse_keywords(data.get('exclude_keywords')),
-        min_interval_seconds=int(data.get('min_interval_seconds') or 30),
-        dedupe_window_seconds=int(data.get('dedupe_window_seconds') or 300),
-    )
+    listen_source = str(data.get('listen_source') or 'user_session').strip().lower()
+    if listen_source not in ('bot', 'user_session'):
+        return http_utils.fail('listen_source 仅支持 bot 或 user_session')
+    min_interval = 30 if data.get('min_interval_seconds') in (None, '') else int(data['min_interval_seconds'])
+    dedupe_window = 300 if data.get('dedupe_window_seconds') in (None, '') else int(data['dedupe_window_seconds'])
+    if min_interval < 0 or dedupe_window < 0:
+        return http_utils.fail('间隔和去重窗口不能为负数')
+    try:
+        monitor_id = await db.create_tg_group_monitor(
+            name=name,
+            chat_id=_require_int(data, 'chat_id'),
+            keywords=_parse_keywords(data.get('keywords')),
+            created_by=0,
+            chat_title=str(data.get('chat_title') or '').strip() or None,
+            listen_source=listen_source,
+            exclude_keywords=_parse_keywords(data.get('exclude_keywords')),
+            min_interval_seconds=min_interval,
+            dedupe_window_seconds=dedupe_window,
+        )
+    except sqlite3.IntegrityError:
+        return http_utils.fail('同名监控已存在', status=409)
     extra = _pick(data, {'notify_telegram', 'notify_chat_ids'})
     if extra:
         await db.update_tg_group_monitor(monitor_id, **extra)
+    application = request.app.get(keys.APPLICATION_KEY)
+    if application is not None:
+        await tg_monitor.refresh_user_session_listener(application)
     http_utils.audit(request, 'tg_monitor.create', f'{name} chat_id={data.get("chat_id")}')
     return http_utils.ok({'id': monitor_id})
 
@@ -984,7 +1020,18 @@ async def update_tg_monitor(request):
     updates = _pick(data, TG_MONITOR_EDITABLE)
     if not updates:
         return http_utils.fail('没有可更新的字段')
-    await db.update_tg_group_monitor(monitor_id, **updates)
+    if 'listen_source' in updates:
+        src = str(updates['listen_source'] or '').strip().lower()
+        if src not in ('bot', 'user_session'):
+            return http_utils.fail('listen_source 仅支持 bot 或 user_session')
+        updates['listen_source'] = src
+    try:
+        await db.update_tg_group_monitor(monitor_id, **updates)
+    except sqlite3.IntegrityError:
+        return http_utils.fail('同名监控已存在', status=409)
+    application = request.app.get(keys.APPLICATION_KEY)
+    if application is not None:
+        await tg_monitor.refresh_user_session_listener(application)
     http_utils.audit(request, 'tg_monitor.update', f'id={monitor_id} 字段={",".join(updates)}')
     return http_utils.ok()
 
@@ -995,6 +1042,9 @@ async def delete_tg_monitor(request):
     deleted = await db.delete_tg_group_monitor(monitor_id)
     if not deleted:
         return http_utils.fail('监控不存在', status=404)
+    application = request.app.get(keys.APPLICATION_KEY)
+    if application is not None:
+        await tg_monitor.refresh_user_session_listener(application)
     http_utils.audit(request, 'tg_monitor.delete', f'id={monitor_id}')
     return http_utils.ok()
 
@@ -1073,23 +1123,26 @@ async def create_web_monitor(request):
         return http_utils.fail('名称与网址都不能为空')
     if not url.lower().startswith(('http://', 'https://')):
         return http_utils.fail('网址需要以 http:// 或 https:// 开头')
-    monitor_id = await db.create_web_monitor(
-        name=name,
-        url=url,
-        keywords=_parse_keywords(data.get('keywords')),
-        created_by=0,
-        interval_seconds=int(data.get('interval_seconds') or 300),
-        item_selector=str(data.get('item_selector') or '').strip() or None,
-        title_selector=str(data.get('title_selector') or '').strip() or None,
-        link_selector=str(data.get('link_selector') or '').strip() or None,
-        price_selector=str(data.get('price_selector') or '').strip() or None,
-        stock_selector=str(data.get('stock_selector') or '').strip() or None,
-        monitor_type='stock' if data.get('monitor_type') == 'stock' else 'page',
-        product_keyword=str(data.get('product_keyword') or '').strip(),
-        in_stock_words=str(data.get('in_stock_words') or '').strip(),
-        out_of_stock_words=str(data.get('out_of_stock_words') or '').strip(),
-        notify_chat_ids=_pick(data, {'notify_chat_ids'}).get('notify_chat_ids', ''),
-    )
+    try:
+        monitor_id = await db.create_web_monitor(
+            name=name,
+            url=url,
+            keywords=_parse_keywords(data.get('keywords')),
+            created_by=0,
+            interval_seconds=int(data.get('interval_seconds') or 300),
+            item_selector=str(data.get('item_selector') or '').strip() or None,
+            title_selector=str(data.get('title_selector') or '').strip() or None,
+            link_selector=str(data.get('link_selector') or '').strip() or None,
+            price_selector=str(data.get('price_selector') or '').strip() or None,
+            stock_selector=str(data.get('stock_selector') or '').strip() or None,
+            monitor_type='stock' if data.get('monitor_type') == 'stock' else 'page',
+            product_keyword=str(data.get('product_keyword') or '').strip(),
+            in_stock_words=str(data.get('in_stock_words') or '').strip(),
+            out_of_stock_words=str(data.get('out_of_stock_words') or '').strip(),
+            notify_chat_ids=_pick(data, {'notify_chat_ids'}).get('notify_chat_ids', ''),
+        )
+    except sqlite3.IntegrityError:
+        return http_utils.fail('同名监控已存在', status=409)
     if 'notify_telegram' in data:
         await db.update_web_monitor(monitor_id, notify_telegram=data['notify_telegram'])
     http_utils.audit(request, 'web_monitor.create', f'{name} {url}')
@@ -1105,7 +1158,15 @@ async def update_web_monitor(request):
     updates = _pick(data, WEB_MONITOR_EDITABLE)
     if not updates:
         return http_utils.fail('没有可更新的字段')
-    await db.update_web_monitor(monitor_id, **updates)
+    if 'url' in updates:
+        new_url = str(updates['url'] or '').strip()
+        if not new_url.lower().startswith(('http://', 'https://')):
+            return http_utils.fail('网址需要以 http:// 或 https:// 开头')
+        updates['url'] = new_url
+    try:
+        await db.update_web_monitor(monitor_id, **updates)
+    except sqlite3.IntegrityError:
+        return http_utils.fail('同名监控已存在', status=409)
     http_utils.audit(request, 'web_monitor.update', f'id={monitor_id} 字段={",".join(updates)}')
     return http_utils.ok()
 
@@ -1152,6 +1213,7 @@ async def list_network_servers(request):
 @routes.post('/api/network/servers')
 async def add_network_server(request):
     from network_test import config as nt_config
+    from network_test.utils import validate_port, validate_target
 
     data = await http_utils.read_json(request)
     name = str(data.get('name') or '').strip()
@@ -1162,10 +1224,12 @@ async def add_network_server(request):
         return http_utils.fail('名称、主机、用户名都不能为空')
     if _find_server(name):
         return http_utils.fail('同名服务器已存在', status=409)
-    try:
-        port = int(data.get('port') or 22)
-    except (TypeError, ValueError):
-        raise ValueError('端口需要是整数')
+    host_ok, host_err = validate_target(host, allow_private=True)
+    if not host_ok:
+        return http_utils.fail(host_err)
+    port_ok, port, port_err = validate_port(22 if data.get('port') in (None, '') else data['port'])
+    if not port_ok:
+        return http_utils.fail(port_err)
     nt_config.SERVERS.append({
         'name': name, 'host': host, 'port': port, 'username': username, 'password': password,
     })
@@ -1309,7 +1373,7 @@ async def image_update_status(request):
 
 @routes.post('/api/update/image')
 async def image_update_apply(request):
-    triggered, message = await image_update.trigger_watchtower_update()
+    triggered, message = await image_update.trigger_and_remember_watchtower_update()
     if not triggered:
         return http_utils.fail(message)
     http_utils.audit(request, 'update.image_apply', message[:120])

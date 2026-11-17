@@ -107,22 +107,30 @@ function promptDialog({ title, label, placeholder = '', onConfirm }) {
   input.focus();
 }
 
+function safeHref(raw) {
+  const url = String(raw || '').trim();
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+
 /* ------------------------------------------------------------------ RSS */
 
-async function renderRss(container) {
+async function renderRss(container, isCurrent = () => true) {
   const reload = () => {
     clear(container);
-    renderRss(container);
+    renderRss(container, isCurrent);
   };
   container.appendChild(spinner());
   let data;
   try {
     data = await api.get('/api/rss');
   } catch (err) {
+    if (!isCurrent()) return;
     clear(container);
     container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
     return;
   }
+  if (!isCurrent()) return;
   clear(container);
 
   // 开关与间隔
@@ -138,7 +146,10 @@ async function renderRss(container) {
             try {
               await api.put('/api/rss/settings', { enabled: checked });
               toast(checked ? 'RSS 已启用' : 'RSS 已暂停', 'ok');
-            } catch (err) { toast(err.message, 'error'); }
+            } catch (err) {
+              toast(err.message, 'error');
+              return false;
+            }
           },
         }),
       ),
@@ -170,7 +181,12 @@ async function renderRss(container) {
           label: '用户 ID',
           placeholder: '数字 ID',
           onConfirm: async (value) => {
-            await api.post('/api/rss/authorized', { user_id: Number(value) });
+            const raw = String(value || '').trim();
+            if (!/^-?\d+$/.test(raw) || Number(raw) === 0) {
+              toast('请输入有效的非零数字用户 ID', 'error');
+              return;
+            }
+            await api.post('/api/rss/authorized', { user_id: Number(raw) });
             toast('已添加', 'ok');
             reload();
           },
@@ -203,7 +219,14 @@ async function renderRss(container) {
     columns: [
       { title: '归属 chat', render: (row) => el('span', { class: 'mono' }, row.chat_id) },
       { title: '标题', render: (row) => row.title || '-' },
-      { title: '链接', render: (row) => el('a', { href: row.url, target: '_blank', rel: 'noopener', class: 'small' }, row.url.slice(0, 60)) },
+      {
+        title: '链接',
+        render: (row) => {
+          const href = safeHref(row.url);
+          const text = String(row.url || '').slice(0, 60);
+          return href ? el('a', { href, target: '_blank', rel: 'noopener', class: 'small' }, text) : text;
+        },
+      },
       {
         title: '关键词',
         render: (row) => el('div', {},
@@ -283,10 +306,10 @@ async function renderRss(container) {
 
 /* -------------------------------------------------------------- TG 监听 */
 
-async function renderTg(container) {
+async function renderTg(container, isCurrent = () => true) {
   const reload = () => {
     clear(container);
-    renderTg(container);
+    renderTg(container, isCurrent);
   };
   container.appendChild(spinner());
   let data;
@@ -297,10 +320,12 @@ async function renderTg(container) {
       api.get('/api/tg-discovered?limit=30').catch(() => ({ items: [] })),
     ]);
   } catch (err) {
+    if (!isCurrent()) return;
     clear(container);
     container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
     return;
   }
+  if (!isCurrent()) return;
   clear(container);
 
   const tableCard = el('div', { class: 'card' },
@@ -325,7 +350,7 @@ async function renderTg(container) {
               try {
                 await api.put(`/api/tg-monitors/${row.id}`, { enabled: checked });
                 toast('已更新', 'ok');
-              } catch (err) { toast(err.message, 'error'); }
+              } catch (err) { toast(err.message, 'error'); return false; }
             },
           }),
         },
@@ -415,21 +440,30 @@ async function renderTg(container) {
         el('button', {
           class: 'btn primary',
           onClick: async () => {
+            const chatIdRaw = chatIdInput.value.trim();
+            if (!nameInput.value.trim() || !/^-?\d+$/.test(chatIdRaw) || Number(chatIdRaw) === 0) {
+              toast('名称不能为空，且 chat_id 须为非零数字', 'error');
+              return;
+            }
+            const minIntervalRaw = minIntervalInput.value.trim();
+            const dedupeRaw = dedupeInput.value.trim();
+            const minInterval = minIntervalRaw === '' ? 30 : Number(minIntervalRaw);
+            const dedupeWindow = dedupeRaw === '' ? 300 : Number(dedupeRaw);
+            if (!Number.isFinite(minInterval) || minInterval < 0 || !Number.isFinite(dedupeWindow) || dedupeWindow < 0) {
+              toast('推送间隔与去重窗口须为非负数字', 'error');
+              return;
+            }
             const payload = {
               name: nameInput.value.trim(),
-              chat_id: Number(chatIdInput.value.trim()),
+              chat_id: Number(chatIdRaw),
               chat_title: chatTitleInput.value.trim(),
               keywords: keywordsInput.value,
               exclude_keywords: excludeInput.value,
               listen_source: sourceSelect.value,
-              min_interval_seconds: Number(minIntervalInput.value || 30),
-              dedupe_window_seconds: Number(dedupeInput.value || 300),
+              min_interval_seconds: Math.floor(minInterval),
+              dedupe_window_seconds: Math.floor(dedupeWindow),
               ...push.values(),
             };
-            if (!payload.name || !payload.chat_id) {
-              toast('名称与 chat_id 不能为空', 'error');
-              return;
-            }
             try {
               if (monitor) await api.put(`/api/tg-monitors/${monitor.id}`, payload);
               else await api.post('/api/tg-monitors', payload);
@@ -449,20 +483,22 @@ async function renderTg(container) {
 
 /* ------------------------------------------------------------ 网页监控 */
 
-async function renderWeb(container) {
+async function renderWeb(container, isCurrent = () => true) {
   const reload = () => {
     clear(container);
-    renderWeb(container);
+    renderWeb(container, isCurrent);
   };
   container.appendChild(spinner());
   let data;
   try {
     data = await api.get('/api/web-monitors');
   } catch (err) {
+    if (!isCurrent()) return;
     clear(container);
     container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
     return;
   }
+  if (!isCurrent()) return;
   clear(container);
 
   container.appendChild(el('div', { class: 'card' },
@@ -473,7 +509,14 @@ async function renderWeb(container) {
     table({
       columns: [
         { title: '名称', render: (row) => row.name },
-        { title: '网址', render: (row) => el('a', { href: row.url, target: '_blank', rel: 'noopener', class: 'small' }, row.url.slice(0, 55)) },
+        {
+          title: '网址',
+          render: (row) => {
+            const href = safeHref(row.url);
+            const text = String(row.url || '').slice(0, 55);
+            return href ? el('a', { href, target: '_blank', rel: 'noopener', class: 'small' }, text) : text;
+          },
+        },
         { title: '关键词', render: (row) => (row.keywords && row.keywords.length ? chips(row.keywords) : el('span', { class: 'muted small' }, '（新条目）')) },
         { title: '间隔', render: (row) => `${row.interval_seconds}s` },
         {
@@ -490,7 +533,7 @@ async function renderWeb(container) {
               try {
                 await api.put(`/api/web-monitors/${row.id}`, { enabled: checked });
                 toast('已更新', 'ok');
-              } catch (err) { toast(err.message, 'error'); }
+              } catch (err) { toast(err.message, 'error'); return false; }
             },
           }),
         },
@@ -599,20 +642,22 @@ function stockBadge(row) {
   return badge(text, kind);
 }
 
-async function renderStock(container) {
+async function renderStock(container, isCurrent = () => true) {
   const reload = () => {
     clear(container);
-    renderStock(container);
+    renderStock(container, isCurrent);
   };
   container.appendChild(spinner());
   let data;
   try {
     data = await api.get('/api/web-monitors?type=stock');
   } catch (err) {
+    if (!isCurrent()) return;
     clear(container);
     container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
     return;
   }
+  if (!isCurrent()) return;
   clear(container);
 
   container.appendChild(el('div', { class: 'card' },
@@ -640,7 +685,7 @@ async function renderStock(container) {
               try {
                 await api.put(`/api/web-monitors/${row.id}`, { enabled: checked });
                 toast('已更新', 'ok');
-              } catch (err) { toast(err.message, 'error'); }
+              } catch (err) { toast(err.message, 'error'); return false; }
             },
           }),
         },
@@ -763,10 +808,10 @@ async function renderStock(container) {
 
 /* ------------------------------------------------------------ 监控结果 */
 
-async function renderEvents(container, filter = { source: '', page: 1 }) {
+async function renderEvents(container, filter = { source: '', page: 1 }, isCurrent = () => true) {
   const reload = (next) => {
     clear(container);
-    renderEvents(container, { ...filter, ...next });
+    renderEvents(container, { ...filter, ...next }, isCurrent);
   };
   container.appendChild(spinner());
   let data;
@@ -775,10 +820,12 @@ async function renderEvents(container, filter = { source: '', page: 1 }) {
     if (filter.source) params.set('source', filter.source);
     data = await api.get(`/api/monitor-events?${params}`);
   } catch (err) {
+    if (!isCurrent()) return;
     clear(container);
     container.appendChild(el('div', { class: 'card' }, `加载失败：${err.message}`));
     return;
   }
+  if (!isCurrent()) return;
   clear(container);
 
   const sourceSelect = selectInput({
@@ -812,10 +859,14 @@ async function renderEvents(container, filter = { source: '', page: 1 }) {
         { title: '监控', render: (row) => row.monitor_name || '-' },
         {
           title: '内容',
-          render: (row) => el('div', { class: 'match-cell' },
-            row.link ? el('a', { href: row.link, target: '_blank', rel: 'noopener' }, row.title || row.link) : (row.title || '-'),
-            row.detail ? el('div', { class: 'muted small' }, row.detail.slice(0, 200)) : null,
-          ),
+          render: (row) => {
+            const href = safeHref(row.link);
+            const label = row.title || row.link || '-';
+            return el('div', { class: 'match-cell' },
+              href ? el('a', { href, target: '_blank', rel: 'noopener' }, label) : label,
+              row.detail ? el('div', { class: 'muted small' }, row.detail.slice(0, 200)) : null,
+            );
+          },
         },
         { title: '推送', render: (row) => (row.pushed_count ? `${row.pushed_count} 条` : '未推送') },
       ],
@@ -834,17 +885,20 @@ async function renderEvents(container, filter = { source: '', page: 1 }) {
 export default {
   title: 'RSS / 监控',
   render(container) {
+    let tabSeq = 0;
     const body = el('div', {});
     container.appendChild(tabsBar(() => load()));
     container.appendChild(body);
 
     function load() {
+      const seq = ++tabSeq;
+      const isCurrent = () => seq === tabSeq;
       clear(body);
-      if (state.tab === 'rss') return renderRss(body);
-      if (state.tab === 'tg') return renderTg(body);
-      if (state.tab === 'stock') return renderStock(body);
-      if (state.tab === 'events') return renderEvents(body);
-      return renderWeb(body);
+      if (state.tab === 'rss') return renderRss(body, isCurrent);
+      if (state.tab === 'tg') return renderTg(body, isCurrent);
+      if (state.tab === 'stock') return renderStock(body, isCurrent);
+      if (state.tab === 'events') return renderEvents(body, { source: '', page: 1 }, isCurrent);
+      return renderWeb(body, isCurrent);
     }
 
     load();

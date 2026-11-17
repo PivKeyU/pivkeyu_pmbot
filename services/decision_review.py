@@ -65,7 +65,7 @@ def _read_verdict(probabilities: dict) -> DecisionResult:
     values = {name: _read_probability(value) for name, value in probabilities.items()}
     safe = values.pop(SAFE_OPTION)
     category = max(values, key=values.get) if values else None
-    return DecisionResult(1 - safe, category)
+    return DecisionResult(round(1 - safe, 9), category)
 
 
 class StateQuestionsAdapter:
@@ -215,7 +215,7 @@ class DecisionClient:
             base_url=base_url,
             max_retries=MAX_RETRIES,
             http_client=httpx.AsyncClient(
-                follow_redirects=True,
+                follow_redirects=False,
                 limits=httpx.Limits(
                     max_connections=MAX_CONNECTIONS,
                     max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
@@ -231,6 +231,8 @@ class DecisionClient:
             body=self.adapter.body(model, policy, text, image),
             options={'headers': self.adapter.headers(image)},
         )
+        if not isinstance(response, dict):
+            raise ValueError(f'决策服务返回了非 JSON 对象: {type(response).__name__}')
         return self.adapter.parse(response)
 
 

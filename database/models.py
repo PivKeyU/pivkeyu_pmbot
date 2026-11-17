@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import aiosqlite
@@ -6,6 +7,25 @@ from .db_manager import db_manager
 from config import config
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_str() -> str:
+    return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+
+
+_tg_monitor_locks: dict[tuple[str, int], asyncio.Lock] = {}
+
+
+def _get_tg_monitor_lock(monitor_id: int) -> asyncio.Lock:
+    key = (str(db_manager.db_path), int(monitor_id))
+    lock = _tg_monitor_locks.get(key)
+    if lock is None:
+        if len(_tg_monitor_locks) >= 512:
+            for k in [k for k, v in _tg_monitor_locks.items() if not v.locked()]:
+                _tg_monitor_locks.pop(k, None)
+        lock = asyncio.Lock()
+        _tg_monitor_locks[key] = lock
+    return lock
 
 # 拦截消息篮（filtered_messages）的保留策略。两条并用：
 #   * 按时间：超过 RETENTION_DAYS 天的记录会被清理
@@ -56,6 +76,7 @@ async def get_user(user_id: int):
             return None
 
 async def add_user(user_id: int, username: str, first_name: str, last_name: str = None, language_code: str = None):
+    now = _utc_now_str()
     async with db_manager.get_connection() as db:
         await db.execute('''
             INSERT INTO users
@@ -67,10 +88,11 @@ async def add_user(user_id: int, username: str, first_name: str, last_name: str 
                 last_name = excluded.last_name,
                 language_code = excluded.language_code,
                 last_active = excluded.last_active
-        ''', (user_id, username, first_name, last_name, language_code, datetime.now()))
+        ''', (user_id, username, first_name, last_name, language_code, now))
         await db.commit()
 
 async def update_user_profile(user_id: int, username: str, first_name: str, last_name: str = None, language_code: str = None):
+    now = _utc_now_str()
     async with db_manager.get_connection() as db:
         await db.execute(
             '''
@@ -78,7 +100,7 @@ async def update_user_profile(user_id: int, username: str, first_name: str, last
             SET username = ?, first_name = ?, last_name = ?, language_code = ?, last_active = ?
             WHERE user_id = ?
             ''',
-            (username, first_name, last_name, language_code, datetime.now(), user_id)
+            (username, first_name, last_name, language_code, now, user_id)
         )
         await db.commit()
 
@@ -135,7 +157,6 @@ async def save_message(user_id: int, message_id: int, content: str, direction: s
     （转发到论坛后由 Telegram 返回），供 get_pending_reply_topics 做预览匹配。
     """
     async with db_manager.get_connection() as db:
-        await _ensure_messages_dest_column(db)
         await db.execute('''
             INSERT INTO messages
             (user_id, message_id, content, direction, media_type, media_file_id, dest_message_id, thread_id,
@@ -342,8 +363,13 @@ async def add_to_blacklist(user_id: int, reason: str, blocked_by: int, permanent
             (user_id,)
         )
         await db.execute('''
-            INSERT OR REPLACE INTO blacklist (user_id, reason, blocked_by, permanent)
+            INSERT INTO blacklist (user_id, reason, blocked_by, permanent)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                reason = excluded.reason,
+                blocked_by = excluded.blocked_by,
+                permanent = excluded.permanent,
+                blocked_at = CURRENT_TIMESTAMP
         ''', (user_id, reason, blocked_by, 1 if permanent else 0))
         await db.commit()
 
@@ -476,7 +502,7 @@ async def get_message_stats() -> dict:
             row = await cursor.fetchone()
             total = row[0] if row else 0
         async with db.execute(
-            "SELECT COUNT(*) FROM messages WHERE date(created_at) = date('now')"
+            "SELECT COUNT(*) FROM messages WHERE created_at >= date('now')"
         ) as cursor:
             row = await cursor.fetchone()
             today = row[0] if row else 0
@@ -492,11 +518,8 @@ async def get_conversation_summaries(limit: int = 20, offset: int = 0, query: st
     where_clauses = [_CONVERSATION_VISIBLE_SQL]
     params = []
     if query:
-        where_clauses.append(
-            '(CAST(u.user_id AS TEXT) LIKE ? OR u.username LIKE ? OR u.first_name LIKE ?)'
-        )
-        like = f'%{query}%'
-        params = [like, like, like]
+        where_clauses.append(_USER_MATCH_SQL)
+        params = _user_match_params(query)
     where_sql = 'WHERE ' + ' AND '.join(where_clauses)
 
     async with db_manager.get_connection() as db:
@@ -539,11 +562,8 @@ async def get_conversation_summaries_count(query: str = None) -> int:
     where_clauses = [_CONVERSATION_VISIBLE_SQL]
     params = []
     if query:
-        where_clauses.append(
-            '(CAST(u.user_id AS TEXT) LIKE ? OR u.username LIKE ? OR u.first_name LIKE ?)'
-        )
-        like = f'%{query}%'
-        params = [like, like, like]
+        where_clauses.append(_USER_MATCH_SQL)
+        params = _user_match_params(query)
     where_sql = 'WHERE ' + ' AND '.join(where_clauses)
     async with db_manager.get_connection() as db:
         async with db.execute(f'SELECT COUNT(*) FROM users u {where_sql}', params) as cursor:
@@ -627,7 +647,7 @@ async def get_all_users_paginated(limit: int = 5, offset: int = 0, query: str = 
             return items
 
 
-async def update_user_profile(user_id: int, note: str, tags: list) -> bool:
+async def update_user_metadata(user_id: int, note: str, tags: list) -> bool:
     async with db_manager.get_connection() as db:
         cursor = await db.execute(
             'UPDATE users SET note = ?, tags = ? WHERE user_id = ?',
@@ -1634,15 +1654,8 @@ async def record_runtime_status(
     if not name:
         return
 
+    ok_flag = 1 if ok else 0
     async with db_manager.get_connection() as db:
-        async with db.execute(
-            'SELECT consecutive_failures FROM runtime_status WHERE name = ?',
-            (name,),
-        ) as cursor:
-            row = await cursor.fetchone()
-            previous_failures = int(row[0]) if row else 0
-
-        failures = 0 if ok else previous_failures + 1
         await db.execute('''
             INSERT INTO runtime_status (
                 name, category, last_run_at, last_success_at, last_error_at, last_error,
@@ -1652,7 +1665,7 @@ async def record_runtime_status(
                 ?, ?, CURRENT_TIMESTAMP,
                 CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END,
                 CASE WHEN ? THEN NULL ELSE CURRENT_TIMESTAMP END,
-                ?, ?, ?, ?, CURRENT_TIMESTAMP
+                ?, ?, ?, CASE WHEN ? THEN 0 ELSE 1 END, CURRENT_TIMESTAMP
             )
             ON CONFLICT(name) DO UPDATE SET
                 category = excluded.category,
@@ -1671,17 +1684,21 @@ async def record_runtime_status(
                 END,
                 last_duration_ms = excluded.last_duration_ms,
                 last_sent_count = excluded.last_sent_count,
-                consecutive_failures = excluded.consecutive_failures,
+                consecutive_failures = CASE
+                    WHEN ? THEN 0
+                    ELSE runtime_status.consecutive_failures + 1
+                END,
                 updated_at = CURRENT_TIMESTAMP
         ''', (
             name,
             category,
-            1 if ok else 0,
-            1 if ok else 0,
+            ok_flag,
+            ok_flag,
             '' if ok else str(error or '')[:1000],
             max(0, int(duration_ms or 0)),
             max(0, int(sent_count or 0)),
-            failures,
+            ok_flag,
+            ok_flag,
         ))
         await db.commit()
 
@@ -1848,19 +1865,23 @@ async def list_tg_group_monitors(enabled_only: bool = False):
             return [normalize_tg_monitor(_row_to_dict(cursor, row)) for row in rows]
 
 
-async def get_tg_group_monitor_for_chat(chat_id: int, listen_source: str):
+async def get_tg_group_monitors_for_chat(chat_id: int, listen_source: str):
     source = (listen_source or 'user_session').strip().lower()
     async with db_manager.get_connection() as db:
         async with db.execute('''
             SELECT * FROM tg_group_monitors
             WHERE chat_id = ? AND listen_source = ? AND enabled = 1
             ORDER BY id DESC
-            LIMIT 1
         ''', (int(chat_id), source)) as cursor:
-            row = await cursor.fetchone()
-            if not row:
-                return None
-            return normalize_tg_monitor(_row_to_dict(cursor, row))
+            rows = await cursor.fetchall()
+            if not rows:
+                return []
+            return [normalize_tg_monitor(_row_to_dict(cursor, row)) for row in rows]
+
+
+async def get_tg_group_monitor_for_chat(chat_id: int, listen_source: str):
+    monitors = await get_tg_group_monitors_for_chat(chat_id, listen_source)
+    return monitors[0] if monitors else None
 
 
 async def tg_monitor_allow_send(
@@ -1873,54 +1894,55 @@ async def tg_monitor_allow_send(
     min_interval_seconds = max(0, int(min_interval_seconds or 0))
     dedupe_window_seconds = max(0, int(dedupe_window_seconds or 0))
 
-    async with db_manager.get_connection() as db:
-        if min_interval_seconds > 0:
-            async with db.execute(
-                'SELECT sent_at_ts FROM tg_monitor_last_send WHERE monitor_id = ?',
-                (int(monitor_id),),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row and now_ts - float(row[0]) < min_interval_seconds:
-                    return False, f'min-interval({min_interval_seconds}s)'
+    async with _get_tg_monitor_lock(monitor_id):
+        async with db_manager.get_connection() as db:
+            if min_interval_seconds > 0:
+                async with db.execute(
+                    'SELECT sent_at_ts FROM tg_monitor_last_send WHERE monitor_id = ?',
+                    (int(monitor_id),),
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row and now_ts - float(row[0]) < min_interval_seconds:
+                        return False, f'min-interval({min_interval_seconds}s)'
 
-        if dedupe_window_seconds > 0:
-            async with db.execute('''
-                SELECT sent_at_ts FROM tg_monitor_recent
-                WHERE monitor_id = ? AND fingerprint = ?
-            ''', (int(monitor_id), fingerprint)) as cursor:
-                row = await cursor.fetchone()
-                if row and now_ts - float(row[0]) < dedupe_window_seconds:
+            if dedupe_window_seconds > 0:
+                async with db.execute('''
+                    SELECT sent_at_ts FROM tg_monitor_recent
+                    WHERE monitor_id = ? AND fingerprint = ?
+                ''', (int(monitor_id), fingerprint)) as cursor:
+                    row = await cursor.fetchone()
+                    if row and now_ts - float(row[0]) < dedupe_window_seconds:
+                        return False, f'dedupe({dedupe_window_seconds}s)'
+
+                await db.execute(
+                    'DELETE FROM tg_monitor_recent WHERE monitor_id = ? AND sent_at_ts < ?',
+                    (int(monitor_id), now_ts - dedupe_window_seconds),
+                )
+
+                # 原子去重：tg_monitor_recent 主键 (monitor_id, fingerprint) 保证并发
+                # 触发时（bot 监听 / user_session 监听）只有一个任务能插入成功，
+                # 冲突即代表该指纹刚刚已发送过，直接拒绝，避免 TOCTOU 重复推送。
+                cursor = await db.execute(
+                    'INSERT OR IGNORE INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts) VALUES (?, ?, ?)',
+                    (int(monitor_id), fingerprint, now_ts),
+                )
+                if cursor.rowcount == 0:
+                    await db.commit()
                     return False, f'dedupe({dedupe_window_seconds}s)'
+            else:
+                # dedupe 窗口为 0 时不拦截，仅记录最近指纹供 min_interval 参考
+                await db.execute('''
+                    INSERT INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(monitor_id, fingerprint) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
+                ''', (int(monitor_id), fingerprint, now_ts))
 
-            await db.execute(
-                'DELETE FROM tg_monitor_recent WHERE sent_at_ts < ?',
-                (now_ts - dedupe_window_seconds,),
-            )
-
-            # 原子去重：tg_monitor_recent 主键 (monitor_id, fingerprint) 保证并发
-            # 触发时（bot 监听 / user_session 监听）只有一个任务能插入成功，
-            # 冲突即代表该指纹刚刚已发送过，直接拒绝，避免 TOCTOU 重复推送。
-            cursor = await db.execute(
-                'INSERT OR IGNORE INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts) VALUES (?, ?, ?)',
-                (int(monitor_id), fingerprint, now_ts),
-            )
-            if cursor.rowcount == 0:
-                await db.commit()
-                return False, f'dedupe({dedupe_window_seconds}s)'
-        else:
-            # dedupe 窗口为 0 时不拦截，仅记录最近指纹供 min_interval 参考
             await db.execute('''
-                INSERT INTO tg_monitor_recent (monitor_id, fingerprint, sent_at_ts)
-                VALUES (?, ?, ?)
-                ON CONFLICT(monitor_id, fingerprint) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
-            ''', (int(monitor_id), fingerprint, now_ts))
-
-        await db.execute('''
-            INSERT INTO tg_monitor_last_send (monitor_id, sent_at_ts)
-            VALUES (?, ?)
-            ON CONFLICT(monitor_id) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
-        ''', (int(monitor_id), now_ts))
-        await db.commit()
+                INSERT INTO tg_monitor_last_send (monitor_id, sent_at_ts)
+                VALUES (?, ?)
+                ON CONFLICT(monitor_id) DO UPDATE SET sent_at_ts = excluded.sent_at_ts
+            ''', (int(monitor_id), now_ts))
+            await db.commit()
 
     return True, ''
 

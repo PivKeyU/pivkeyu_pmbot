@@ -69,7 +69,7 @@
 <details>
 <summary><strong>RSS 命令没反应怎么办？</strong></summary>
 
-RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_IDS` 中的用户可用；另外 `RSS_ENABLED` 默认 `false`，未开启时不会轮询推送（可在 `/manage` → RSS 功能管理中开启）。
+RSS 命令仅限私聊使用，且只有 `ADMIN_IDS` 与 `RSS_AUTHORIZED_USER_IDS` 中的用户可用；另外 `RSS_ENABLED` 默认 `false`，未开启时不会轮询推送（可在 `/manage` → RSS 订阅茶点管理 中开启）。
 
 </details>
 

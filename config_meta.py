@@ -155,7 +155,7 @@ META = [
     {
         'key': 'MAX_MESSAGES_PER_MINUTE', 'type': 'int', 'category': 'security',
         'label': '每分钟消息上限', 'hint': '触发限速后超速将进入黑名单流程',
-        'default': '30', 'restart': True, 'min': 1,
+        'default': '30', 'restart': False, 'min': 1,
     },
 
     # --- 运行参数 ---
@@ -194,7 +194,7 @@ META = [
     {
         'key': 'TG_PROXY', 'type': 'str', 'category': 'tg',
         'label': 'TG 代理', 'hint': '如 socks5://127.0.0.1:1080，修改后需重启进程',
-        'default': '', 'restart': True,
+        'default': '', 'restart': True, 'secret': True,
     },
     {
         'key': 'TG_MONITOR_ENABLED', 'type': 'bool', 'category': 'tg',

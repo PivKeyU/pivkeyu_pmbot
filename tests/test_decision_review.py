@@ -307,16 +307,20 @@ class ChatProvider:
 
 def _run_review(db_path, monkeypatch, scenario):
     async def main(fake, base_url):
-        await DatabaseManager(db_path).initialize()
-        monkeypatch.setattr(config, 'DECISION_BASE_URL', base_url)
-        service = ai_service.AIService()
-        chat = ChatProvider()
+        manager = DatabaseManager(db_path)
+        await manager.initialize()
+        try:
+            monkeypatch.setattr(config, 'DECISION_BASE_URL', base_url)
+            service = ai_service.AIService()
+            chat = ChatProvider()
 
-        async def get_provider():
-            return chat
+            async def get_provider():
+                return chat
 
-        monkeypatch.setattr(service, 'get_provider', get_provider)
-        await scenario(fake, service, chat)
+            monkeypatch.setattr(service, 'get_provider', get_provider)
+            await scenario(fake, service, chat)
+        finally:
+            await manager.close_all()
 
     _run_server(main)
 

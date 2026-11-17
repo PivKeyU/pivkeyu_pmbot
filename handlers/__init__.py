@@ -12,7 +12,7 @@ from config import config
 from utils.commands import names_for
 from network_test.commands import (
     ping_command, nexttrace_command, add_user_command, rm_user_command,
-    add_server_command, rm_server_command, install_nexttrace_command
+    add_server_command, rm_server_command, install_nexttrace_command, cancel_command
 )
 
 def _command_filters(extra=None):
@@ -51,6 +51,7 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler(names_for("addserver"), add_server_command, filters=_command_filters()))
     app.add_handler(CommandHandler(names_for("rmserver"), rm_server_command, filters=_command_filters()))
     app.add_handler(CommandHandler(names_for("install_nexttrace"), install_nexttrace_command, filters=_command_filters()))
+    app.add_handler(CommandHandler("cancel", cancel_command, filters=_command_filters()))
 
     if config.FORUM_GROUP_ID and config.ADMIN_IDS:
         app.add_handler(CommandHandler(names_for("help"), help_command, filters=_command_filters(filters.ChatType.PRIVATE)))
@@ -104,14 +105,14 @@ def register_handlers(app: Application):
 
         app.add_handler(MessageHandler(
             (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE |
-             filters.Document.ALL | filters.Sticker.ALL | filters.ANIMATION) &
+             filters.VIDEO_NOTE | filters.Document.ALL | filters.Sticker.ALL | filters.ANIMATION) &
             filters.UpdateType.MESSAGE & ~filters.COMMAND & filters.ChatType.PRIVATE,
             handle_message
         ))
         
         app.add_handler(MessageHandler(
             (filters.TEXT | filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE |
-             filters.Document.ALL | filters.ANIMATION) &
+             filters.VIDEO_NOTE | filters.Document.ALL | filters.ANIMATION) &
             filters.UpdateType.EDITED_MESSAGE & filters.ChatType.PRIVATE,
             handle_edited_private_message
         ))

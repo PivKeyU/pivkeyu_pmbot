@@ -68,9 +68,11 @@ def patched_config(monkeypatch):
     monkeypatch.setattr(config, 'TURNSTILE_SECRET_KEY', 'secret-key')
     verification.pending_verifications.clear()
     miniapp._sessions.clear()
+    miniapp._used_admin_init_hashes.clear()
     yield
     verification.pending_verifications.clear()
     miniapp._sessions.clear()
+    miniapp._used_admin_init_hashes.clear()
 
 
 async def _with_client(tmp_path, scenario):
@@ -90,6 +92,7 @@ async def _with_client(tmp_path, scenario):
     finally:
         await client.close()
         await http_session.close()
+        await db_manager.close_all()
 
 
 def _registered_routes(app):

@@ -483,6 +483,25 @@ async def trigger_watchtower_update() -> tuple[bool, str]:
     return False, f"watchtower 没答应呢（{detail}），主人看看它的日志嘛。"
 
 
+async def trigger_and_remember_watchtower_update() -> tuple[bool, str]:
+    """在触发 Watchtower 重建前先记住远端 digest，失败时自动回滚基线。"""
+    previous = await db.get_app_meta(IMAGE_DIGEST_META_KEY)
+    recorded = False
+    try:
+        repo, tag = resolve_image()
+        digest = await fetch_remote_digest(repo, tag)
+        if digest:
+            await remember_current_digest(digest)
+            recorded = True
+    except Exception:
+        logger.debug("触发前获取远端镜像指纹失败，继续触发 Watchtower", exc_info=True)
+
+    triggered, message = await trigger_watchtower_update()
+    if not triggered and recorded:
+        await db.set_app_meta(IMAGE_DIGEST_META_KEY, previous or "")
+    return triggered, message
+
+
 def _post_watchtower_update(url: str, token: str) -> tuple[int, str]:
     """同步 POST（在 ``asyncio.to_thread`` 里跑）。"""
     request = urllib.request.Request(

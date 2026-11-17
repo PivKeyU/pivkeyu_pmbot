@@ -33,8 +33,8 @@ nano docker-compose.yml
 > - `--http-api-periodic-polls`: **不要删掉这一项**。启用 `--http-api-update` 会默认关闭周期性轮询，原来那条 `--interval 3600` 会静默失效；加上它才能“定时检查 + 手动触发”两者共存。
 > - `expose: "8080"`: 只开放给同一个 Compose 网络里的服务（机器人按 `http://watchtower:8080` 访问），不发布到宿主机网卡。
 > - `pivkeyu-pmbot`: 容器名，如果自定义过，记得修改。
-> - `max-size`： 单个日志文件最大 10MB
-> - `max-file`： 最多保留 3 个日志文件
+> - `max-size`： 单个日志文件最大 5MB
+> - `max-file`： 最多保留 2 个日志文件
 
 4. 使用 Docker Compose 运行:
 ```bash
@@ -43,7 +43,7 @@ docker compose up -d
 
 ## HTTP API 模式：从机器人面板触发更新
 
-除了每小时定时检查，机器人还能主动触发一次更新：在私聊里发 `/updatebot`（或打开 `/panel` → 运行状态 / 安全更新），点「检查镜像更新」查询是否有新镜像，再点「确认更新」请求 Watchtower 执行 `POST /v1/update`，拉镜像并重建容器。
+除了每小时定时检查，机器人还能主动触发一次更新：在私聊里发 `/upgrade`（或打开 `/manage` → 运行状态 / 安全更新，以及 Web 面板的「更新部署」），点「检查镜像更新」查询是否有新镜像，再点「确认更新」请求 Watchtower 执行 `POST /v1/update`，拉镜像并重建容器。
 
 需要手动验证接口时，因为它只 `expose` 在 Compose 网络内（宿主机上 `curl localhost:8080` 是不通的），得再从同一个网络里发一个请求：
 
@@ -68,7 +68,8 @@ docker run --rm --network watchtower_default curlimages/curl \
 > 2、请不要将私聊机器人的 Token 应用到 Watchtower 通知机器人！  
 > 3、请新建一个机器人专用于通知用途！
 
-### 一、在 .env 配置中，删除下列参数的#注释。
+### 一、在 .env 和 docker-compose.yml 中启用通知配置
+为避免将机器人的 `BOT_TOKEN` / AI Key 等敏感变量注入 Watchtower，通知变量请同时在 `.env` 和 `watchtower/docker-compose.yml`（`watchtower.environment`）取消下列参数的 `#` 注释：
 - WATCHTOWER_NOTIFICATIONS
 - WATCHTOWER_NOTIFICATION_URL
 

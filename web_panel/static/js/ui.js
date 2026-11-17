@@ -6,7 +6,6 @@ export function el(tag, attrs = {}, ...children) {
     if (value === null || value === undefined || value === false) continue;
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = value;
-    else if (key === 'html') node.innerHTML = value;
     else if (key === 'style' && typeof value === 'object') Object.assign(node.style, value);
     else if (key === 'dataset') Object.assign(node.dataset, value);
     else if (key.startsWith('on') && typeof value === 'function') {

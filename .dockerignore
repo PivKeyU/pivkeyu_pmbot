@@ -4,14 +4,19 @@
 # 没有它的时候 `COPY . .` 会把 .git 指针、__pycache__、本地数据库、.env
 # 全部塞进镜像层——既增大体积，也可能把本地密钥带进公开发布的镜像。
 
-# git 元数据（worktree 下是个指针文件，主仓下是整个 .git 目录）
+# git 与 CI 元数据（worktree 下是个指针文件，主仓下是整个 .git 目录）
 .git
 .gitignore
+.github/
 
 # 本地密钥与配置（绝不能进镜像）
 .env
 .env.*
 !.env.example
+
+# 打包产物与临时工具目录
+dist/
+.codex/
 
 # 本地运行时数据（数据库、订阅文件、监控缓存）
 data/*.db
@@ -53,7 +58,6 @@ logs/
 
 # 测试（运行时不需要）
 tests/
-.pytest_cache
 
 # 文档和截图运行时用不到
 docs/

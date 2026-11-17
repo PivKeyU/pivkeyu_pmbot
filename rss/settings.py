@@ -1,6 +1,8 @@
 import json
 import logging
+import os
 from pathlib import Path
+import tempfile
 from typing import Any, Dict, Optional, Callable
 from config import config
 
@@ -18,6 +20,7 @@ _state: Dict[str, Any] = {
 # 检查间隔变化时的回调（由 rss/__init__ 的 setup 注册，
 # 用于面板修改间隔后按新间隔重建定时任务）
 _check_interval_changed_callback: Optional[Callable[[int], None]] = None
+_enabled_changed_callback: Optional[Callable[[bool], None]] = None
 
 
 def _load_state() -> None:
@@ -29,13 +32,28 @@ def _load_state() -> None:
             if isinstance(loaded, dict):
                 _state.update(loaded)
     except Exception as exc:
-        print(f"加载 RSS 设置失败: {exc}")
+        logger.warning("加载 RSS 设置失败: %s", exc)
 
 
 def _save_state() -> None:
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as file:
-        json.dump(_state, file, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(dir=str(SETTINGS_FILE.parent), prefix=".rss_settings_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            json.dump(_state, file, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, SETTINGS_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def set_enabled_callback(callback: Optional[Callable[[bool], None]]) -> None:
+    """注册开关变化回调，保证面板与 CLI 修改 enabled 时同步启停后台检查任务。"""
+    global _enabled_changed_callback
+    _enabled_changed_callback = callback
 
 
 def is_enabled() -> bool:
@@ -43,8 +61,11 @@ def is_enabled() -> bool:
 
 
 def set_enabled(value: bool) -> None:
-    _state["enabled"] = bool(value)
+    enabled = bool(value)
+    _state["enabled"] = enabled
     _save_state()
+    if _enabled_changed_callback is not None:
+        _enabled_changed_callback(enabled)
 
 
 def get_data_file() -> str:

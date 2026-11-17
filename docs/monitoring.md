@@ -58,7 +58,7 @@ CSS 选择器自动解析页面条目（标题、链接、正文、价格、库�
 
 ## RSS 订阅推送
 
-RSS 功能默认关闭，先在 `.env` 设置 `RSS_ENABLED=true`（或 `/manage` → RSS 订阅茶点管理 中开启），重启后：
+RSS 功能默认关闭，可在 `.env` 设置 `RSS_ENABLED=true` 后重启，或在 `/manage` → RSS 订阅茶点管理 / Web 面板「RSS / 监控」中直接开启并立即生效：
 
 ```bash
 /rss_add https://example.com/feed.xml

@@ -219,9 +219,14 @@ function blockDialog(onDone, presetUserId = '') {
       el('button', {
         class: 'btn danger',
         onClick: async () => {
+          const rawId = userIdInput.value.trim();
+          if (!/^-?\d+$/.test(rawId) || Number(rawId) === 0) {
+            toast('请输入有效的非零数字用户 ID', 'error');
+            return;
+          }
           try {
             const result = await api.post('/api/blacklist', {
-              user_id: Number(userIdInput.value.trim()),
+              user_id: Number(rawId),
               reason: reasonInput.value.trim(),
               permanent: permanent.checked,
             });
@@ -260,9 +265,14 @@ function exemptionDialog(onDone) {
       el('button', {
         class: 'btn primary',
         onClick: async () => {
+          const rawId = userIdInput.value.trim();
+          if (!/^-?\d+$/.test(rawId) || Number(rawId) === 0) {
+            toast('请输入有效的非零数字用户 ID', 'error');
+            return;
+          }
           try {
             await api.post('/api/exemptions', {
-              user_id: Number(userIdInput.value.trim()),
+              user_id: Number(rawId),
               days: Number(daysInput.value || 7),
               reason: reasonInput.value.trim(),
               permanent: permanent.checked,
@@ -296,16 +306,20 @@ export default {
     container.appendChild(searchBar(resetAndLoad));
     container.appendChild(body);
 
+    let loadSeq = 0;
     async function load() {
+      const seq = ++loadSeq;
+      const isCurrent = () => seq === loadSeq;
       clear(body);
       body.appendChild(spinner());
 
       try {
-        if (state.tab === 'users') await loadUsers();
-        else if (state.tab === 'blacklist') await loadBlacklist();
-        else if (state.tab === 'exemptions') await loadExemptions();
-        else await loadFiltered();
+        if (state.tab === 'users') await loadUsers(isCurrent);
+        else if (state.tab === 'blacklist') await loadBlacklist(isCurrent);
+        else if (state.tab === 'exemptions') await loadExemptions(isCurrent);
+        else await loadFiltered(isCurrent);
       } catch (err) {
+        if (!isCurrent()) return;
         clear(body);
         body.appendChild(el('div', { class: 'card muted small' }, err.message));
       }
@@ -398,8 +412,9 @@ export default {
       });
     }
 
-    async function loadUsers() {
+    async function loadUsers(isCurrent = () => true) {
       const data = await api.get(listUrl('/api/users', page));
+      if (!isCurrent()) return;
       const statusCell = (row) => [
         row.is_blacklisted ? badge('黑名单', 'danger') : badge('正常', 'ok'),
         row.exempted ? badge('免审查', 'accent') : null,
@@ -498,8 +513,9 @@ export default {
       renderSelection();
     }
 
-    async function loadBlacklist() {
+    async function loadBlacklist(isCurrent = () => true) {
       const data = await api.get(listUrl('/api/blacklist', page));
+      if (!isCurrent()) return;
       clear(body);
       body.appendChild(el('div', { class: 'card' },
         el('div', { class: 'card-head' },
@@ -567,11 +583,12 @@ export default {
       );
     }
 
-    async function loadExemptions() {
+    async function loadExemptions(isCurrent = () => true) {
       const [data, appeals] = await Promise.all([
         api.get(listUrl('/api/exemptions', page)),
         api.get(listUrl('/api/review-appeals', appealPage)),
       ]);
+      if (!isCurrent()) return;
       clear(body);
       if (appeals.total > 0) body.appendChild(appealsCard(appeals));
       body.appendChild(el('div', { class: 'card' },
@@ -605,8 +622,9 @@ export default {
       ));
     }
 
-    async function loadFiltered() {
+    async function loadFiltered(isCurrent = () => true) {
       const data = await api.get(listUrl('/api/filtered', page));
+      if (!isCurrent()) return;
       clear(body);
       body.appendChild(el('div', { class: 'card' },
         el('div', { class: 'card-head' },

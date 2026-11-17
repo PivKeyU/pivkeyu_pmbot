@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 TG_MONITOR_TASK_KEY = "tg_monitor_user_session_task"
 TG_MONITOR_CLIENT_KEY = "tg_monitor_user_session_client"
 SUMMARY_MAX_CHARS = 900
+_DISCOVERED_CACHE_TTL = 600.0
+_discovered_chat_cache: dict[int, float] = {}
 
 
 @dataclass
@@ -41,7 +43,23 @@ class MonitorHit:
 
 
 def _split_words(raw_value: str) -> list[str]:
-    return [item.strip() for item in (raw_value or "").replace(",", "\n").splitlines() if item.strip()]
+    return [item.strip() for item in (raw_value or "").replace("，", ",").replace(",", "\n").splitlines() if item.strip()]
+
+
+async def _record_discovered_chat_cached(chat_id: int, title: str, username: str) -> None:
+    if config.FORUM_GROUP_ID and int(chat_id) == config.FORUM_GROUP_ID:
+        return
+    now = time.monotonic()
+    last_seen = _discovered_chat_cache.get(chat_id)
+    if last_seen is not None and now - last_seen < _DISCOVERED_CACHE_TTL:
+        return
+    if len(_discovered_chat_cache) >= 2000:
+        for cid in [k for k, ts in _discovered_chat_cache.items() if now - ts >= _DISCOVERED_CACHE_TTL][:1000]:
+            _discovered_chat_cache.pop(cid, None)
+        if len(_discovered_chat_cache) >= 2000:
+            _discovered_chat_cache.clear()
+    _discovered_chat_cache[chat_id] = now
+    await db.record_discovered_tg_chat(chat_id, title, username)
 
 
 def _keyword_hits(text: str, keywords: Iterable[str]) -> list[str]:
@@ -146,25 +164,36 @@ async def _notify_hit(application: Application, monitor: dict, message, hits: li
     return sent_count
 
 
-async def _match_monitor(message, listen_source: str) -> MonitorHit | None:
+async def _match_monitors(message, listen_source: str) -> list[MonitorHit]:
     chat_id = int(getattr(message.chat, "id"))
-    monitor = await db.get_tg_group_monitor_for_chat(chat_id, listen_source)
-    if not monitor:
-        return None
+    monitors = await db.get_tg_group_monitors_for_chat(chat_id, listen_source)
+    if not monitors:
+        return []
 
     text = _message_text(message)
     if not text:
-        return None
+        return []
 
-    exclude_hits = _keyword_hits(text, monitor.get("exclude_keywords") or [])
-    if exclude_hits:
-        return None
+    matched: list[MonitorHit] = []
+    for monitor in monitors:
+        exclude_hits = _keyword_hits(text, monitor.get("exclude_keywords") or [])
+        if exclude_hits:
+            continue
+        keywords = monitor.get("keywords") or []
+        if not keywords:
+            # 关键词留空表示匹配该群/频道的全部文本消息（与 Web UI「留空表示全部」一致）
+            hits = ["(全部消息)"]
+        else:
+            hits = _keyword_hits(text, keywords)
+            if not hits:
+                continue
+        matched.append(MonitorHit(monitor=monitor, hits=hits, text=text))
+    return matched
 
-    hits = _keyword_hits(text, monitor.get("keywords") or [])
-    if not hits:
-        return None
 
-    return MonitorHit(monitor=monitor, hits=hits, text=text)
+async def _match_monitor(message, listen_source: str) -> MonitorHit | None:
+    hits = await _match_monitors(message, listen_source)
+    return hits[0] if hits else None
 
 
 async def handle_bot_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -172,41 +201,43 @@ async def handle_bot_group_message(update: Update, context: ContextTypes.DEFAULT
     if not message or not message.chat:
         return False
 
-    # 跳过机器人自己的论坛话题群，避免污染 /watch_tg discovered 发现列表（其余监听逻辑保持不变）
-    if not (config.FORUM_GROUP_ID and int(message.chat.id) == config.FORUM_GROUP_ID):
-        await db.record_discovered_tg_chat(
-            int(message.chat.id),
-            str(getattr(message.chat, "title", "") or message.chat.id),
-            str(getattr(message.chat, "username", "") or ""),
-        )
+    # 跳过机器人自己的论坛话题群，且内存 TTL 去重以减少高频群聊 DB 写入
+    await _record_discovered_chat_cached(
+        int(message.chat.id),
+        str(getattr(message.chat, "title", "") or message.chat.id),
+        str(getattr(message.chat, "username", "") or ""),
+    )
 
-    hit = await _match_monitor(message, "bot")
-    if not hit:
+    hits = await _match_monitors(message, "bot")
+    if not hits:
         return False
 
-    fp = _fingerprint(message, hit.monitor, hit.hits)
-    allowed, reason = await db.tg_monitor_allow_send(
-        hit.monitor["id"],
-        fp,
-        hit.monitor.get("min_interval_seconds") or 0,
-        hit.monitor.get("dedupe_window_seconds") or 0,
-        time.time(),
-    )
-    if not allowed:
-        logger.info("TG bot 监听跳过 monitor=%s reason=%s", hit.monitor.get("name"), reason)
-        return True
+    handled_any = False
+    for hit in hits:
+        fp = _fingerprint(message, hit.monitor, hit.hits)
+        allowed, reason = await db.tg_monitor_allow_send(
+            hit.monitor["id"],
+            fp,
+            hit.monitor.get("min_interval_seconds") or 0,
+            hit.monitor.get("dedupe_window_seconds") or 0,
+            time.time(),
+        )
+        if not allowed:
+            logger.info("TG bot 监听跳过 monitor=%s reason=%s", hit.monitor.get("name"), reason)
+            continue
 
-    sent_count = await _notify_hit(context.application, hit.monitor, message, hit.hits)
-    await db.record_runtime_status(
-        f"tg:{hit.monitor['name']}",
-        "tg_monitor",
-        True,
-        sent_count=sent_count,
-    )
-    return True
+        sent_count = await _notify_hit(context.application, hit.monitor, message, hit.hits)
+        await db.record_runtime_status(
+            f"tg:{hit.monitor['name']}",
+            "tg_monitor",
+            True,
+            sent_count=sent_count,
+        )
+        handled_any = True
+    return handled_any or bool(hits)
 
 
-def _build_pseudo_message(event: Any) -> Any | None:
+async def _build_pseudo_message(event: Any) -> Any | None:
     raw_message = getattr(event, "message", None)
     if raw_message is None:
         return None
@@ -220,18 +251,34 @@ def _build_pseudo_message(event: Any) -> Any | None:
         return None
 
     chat = getattr(event, "chat", None)
+    if chat is None and callable(getattr(event, "get_chat", None)):
+        try:
+            chat = await event.get_chat()
+        except Exception:
+            chat = None
+
+    sender = getattr(event, "sender", None)
+    if sender is None and callable(getattr(event, "get_sender", None)):
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+
     sender_id = getattr(event, "sender_id", None)
+    if sender_id is None and sender is not None:
+        sender_id = getattr(sender, "id", None)
+
     return SimpleNamespace(
         chat=SimpleNamespace(
             id=chat_id,
-            title=str(getattr(chat, "title", "") or chat_id),
+            title=str(getattr(chat, "title", "") or getattr(chat, "first_name", "") or chat_id),
             username=str(getattr(chat, "username", "") or ""),
         ),
         from_user=SimpleNamespace(
             id=int(sender_id) if sender_id is not None else 0,
-            first_name="",
-            last_name="",
-            username="",
+            first_name=str(getattr(sender, "first_name", "") or ""),
+            last_name=str(getattr(sender, "last_name", "") or ""),
+            username=str(getattr(sender, "username", "") or ""),
         ),
         text=text,
         caption=None,
@@ -267,56 +314,55 @@ def _build_telethon_proxy(proxy_url: str):
 
 
 async def _handle_user_session_event(application: Application, event: Any) -> None:
-    pseudo = _build_pseudo_message(event)
+    pseudo = await _build_pseudo_message(event)
     if pseudo is None:
         return
 
-    # 跳过机器人自己的论坛话题群，避免污染 /watch_tg discovered 发现列表（其余监听逻辑保持不变）
-    if not (config.FORUM_GROUP_ID and int(pseudo.chat.id) == config.FORUM_GROUP_ID):
-        await db.record_discovered_tg_chat(
-            int(pseudo.chat.id),
-            str(getattr(pseudo.chat, "title", "") or pseudo.chat.id),
-            str(getattr(pseudo.chat, "username", "") or ""),
-        )
-
-    hit = await _match_monitor(pseudo, "user_session")
-    if not hit:
-        return
-
-    fp = _fingerprint(pseudo, hit.monitor, hit.hits)
-    allowed, reason = await db.tg_monitor_allow_send(
-        hit.monitor["id"],
-        fp,
-        hit.monitor.get("min_interval_seconds") or 0,
-        hit.monitor.get("dedupe_window_seconds") or 0,
-        time.time(),
+    # 跳过机器人自己的论坛话题群，且内存 TTL 去重避免高频写入 SQLite
+    await _record_discovered_chat_cached(
+        int(pseudo.chat.id),
+        str(getattr(pseudo.chat, "title", "") or pseudo.chat.id),
+        str(getattr(pseudo.chat, "username", "") or ""),
     )
-    if not allowed:
-        logger.info("TG user_session 监听跳过 monitor=%s reason=%s", hit.monitor.get("name"), reason)
+
+    hits = await _match_monitors(pseudo, "user_session")
+    if not hits:
         return
 
-    start = time.monotonic()
-    sent_count = 0
-    try:
-        sent_count = await _notify_hit(application, hit.monitor, pseudo, hit.hits)
-        duration_ms = int((time.monotonic() - start) * 1000)
-        await db.record_runtime_status(
-            f"tg:{hit.monitor['name']}",
-            "tg_monitor",
-            True,
-            duration_ms=duration_ms,
-            sent_count=sent_count,
+    for hit in hits:
+        fp = _fingerprint(pseudo, hit.monitor, hit.hits)
+        allowed, reason = await db.tg_monitor_allow_send(
+            hit.monitor["id"],
+            fp,
+            hit.monitor.get("min_interval_seconds") or 0,
+            hit.monitor.get("dedupe_window_seconds") or 0,
+            time.time(),
         )
-    except Exception as exc:
-        duration_ms = int((time.monotonic() - start) * 1000)
-        await db.record_runtime_status(
-            f"tg:{hit.monitor['name']}",
-            "tg_monitor",
-            False,
-            duration_ms=duration_ms,
-            error=str(exc),
-        )
-        raise
+        if not allowed:
+            logger.info("TG user_session 监听跳过 monitor=%s reason=%s", hit.monitor.get("name"), reason)
+            continue
+
+        start = time.monotonic()
+        try:
+            sent_count = await _notify_hit(application, hit.monitor, pseudo, hit.hits)
+            duration_ms = int((time.monotonic() - start) * 1000)
+            await db.record_runtime_status(
+                f"tg:{hit.monitor['name']}",
+                "tg_monitor",
+                True,
+                duration_ms=duration_ms,
+                sent_count=sent_count,
+            )
+        except Exception as exc:
+            duration_ms = int((time.monotonic() - start) * 1000)
+            await db.record_runtime_status(
+                f"tg:{hit.monitor['name']}",
+                "tg_monitor",
+                False,
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+            raise
 
 
 async def _user_session_loop(application: Application) -> None:
@@ -332,39 +378,47 @@ async def _user_session_loop(application: Application) -> None:
         logger.warning("TG_API_ID 必须是整数，TG 用户会话监听不会启动。")
         return
 
-    proxy = _build_telethon_proxy(config.TG_PROXY)
-    client = TelegramClient(
-        StringSession(config.TG_API_SESSION),
-        api_id,
-        config.TG_API_HASH,
-        proxy=proxy,
-    )
-    application.bot_data[TG_MONITOR_CLIENT_KEY] = client
+    backoff = 5
+    while True:
+        proxy = _build_telethon_proxy(config.TG_PROXY)
+        client = TelegramClient(
+            StringSession(config.TG_API_SESSION),
+            api_id,
+            config.TG_API_HASH,
+            proxy=proxy,
+        )
+        application.bot_data[TG_MONITOR_CLIENT_KEY] = client
 
-    @client.on(events.NewMessage)  # type: ignore[misc]
-    async def on_new_message(event: Any) -> None:
-        try:
-            await _handle_user_session_event(application, event)
-        except Exception:
-            logger.exception("处理 TG 用户会话监听消息失败")
+        @client.on(events.NewMessage)  # type: ignore[misc]
+        async def on_new_message(event: Any) -> None:
+            try:
+                await _handle_user_session_event(application, event)
+            except Exception:
+                logger.exception("处理 TG 用户会话监听消息失败")
 
-    try:
-        await client.start()
-        logger.info("TG 用户会话监听已启动。")
-        await db.record_runtime_status("tg:user_session_listener", "tg_monitor", True)
-        await client.run_until_disconnected()
-    except asyncio.CancelledError:
-        logger.info("TG 用户会话监听已取消。")
-        raise
-    except Exception as exc:
-        logger.exception("TG 用户会话监听异常退出。")
-        await db.record_runtime_status("tg:user_session_listener", "tg_monitor", False, error=str(exc))
-    finally:
         try:
-            await client.disconnect()
-        except Exception:
-            logger.exception("断开 TG 用户会话监听失败。")
-        application.bot_data.pop(TG_MONITOR_CLIENT_KEY, None)
+            await client.start()
+            backoff = 5
+            logger.info("TG 用户会话监听已启动。")
+            await db.record_runtime_status("tg:user_session_listener", "tg_monitor", True)
+            await client.run_until_disconnected()
+            logger.warning("TG 用户会话监听连接已断开，%s 秒后尝试重连。", backoff)
+        except asyncio.CancelledError:
+            logger.info("TG 用户会话监听已取消。")
+            raise
+        except Exception as exc:
+            logger.exception("TG 用户会话监听异常退出，%s 秒后重连。", backoff)
+            await db.record_runtime_status("tg:user_session_listener", "tg_monitor", False, error=str(exc))
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.exception("断开 TG 用户会话监听失败。")
+            if application.bot_data.get(TG_MONITOR_CLIENT_KEY) is client:
+                application.bot_data.pop(TG_MONITOR_CLIENT_KEY, None)
+
+        await asyncio.sleep(backoff)
+        backoff = min(backoff * 2, 60)
 
 
 async def start_user_session_listener(application: Application) -> bool:
@@ -385,15 +439,21 @@ async def stop_user_session_listener(application: Application) -> bool:
     task = application.bot_data.pop(TG_MONITOR_TASK_KEY, None)
     client = application.bot_data.pop(TG_MONITOR_CLIENT_KEY, None)
     stopped = False
-    if task and not task.done():
-        task.cancel()
-        stopped = True
     if client:
         try:
             await client.disconnect()
             stopped = True
         except Exception:
-            logger.exception("停止 TG 用户会话监听失败。")
+            logger.exception("断开 TG 用户会话客户端失败。")
+    if task and not task.done():
+        task.cancel()
+        stopped = True
+        try:
+            await asyncio.wait_for(task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+        except Exception:
+            logger.exception("等待 TG 用户会话监听任务结束时出错。")
     return stopped
 
 

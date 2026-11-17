@@ -4,25 +4,31 @@ services:
     image: pivkeyu/pivkeyu_pmbot:latest
     restart: unless-stopped
     env_file:
-     - .env
+      - .env
+    environment:
+      - WEB_PANEL_HOST=0.0.0.0
+    ports:
+      - "127.0.0.1:18080:18080"
     volumes:
-     - ./data:/app/data
+      - ./data:/app/data
     depends_on:
       - watchtower
-     
+
   watchtower:
     image: containrrr/watchtower
     container_name: watchtower
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    env_file:
-      - .env
     environment:
+      # 只注入 Watchtower 自身需要的环境变量，避免把 BOT_TOKEN / API Key 等机密暴露给 Watchtower 容器。
       # 与 .env 里的 WATCHTOWER_HTTP_API_TOKEN 保持同一个值。
       # 用 ${VAR:?msg} 是故意的：没配 token 时 docker compose up 会直接报错退出，
-      # 而不是静默启动一个没有鉴权的更新接口。注意 env_file 不会喂给 compose 的 ${} 插值。
+      # 而不是静默启动一个没有鉴权的更新接口。
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_HTTP_API_TOKEN:?需要在 .env 里设置 WATCHTOWER_HTTP_API_TOKEN}
+      # 如需启用 Watchtower 更新完成通知，请在 .env 配置后取消下面两行注释：
+      # - WATCHTOWER_NOTIFICATIONS=${WATCHTOWER_NOTIFICATIONS:-}
+      # - WATCHTOWER_NOTIFICATION_URL=${WATCHTOWER_NOTIFICATION_URL:-}
     # expose 只对同一 compose 网络内的服务可见，不会暴露到宿主机网卡。
     expose:
       - "8080"

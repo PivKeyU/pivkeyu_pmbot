@@ -114,7 +114,9 @@ class DatabaseManager:
         return self._cond
 
     def ensure_data_directory(self):
-        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        dir_name = os.path.dirname(self.db_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
 
     def get_connection(self):
         return _PooledConnection(self)
@@ -130,17 +132,21 @@ class DatabaseManager:
                 raw = self._pool.popleft()
             else:
                 raw = await aiosqlite.connect(self.db_path)
-                # WAL：读写互不阻塞。默认的 rollback-journal 模式下写会阻塞读，
-                # 而本项目的连接池有 8 条连接并发读写，WAL 能显著降低锁竞争。
-                # journal_mode 是数据库级持久设置：首次执行后库文件永久切到 WAL，
-                # 后续连接再执行是幂等的空操作。
-                await raw.execute("PRAGMA journal_mode = WAL")
-                # NORMAL：WAL 下每个事务不再强制 fsync，由 WAL 的 checkpoint 保证持久性。
-                # 掉电最多丢最后一个事务，对聊天机器人可接受，换来明显更少的磁盘同步。
-                # 注意顺序：journal_mode = WAL 必须在本行之前。
-                await raw.execute("PRAGMA synchronous = NORMAL")
-                await raw.execute("PRAGMA foreign_keys = ON")
-                await raw.execute("PRAGMA busy_timeout = 5000")
+                try:
+                    # WAL：读写互不阻塞。默认的 rollback-journal 模式下写会阻塞读，
+                    # 而本项目的连接池有 8 条连接并发读写，WAL 能显著降低锁竞争。
+                    # journal_mode 是数据库级持久设置：首次执行后库文件永久切到 WAL，
+                    # 后续连接再执行是幂等的空操作。
+                    await raw.execute("PRAGMA journal_mode = WAL")
+                    # NORMAL：WAL 下每个事务不再强制 fsync，由 WAL 的 checkpoint 保证持久性。
+                    # 掉电最多丢最后一个事务，对聊天机器人可接受，换来明显更少的磁盘同步。
+                    # 注意顺序：journal_mode = WAL 必须在本行之前。
+                    await raw.execute("PRAGMA synchronous = NORMAL")
+                    await raw.execute("PRAGMA foreign_keys = ON")
+                    await raw.execute("PRAGMA busy_timeout = 5000")
+                except BaseException:
+                    await raw.close()
+                    raise
                 self._live += 1
             return raw
 
@@ -709,6 +715,12 @@ class DatabaseManager:
         if 'dest_message_id' not in message_columns:
             await db.execute('ALTER TABLE messages ADD COLUMN dest_message_id INTEGER')
         await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_dest ON messages(dest_message_id)')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_user_id_id ON messages(user_id, id)')
+        await db.execute(
+            'CREATE INDEX IF NOT EXISTS idx_message_mappings_user_created '
+            'ON message_mappings(user_id, created_at DESC, id DESC)'
+        )
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_filtered_at ON filtered_messages(filtered_at)')
 
         try:
             await db.execute('ALTER TABLE users ADD COLUMN blacklist_strikes INTEGER DEFAULT 0 NOT NULL')
@@ -755,9 +767,19 @@ class DatabaseManager:
             logging.warning(f"添加AI设置时出错: {e}")
 
         try:
+            from config import config
+
             default_settings = [
-                ('spam_keyword_filter_enabled', '0', '是否启用关键词广告拦截 (1=是, 0=否)'),
-                ('spam_keyword_auto_block', '1', '关键词广告拦截命中后是否自动拉黑 (1=是, 0=否)'),
+                (
+                    'spam_keyword_filter_enabled',
+                    '1' if config.SPAM_KEYWORD_FILTER_ENABLED else '0',
+                    '是否启用关键词广告拦截 (1=是, 0=否)',
+                ),
+                (
+                    'spam_keyword_auto_block',
+                    '1' if config.SPAM_KEYWORD_AUTO_BLOCK else '0',
+                    '关键词广告拦截命中后是否自动拉黑 (1=是, 0=否)',
+                ),
             ]
             for key, value, description in default_settings:
                 await db.execute(

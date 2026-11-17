@@ -1,8 +1,11 @@
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from database import models as db
+
+GIT_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -27,7 +30,8 @@ class SafeUpdateError(Exception):
     pass
 
 
-async def _git(repo_dir: Path, *args: str, check: bool = True) -> str:
+async def _git(repo_dir: Path, *args: str, check: bool = True, timeout: float = GIT_TIMEOUT_SECONDS) -> str:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     process = await asyncio.create_subprocess_exec(
         "git",
         "-C",
@@ -35,8 +39,19 @@ async def _git(repo_dir: Path, *args: str, check: bool = True) -> str:
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
-    stdout, stderr = await process.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        if isinstance(exc, asyncio.TimeoutError):
+            raise SafeUpdateError(f"git {' '.join(args[:2])} 超时（{int(timeout)} 秒）") from exc
+        raise
     out = stdout.decode("utf-8", errors="replace")
     err = stderr.decode("utf-8", errors="replace")
     if check and process.returncode != 0:
@@ -47,7 +62,9 @@ async def _git(repo_dir: Path, *args: str, check: bool = True) -> str:
 async def current_branch(repo_dir: Path) -> str:
     try:
         branch = (await _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
-        return branch or "main"
+        if not branch or branch == "HEAD":
+            return "main"
+        return branch
     except Exception:
         return "main"
 

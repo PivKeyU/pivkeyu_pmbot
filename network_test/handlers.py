@@ -1,9 +1,9 @@
 import ipaddress
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from .state import user_data
+from .state import user_data, track_task
 from .tasks import do_ping_in_background, do_nexttrace_in_background
-from .utils import schedule_delete_message, validate_target, check_is_admin
-from .config import SERVERS, save_config, ADMIN_USERS
+from .utils import schedule_delete_message, validate_target, validate_port, check_is_admin
+from .config import SERVERS, save_config, get_admin_users
 import asyncio
 from utils import copy as copy_text
 
@@ -13,7 +13,8 @@ def _who(user_id) -> str:
 
     ping / nexttrace 这类流程授权用户也能用，所以读者可能是客人。
     """
-    return copy_text.address(check_is_admin(user_id, ADMIN_USERS))
+    return copy_text.address(check_is_admin(user_id, get_admin_users()))
+
 
 async def callback_handler(update, context, answer_callback=None):
     query = update.callback_query
@@ -23,15 +24,17 @@ async def callback_handler(update, context, answer_callback=None):
     user_id = query.from_user.id
 
     if user_id not in user_data:
-        return False  
+        return False
 
-    data = query.data
-    
-    
+    data = query.data or ""
+
     if not data.startswith("nt_"):
         return False
 
     info = user_data[user_id]
+    if info.get("running"):
+        return True
+    user_data.touch(user_id)
     chat_id = info["chat_id"]
     message_id = info["message_id"]
 
@@ -126,97 +129,50 @@ async def callback_handler(update, context, answer_callback=None):
             return True
             
         if data == "nt_rmserver_cancel":
-            
+
             if info.get("from_panel"):
                 del user_data[user_id]
-                
-                return False  
+
+                return False
             else:
-                
+
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=copy_text.nt_remove_cancelled()
                 )
-                
+
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
                 )
                 del user_data[user_id]
                 return True
-            
-        
-        if info.get("confirm_delete"):
-            
-            server_idx = int(info["server_idx"])
-            
+
+        if data.startswith("nt_rmserver_") and data not in ("nt_rmserver_cancel", "nt_rmserver_confirm", "nt_rmserver_abort"):
+            try:
+                server_idx = int(data.split("_")[2])
+            except (IndexError, ValueError):
+                return True
+
             if server_idx < 0 or server_idx >= len(SERVERS):
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=copy_text.nt_server_index_stale()
                 )
-                
+
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
                 )
                 del user_data[user_id]
                 return True
-            
-            # 核对所选服务器与选择时记录的一致，防止列表变化后误删其他服务器
+
             server_info = SERVERS[server_idx]
-            if server_info['name'] != info.get('server_name') or server_info['host'] != info.get('server_host'):
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=copy_text.nt_server_list_stale()
-                )
-                context.application.create_task(
-                    schedule_delete_message(context, chat_id, message_id, delay=5)
-                )
-                del user_data[user_id]
-                return True
-            
-            removed_server = SERVERS.pop(server_idx)
-            save_config()
-            
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=copy_text.nt_server_removed(removed_server['name'], removed_server['host'])
-            )
-            
-            context.application.create_task(
-                schedule_delete_message(context, chat_id, message_id, delay=5)
-            )
-            del user_data[user_id]
-            return True
-            
-        
-        if data.startswith("nt_rmserver_") and data != "nt_rmserver_cancel" and data != "nt_rmserver_confirm" and data != "nt_rmserver_abort":
-            server_idx = int(data.split("_")[2])
-            
-            if server_idx < 0 or server_idx >= len(SERVERS):
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=copy_text.nt_server_index_stale()
-                )
-                
-                context.application.create_task(
-                    schedule_delete_message(context, chat_id, message_id, delay=5)
-                )
-                del user_data[user_id]
-                return True
-                
-            server_info = SERVERS[server_idx]
-            
-            
+
             info["server_idx"] = server_idx
             info["server_name"] = server_info['name']
             info["server_host"] = server_info['host']
-            
-            
+
             keyboard = [
                 [
                     InlineKeyboardButton("确认撤下", callback_data="nt_rmserver_confirm"),
@@ -224,7 +180,7 @@ async def callback_handler(update, context, answer_callback=None):
                 ]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
+
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
@@ -232,27 +188,27 @@ async def callback_handler(update, context, answer_callback=None):
                 reply_markup=reply_markup
             )
             return True
-        
-        
+
         if data == "nt_rmserver_confirm":
             server_idx = info.get("server_idx", -1)
-            
+
             if server_idx < 0 or server_idx >= len(SERVERS):
+                del user_data[user_id]
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=copy_text.nt_server_index_stale()
                 )
-                
+
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
                 )
-                del user_data[user_id]
                 return True
-                
+
             # 核对所选服务器与选择时记录的一致，防止列表变化后误删其他服务器
             server_info = SERVERS[server_idx]
             if server_info['name'] != info.get('server_name') or server_info['host'] != info.get('server_host'):
+                del user_data[user_id]
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
@@ -261,31 +217,22 @@ async def callback_handler(update, context, answer_callback=None):
                 context.application.create_task(
                     schedule_delete_message(context, chat_id, message_id, delay=5)
                 )
-                del user_data[user_id]
                 return True
-            
-            info["confirm_delete"] = True
-            
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=copy_text.with_deco(f"女仆正在替主人撤下服务器：{server_info['name']}... 稍等一下哦。", 'WAIT')
-            )
-            
-            
+
+            # 原子移除会话与列表项后再执行异步消息编辑，彻底避免双击重复删除
+            del user_data[user_id]
             removed_server = SERVERS.pop(server_idx)
             save_config()
-            
+
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text=copy_text.nt_server_removed(removed_server['name'], removed_server['host'])
             )
-            
+
             context.application.create_task(
                 schedule_delete_message(context, chat_id, message_id, delay=5)
             )
-            del user_data[user_id]
             return True
             
         if data == "nt_rmserver_abort":
@@ -340,14 +287,15 @@ async def callback_handler(update, context, answer_callback=None):
         if info.get("operation") == "ping":
             mode = info["mode"]
             if mode == "cmd":
+                info["running"] = True
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=copy_text.nt_ping_running()
                 )
-                context.application.create_task(
+                track_task(context.application.create_task(
                     do_ping_in_background(context, chat_id, server_info, info["target"], info["count"], user_id, message_id, _who(user_id))
-                )
+                ))
             elif mode == "interactive":
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
@@ -360,14 +308,15 @@ async def callback_handler(update, context, answer_callback=None):
             if mode == "cmd":
                 try:
                     ipaddress.ip_address(info["target"])
-                    trace_mode = info.get("trace_mode", "icmp")  
+                    trace_mode = info.get("trace_mode", "icmp")
+                    info["running"] = True
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
                         text=copy_text.nt_trace_running(_who(user_id), server_info['name'], info['target'], trace_mode)
                     )
-                    context.application.create_task(
+                    track_task(context.application.create_task(
                         do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode, _who(user_id))
-                    )
+                    ))
                 except ValueError:
                     keyboard = [
                         [
@@ -385,14 +334,15 @@ async def callback_handler(update, context, answer_callback=None):
             elif mode == "interactive":
                 try:
                     ipaddress.ip_address(info["target"])
-                    trace_mode = info.get("trace_mode", "icmp")  
+                    trace_mode = info.get("trace_mode", "icmp")
+                    info["running"] = True
                     await context.bot.edit_message_text(
                         chat_id=chat_id, message_id=message_id,
                         text=copy_text.nt_trace_running(_who(user_id), server_info['name'], info['target'], trace_mode)
                     )
-                    context.application.create_task(
+                    track_task(context.application.create_task(
                         do_nexttrace_in_background(context, chat_id, server_info, info["target"], "direct", user_id, message_id, trace_mode, _who(user_id))
-                    )
+                    ))
                 except ValueError:
                     await context.bot.edit_message_text(
                         chat_id=chat_id,
@@ -414,11 +364,12 @@ async def callback_handler(update, context, answer_callback=None):
                                                   text=copy_text.nt_ping_target_missing(_who(user_id)))
             return True
 
+        info["running"] = True
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id,
                                             text=copy_text.nt_ping_running())
-        context.application.create_task(
+        track_task(context.application.create_task(
             do_ping_in_background(context, chat_id, info["server_info"], info["target"], count, user_id, message_id, _who(user_id))
-        )
+        ))
         return True
     elif data.startswith("nt_iptype_"):
         if info.get("operation") != "nexttrace":
@@ -427,15 +378,16 @@ async def callback_handler(update, context, answer_callback=None):
             return True
         ip_type = "IPv4" if data == "nt_iptype_ipv4" else "IPv6"
         info["ip_type"] = ip_type
-        trace_mode = info.get("trace_mode", "icmp")  
+        trace_mode = info.get("trace_mode", "icmp")
+        info["running"] = True
         await context.bot.edit_message_text(
             chat_id=chat_id, message_id=message_id,
             text=copy_text.with_deco(
                 f"女仆收到请求啦，正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候...", 'WAIT')
         )
-        context.application.create_task(
+        track_task(context.application.create_task(
             do_nexttrace_in_background(context, chat_id, info["server_info"], info["target"], ip_type, user_id, message_id, trace_mode, _who(user_id))
-        )
+        ))
         return True
     
     return False  
@@ -443,13 +395,22 @@ async def callback_handler(update, context, answer_callback=None):
 async def handle_message(update, context):
     user_id = update.effective_user.id
     if user_id not in user_data:
-        return False  
-    
+        return False
+
     info = user_data[user_id]
-    
-    
+    if info.get("running"):
+        return True
+    user_data.touch(user_id)
+
+    raw_text = update.message.text if update.message else None
+    if not raw_text:
+        await update.message.reply_text(
+            copy_text.with_deco("请发送纯文本内容哦（或发送 /cancel 取消当前操作）。", 'ASK')
+        )
+        return True
+
     if info.get("operation") == "addserver":
-        text = update.message.text.strip()
+        text = raw_text.strip()
         
         
         if text.lower() == "/cancel":
@@ -517,8 +478,23 @@ async def handle_message(update, context):
             info["server_data"] = server_data
             info["prompt_message_id"] = msg.message_id  
             
-        elif step == 2:  
-            server_data["host"] = text
+        elif step == 2:
+            host_ok, host_err = validate_target(text, _who(user_id), allow_private=True)
+            if not host_ok:
+                reply_markup = None
+                if info.get("from_panel"):
+                    reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(copy_text.BTN_BACK_NETWORK_TEST, callback_data="panel_network_test")]
+                    ])
+                msg = await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=copy_text.with_deco_head(
+                        f"主机地址格式不对哦：{host_err}\n\n请重新输入服务器 IP 或域名：\n\n输入 /cancel 可随时取消", 'ERROR'),
+                    reply_markup=reply_markup
+                )
+                info["prompt_message_id"] = msg.message_id
+                return True
+            server_data["host"] = text.strip()
             from_panel = info.get("from_panel", False)
             reply_markup = None
             if from_panel:
@@ -528,16 +504,16 @@ async def handle_message(update, context):
             msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=copy_text.with_deco_head(
-                    f"步骤 3/5: 服务器 IP 已经记下啦（\"{text}\"）。\n\n请把 SSH 端口号告诉女仆哦（通常为 22）：\n\n输入 /cancel 可随时取消", 'OK'),
+                    f"步骤 3/5: 服务器 IP 已经记下啦（\"{server_data['host']}\"）。\n\n请把 SSH 端口号告诉女仆哦（通常为 22）：\n\n输入 /cancel 可随时取消", 'OK'),
                 reply_markup=reply_markup
             )
             info["step"] = 3
             info["server_data"] = server_data
-            info["prompt_message_id"] = msg.message_id  
-            
-        elif step == 3:  
-            try:
-                port = int(text)
+            info["prompt_message_id"] = msg.message_id
+
+        elif step == 3:
+            port_ok, port, port_err = validate_port(text)
+            if port_ok:
                 server_data["port"] = port
                 from_panel = info.get("from_panel", False)
                 reply_markup = None
@@ -553,8 +529,8 @@ async def handle_message(update, context):
                 )
                 info["step"] = 4
                 info["server_data"] = server_data
-                info["prompt_message_id"] = msg.message_id  
-            except ValueError:
+                info["prompt_message_id"] = msg.message_id
+            else:
                 from_panel = info.get("from_panel", False)
                 reply_markup = None
                 if from_panel:
@@ -564,7 +540,7 @@ async def handle_message(update, context):
                 msg = await context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=copy_text.with_deco_head(
-                        "端口号得写成数字哦，主人重新输入一个：\n\n输入 /cancel 可随时取消", 'ERROR'),
+                        f"{port_err} 主人重新输入一个（1~65535）：\n\n输入 /cancel 可随时取消", 'ERROR'),
                     reply_markup=reply_markup
                 )
                 info["prompt_message_id"] = msg.message_id  
@@ -660,9 +636,9 @@ async def handle_message(update, context):
         return True
 
     if not info.get("target"):
-        target = update.message.text.strip()
-        # 校验目标地址，防止 SSH 命令注入
-        ok, err = validate_target(target)
+        target = raw_text.strip()
+        # 校验目标地址，防止 SSH 命令注入（非管理员禁止测试内网/保留地址）
+        ok, err = validate_target(target, _who(user_id), allow_private=check_is_admin(user_id, get_admin_users()))
         if not ok:
             await update.message.reply_text(err)
             return True
@@ -688,16 +664,17 @@ async def handle_message(update, context):
         elif info.get("operation") == "nexttrace":
             try:
                 ipaddress.ip_address(target)
-                trace_mode = info.get("trace_mode", "icmp")  
+                trace_mode = info.get("trace_mode", "icmp")
+                info["running"] = True
                 await context.bot.edit_message_text(
                     chat_id=info["chat_id"],
                     message_id=info["message_id"],
                     text=copy_text.with_deco(
                         f"目标：{target} 是 IP 地址哦，女仆正在后台执行{('ICMP' if trace_mode == 'icmp' else 'TCP')}模式路由追踪，请稍候...", 'WAIT')
                 )
-                context.application.create_task(
+                track_task(context.application.create_task(
                     do_nexttrace_in_background(context, info["chat_id"], info["server_info"], target, "direct", user_id, info["message_id"], trace_mode, _who(user_id))
-                )
+                ))
             except ValueError:
                 keyboard = [
                     [

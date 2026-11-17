@@ -78,6 +78,8 @@ async def start(app) -> None:
 
 
 async def stop(app) -> None:
+    from . import ws
+    await ws.close_all_websockets()
     runner = app.bot_data.pop(RUNNER_KEY, None)
     if runner is not None:
         await runner.cleanup()

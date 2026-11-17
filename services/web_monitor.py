@@ -49,8 +49,9 @@ DEFAULT_IN_STOCK_WORDS = (
     "in stock", "add to cart", "add to bag", "buy now",
 )
 DEFAULT_OUT_OF_STOCK_WORDS = (
-    "缺货", "售罄", "无货", "已抢光", "已售完", "卖光了", "到货通知", "补货中", "暂时无法购买",
-    "sold out", "out of stock", "not in stock", "currently unavailable", "notify me",
+    "缺货", "售罄", "无货", "没有货", "未有货", "暂无货", "暂缺", "已抢光", "已售完", "卖光了",
+    "到货通知", "补货中", "暂时无法购买",
+    "sold out", "out of stock", "not in stock", "0 in stock", "currently unavailable", "notify me",
 )
 _PRICE_PATTERN = re.compile(r"(?:[¥￥$€£]|RMB|CNY|USD)\s?\d[\d,]*(?:\.\d+)?", re.IGNORECASE)
 _SCHEMA_IN_STOCK = ("instock", "limitedavailability", "onlineonly", "instoreonly")
@@ -136,14 +137,34 @@ def _extract_items(html_text: str, monitor: dict) -> list[WebItem]:
         nodes = [soup]
 
     items = []
+    seen_keys: dict[str, int] = {}
+    base_clean = url.split("#", 1)[0].rstrip("/")
     for idx, node in enumerate(nodes[:30]):
         title = _first_text(node, title_selector) or _clean_text(node.get_text(" ", strip=True))[:120] or monitor["name"]
-        link = _first_link(node, link_selector, url) or url
+        raw_link = ""
+        try:
+            el = node.select_one(link_selector) if link_selector else None
+            if el and el.get("href"):
+                href = str(el.get("href")).strip()
+                if href and not href.startswith("#") and not href.lower().startswith("javascript:"):
+                    raw_link = urljoin(url, href)
+        except Exception:
+            raw_link = ""
+        link = raw_link or _first_link(node, link_selector, url) or url
         text = _clean_text(node.get_text(" ", strip=True))
         price = _first_text(node, price_selector)
         stock = _first_text(node, stock_selector)
-        key_source = link or f"{title}:{idx}"
+        # 只有节点自身提取到了不同于页面原址的独立链接时才用链接作为 key，避免所有无链接条目哈希碰撞
+        if raw_link and raw_link.split("#", 1)[0].rstrip("/") != base_clean:
+            key_source = raw_link
+        else:
+            key_source = f"{title}:{text[:80]}:{idx}"
         key = hashlib.sha256(key_source.encode("utf-8", errors="ignore")).hexdigest()
+        if key in seen_keys:
+            seen_keys[key] += 1
+            key = hashlib.sha256(f"{key_source}#{seen_keys[key]}".encode("utf-8", errors="ignore")).hexdigest()
+        else:
+            seen_keys[key] = 0
         items.append(WebItem(key=key, title=title[:200], link=link, text=text[:2000], price=price, stock=stock))
     return items
 
@@ -160,13 +181,21 @@ def _words(raw: str, defaults: tuple[str, ...]) -> list[str]:
     return [word.lower() for word in parse_keywords(raw)] or list(defaults)
 
 
+def _match_stock_word(normalized: str, word: str) -> bool:
+    if not word:
+        return False
+    if word.isascii():
+        return bool(re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", normalized))
+    return word in normalized
+
+
 def _classify_stock(text: str, in_words: list[str], out_words: list[str]) -> tuple[str, str]:
     normalized = (text or "").lower()
     for word in out_words:
-        if word in normalized:
+        if _match_stock_word(normalized, word):
             return STOCK_OUT, word
     for word in in_words:
-        if word in normalized:
+        if _match_stock_word(normalized, word):
             return STOCK_IN, word
     return STOCK_UNKNOWN, ""
 
@@ -194,7 +223,7 @@ def _stock_from_structured_data(soup, keyword: str) -> StockResult | None:
     title = price = ""
     for script in soup.select('script[type="application/ld+json"]'):
         try:
-            data = json.loads(script.string or "")
+            data = json.loads(script.get_text() or "")
         except ValueError:
             continue
         for node in _walk_json(data):
@@ -225,6 +254,7 @@ def _stock_from_structured_data(soup, keyword: str) -> StockResult | None:
 def _product_scope(root, keyword: str, in_words: list[str], out_words: list[str]) -> str | None:
     """找到商品名所在的区域：从商品名往外扩，直到碰到库存字样；太大就停。"""
     fallback = None
+    best_text = None
     for text_node in root.find_all(string=True):
         if keyword not in str(text_node).lower():
             continue
@@ -237,9 +267,11 @@ def _product_scope(root, keyword: str, in_words: list[str], out_words: list[str]
                 break
             fallback = fallback or text
             if _classify_stock(text, in_words, out_words)[0] != STOCK_UNKNOWN:
-                return text
+                if best_text is None or len(text) < len(best_text):
+                    best_text = text
+                break
             element = element.parent
-    return fallback
+    return best_text if best_text is not None else fallback
 
 
 def detect_stock(html_text: str, monitor: dict) -> StockResult:
@@ -283,35 +315,120 @@ def detect_stock(html_text: str, monitor: dict) -> StockResult:
     return StockResult(state, title, price, evidence)
 
 
+_http_session: aiohttp.ClientSession | None = None
+_http_session_lock: asyncio.Lock | None = None
+DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+class _PublicPinnedResolver(aiohttp.abc.AbstractResolver):
+    """在建立 TCP 连接阶段完成一次性公网 IP 校验，从根本上阻止 DNS Rebinding（TOCTOU）。"""
+
+    async def resolve(self, host: str, port: int = 0, family: int = socket.AF_INET):
+        loop = asyncio.get_running_loop()
+        infos = await loop.getaddrinfo(host, port or 443, family=family, type=socket.SOCK_STREAM)
+        results = []
+        for fam, kind, proto, canonname, sockaddr in infos:
+            raw_ip = sockaddr[0].split("%")[0]
+            address = ipaddress.ip_address(raw_ip)
+            address = getattr(address, "ipv4_mapped", None) or address
+            if not address.is_global:
+                raise ValueError(f"网页监控/RSS 不允许访问内网或保留地址: {host} ({raw_ip})")
+            results.append({
+                "hostname": host,
+                "host": sockaddr[0],
+                "port": port,
+                "family": fam,
+                "proto": proto,
+                "flags": socket.AI_NUMERICHOST,
+            })
+        if not results:
+            raise ValueError(f"无法解析公网地址: {host}")
+        return results
+
+    async def close(self) -> None:
+        return None
+
+
+async def get_http_session() -> aiohttp.ClientSession:
+    global _http_session, _http_session_lock
+    if _http_session is not None and not _http_session.closed:
+        return _http_session
+    if _http_session_lock is None:
+        _http_session_lock = asyncio.Lock()
+    async with _http_session_lock:
+        if _http_session is None or _http_session.closed:
+            connector = aiohttp.TCPConnector(resolver=_PublicPinnedResolver(), limit=20)
+            _http_session = aiohttp.ClientSession(
+                connector=connector,
+                headers={"User-Agent": DEFAULT_UA},
+            )
+    return _http_session
+
+
+async def close_http_session() -> None:
+    global _http_session
+    if _http_session is not None and not _http_session.closed:
+        await _http_session.close()
+    _http_session = None
+
+
 async def _assert_public_url(url: str) -> None:
-    """拒绝内网、回环等非公网地址，防止监控地址被用来探测服务器内部服务。"""
+    """拒绝内网、回环等非公网地址，防止监控或订阅地址被用来探测服务器内部服务。"""
     parsed = urlsplit(url)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ValueError(f"网页监控地址不合法: {url}")
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"网页监控/RSS 地址不合法: {url}")
     loop = asyncio.get_running_loop()
     infos = await loop.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
     for info in infos:
         address = ipaddress.ip_address(info[4][0].split("%")[0])
         address = getattr(address, "ipv4_mapped", None) or address
         if not address.is_global:
-            raise ValueError(f"网页监控不允许访问内网地址: {parsed.hostname}")
+            raise ValueError(f"网页监控/RSS 不允许访问内网地址: {parsed.hostname}")
+
+
+async def fetch_public_bytes(
+    url: str,
+    *,
+    timeout_seconds: int = 20,
+    max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    headers: dict[str, str] | None = None,
+) -> tuple[bytes, int, str, str | None]:
+    """安全抓取公网 HTTP(S) 内容：每跳校验公网 IP + 连接期 DNS 固定 + 流式字节上限。"""
+    session = await get_http_session()
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    current = url
+    for _ in range(MAX_REDIRECTS + 1):
+        parsed = urlsplit(current)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"地址协议仅支持 http/https: {current}")
+        async with session.get(
+            current,
+            allow_redirects=False,
+            timeout=timeout,
+            headers=headers,
+        ) as response:
+            location = response.headers.get("Location")
+            if response.status in REDIRECT_STATUSES and location:
+                current = urljoin(str(response.url), location)
+                continue
+            response.raise_for_status()
+            content_len = response.headers.get("Content-Length")
+            if content_len and content_len.isdigit() and int(content_len) > max_bytes:
+                raise ValueError(f"响应体超过大小限制 ({int(content_len)} > {max_bytes} 字节)")
+            chunks = []
+            total = 0
+            async for chunk in response.content.iter_chunked(65536):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"响应流超过最大大小限制 ({max_bytes} 字节)")
+                chunks.append(chunk)
+            return b"".join(chunks), response.status, str(response.url), response.charset
+    raise ValueError(f"重定向次数过多: {url}")
 
 
 async def _fetch_html(url: str) -> str:
-    timeout = aiohttp.ClientTimeout(total=20)
-    headers = {"User-Agent": DEFAULT_UA}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-        # 手动跟随重定向：公网地址跳到内网时，每一跳都要重新检查
-        for _ in range(MAX_REDIRECTS + 1):
-            await _assert_public_url(url)
-            async with session.get(url, allow_redirects=False) as response:
-                location = response.headers.get("Location")
-                if response.status in REDIRECT_STATUSES and location:
-                    url = urljoin(str(response.url), location)
-                    continue
-                response.raise_for_status()
-                return await response.text(errors="replace")
-    raise ValueError(f"网页监控重定向次数过多: {url}")
+    raw, _status, _final_url, charset = await fetch_public_bytes(url, timeout_seconds=20)
+    return raw.decode(charset or "utf-8", errors="replace")
 
 
 def _build_notification(monitor: dict, item: WebItem, reasons: list[str], hits: list[str]) -> str:
@@ -349,15 +466,16 @@ def _build_restock_notification(monitor: dict, result: StockResult) -> str:
 
 async def preview_stock(monitor: dict) -> StockResult:
     """保存前试一次，看配置能不能判断出库存状态。"""
-    return detect_stock(await _fetch_html(monitor["url"]), monitor)
+    html_text = await _fetch_html(monitor["url"])
+    return await asyncio.to_thread(detect_stock, html_text, monitor)
 
 
-async def _check_stock(application: Application, monitor: dict, html_text: str) -> int:
-    """只有从缺货变成有货才推送；看不出状态时保留上次结果，防止页面抖动造成误报。"""
-    result = detect_stock(html_text, monitor)
+async def _check_stock(application: Application, monitor: dict, html_text: str) -> tuple[int, bool, str]:
+    """只有从缺货变成有货才推送；看不出状态时保留上次结果，防止页面抖动造成误报。返回 (sent, ok, error)。"""
+    result = await asyncio.to_thread(detect_stock, html_text, monitor)
     if result.state == STOCK_UNKNOWN:
         await db.update_web_monitor(monitor["id"], last_error=result.evidence)
-        return 0
+        return 0, False, result.evidence
 
     previous = await db.get_web_monitor_state(monitor["id"], STOCK_STATE_KEY)
     last_state = previous.get("stock") if previous else None
@@ -366,12 +484,17 @@ async def _check_stock(application: Application, monitor: dict, html_text: str) 
     )
     await db.update_web_monitor(monitor["id"], last_error="")
     if last_state is None or last_state == result.state:
-        return 0
+        return 0, True, ""
 
     sent_count = 0
     restocked = result.state == STOCK_IN
     if restocked and monitor.get("notify_telegram"):
-        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("去看看", url=monitor["url"])]])
+        url_val = str(monitor.get("url") or "")
+        keyboard = (
+            InlineKeyboardMarkup([[InlineKeyboardButton("去看看", url=url_val)]])
+            if url_val.lower().startswith(("http://", "https://"))
+            else None
+        )
         sent_count = await monitor_push.push(
             application.bot,
             monitor_push.resolve_targets(monitor, config.ADMIN_IDS),
@@ -386,127 +509,141 @@ async def _check_stock(application: Application, monitor: dict, html_text: str) 
         " · ".join(part for part in (result.title, result.price, result.evidence) if part),
         sent_count,
     )
-    return sent_count
+    return sent_count, True, ""
 
 
 # 按 monitor_id 区分的运行锁：防止定时轮询与手动触发并发执行同一监控时重复推送
 _run_locks: dict[int, asyncio.Lock] = {}
 _RUN_LOCK_MAX = 256
+_due_check_running = False
 
 
 def _get_run_lock(monitor_id: int) -> asyncio.Lock:
-    """获取指定监控的运行锁；锁表过大时清空重建，防止字典无限增长。"""
+    """获取指定监控的运行锁；超过上限时仅清理空闲锁，避免破坏持锁中的互斥。"""
     lock = _run_locks.get(monitor_id)
     if lock is None:
         if len(_run_locks) >= _RUN_LOCK_MAX:
-            _run_locks.clear()
+            for key in [k for k, existing in _run_locks.items() if not existing.locked()]:
+                _run_locks.pop(key, None)
         lock = asyncio.Lock()
         _run_locks[monitor_id] = lock
     return lock
 
 
 async def run_monitor(application: Application, monitor: dict) -> int:
-    # 非阻塞获取本监控的运行锁：获取失败说明已有实例在跑（定时轮询或手动触发），直接跳过本轮。
-    # 注意 timeout 不能为 0：Python 3.11 的 wait_for 对 timeout<=0 会立即判定超时（锁空闲也如此）
     lock = _get_run_lock(monitor["id"])
-    try:
-        await asyncio.wait_for(lock.acquire(), timeout=0.05)
-    except asyncio.TimeoutError:
+    if lock.locked():
         logger.info("网页监控 %s 已有实例在运行，跳过本轮。", monitor.get("name"))
         return 0
 
+    status_prefix = "stock" if monitor.get("monitor_type") == "stock" else "web"
+    status_name = f"{status_prefix}:{monitor.get('name') or monitor.get('id')}"
     start = time.monotonic()
     sent_count = 0
     notified_items = 0  # 按“条目命中数”计数（区别于 sent_count 的按管理员消息数）
-    try:
-        html_text = await _fetch_html(monitor["url"])
-        if monitor.get("monitor_type") == "stock":
-            sent_count = await _check_stock(application, monitor, html_text)
-            await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
+    async with lock:
+        try:
+            html_text = await _fetch_html(monitor["url"])
+            if monitor.get("monitor_type") == "stock":
+                sent_count, stock_ok, stock_error = await _check_stock(application, monitor, html_text)
+                await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
+                await db.record_runtime_status(
+                    status_name,
+                    "web",
+                    stock_ok,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                    sent_count=sent_count,
+                    error=stock_error,
+                )
+                return sent_count
+
+            items = await asyncio.to_thread(_extract_items, html_text, monitor)
+            keywords = monitor.get("keywords") or []
+            has_baseline = await db.has_web_monitor_state(monitor["id"])
+
+            for item in items:
+                previous = await db.get_web_monitor_state(monitor["id"], item.key)
+                hits = _keyword_hits(f"{item.title} {item.text}", keywords)
+                reasons = []
+                if has_baseline and previous is None and monitor.get("notify_on_new_item"):
+                    reasons.append("新条目")
+                if has_baseline and hits and monitor.get("notify_on_keyword"):
+                    reasons.append("关键词命中")
+                if previous and monitor.get("notify_on_change"):
+                    if previous.get("content_hash") != item.content_hash:
+                        reasons.append("内容变化")
+                    if item.price and previous.get("price") and previous.get("price") != item.price:
+                        reasons.append("价格变化")
+                    if item.stock and previous.get("stock") and previous.get("stock") != item.stock:
+                        reasons.append("库存变化")
+
+                await db.save_web_monitor_state(
+                    monitor["id"],
+                    item.key,
+                    item.title,
+                    item.link,
+                    item.content_hash,
+                    item.price,
+                    item.stock,
+                )
+
+                if reasons:
+                    pushed = 0
+                    if monitor.get("notify_telegram"):
+                        pushed = await monitor_push.push(
+                            application.bot,
+                            monitor_push.resolve_targets(monitor, config.ADMIN_IDS),
+                            _build_notification(monitor, item, reasons, hits),
+                        )
+                    await db.record_monitor_event(
+                        "web", monitor["name"], item.title, item.link, "、".join(reasons), pushed,
+                    )
+                    sent_count += pushed
+                    notified_items += 1
+                    if notified_items >= 5:
+                        break
+
+            await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql(), last_error="")
             await db.record_runtime_status(
-                f"stock:{monitor['name']}",
+                status_name,
                 "web",
                 True,
                 duration_ms=int((time.monotonic() - start) * 1000),
                 sent_count=sent_count,
             )
             return sent_count
-
-        items = _extract_items(html_text, monitor)
-        keywords = monitor.get("keywords") or []
-        has_baseline = await db.has_web_monitor_state(monitor["id"])
-
-        for item in items:
-            previous = await db.get_web_monitor_state(monitor["id"], item.key)
-            hits = _keyword_hits(f"{item.title} {item.text}", keywords)
-            reasons = []
-            if has_baseline and previous is None and monitor.get("notify_on_new_item"):
-                reasons.append("新条目")
-            if has_baseline and hits and monitor.get("notify_on_keyword"):
-                reasons.append("关键词命中")
-            if previous and monitor.get("notify_on_change"):
-                if previous.get("content_hash") != item.content_hash:
-                    reasons.append("内容变化")
-                if item.price and previous.get("price") and previous.get("price") != item.price:
-                    reasons.append("价格变化")
-                if item.stock and previous.get("stock") and previous.get("stock") != item.stock:
-                    reasons.append("库存变化")
-
-            await db.save_web_monitor_state(
-                monitor["id"],
-                item.key,
-                item.title,
-                item.link,
-                item.content_hash,
-                item.price,
-                item.stock,
+        except Exception as exc:
+            logger.exception("网页监控失败 monitor=%s", monitor.get("name"))
+            await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql(), last_error=str(exc)[:300])
+            await db.record_runtime_status(
+                status_name,
+                "web",
+                False,
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error=str(exc),
             )
-
-            if reasons:
-                pushed = 0
-                if monitor.get("notify_telegram"):
-                    pushed = await monitor_push.push(
-                        application.bot,
-                        monitor_push.resolve_targets(monitor, config.ADMIN_IDS),
-                        _build_notification(monitor, item, reasons, hits),
-                    )
-                await db.record_monitor_event(
-                    "web", monitor["name"], item.title, item.link, "、".join(reasons), pushed,
-                )
-                sent_count += pushed
-                notified_items += 1
-                if notified_items >= 5:
-                    break
-
-        await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql(), last_error="")
-        await db.record_runtime_status(
-            f"web:{monitor['name']}",
-            "web",
-            True,
-            duration_ms=int((time.monotonic() - start) * 1000),
-            sent_count=sent_count,
-        )
-        return sent_count
-    except Exception as exc:
-        logger.exception("网页监控失败 monitor=%s", monitor.get("name"))
-        await db.update_web_monitor(monitor["id"], last_error=str(exc)[:300])
-        await db.record_runtime_status(
-            f"web:{monitor.get('name') or monitor.get('id')}",
-            "web",
-            False,
-            duration_ms=int((time.monotonic() - start) * 1000),
-            error=str(exc),
-        )
-        return 0
-    finally:
-        lock.release()
+            return 0
 
 
 async def check_due_monitors(context: ContextTypes.DEFAULT_TYPE) -> None:
-    monitors = await db.list_due_web_monitors()
-    for monitor in monitors:
-        await db.update_web_monitor(monitor["id"], last_checked_at=_now_sql())
-        await run_monitor(context.application, monitor)
+    global _due_check_running
+    if _due_check_running:
+        return
+    _due_check_running = True
+    try:
+        monitors = await db.list_due_web_monitors()
+        if not monitors:
+            return
+        semaphore = asyncio.Semaphore(5)
+
+        async def _run_one(item: dict):
+            async with semaphore:
+                await db.update_web_monitor(item["id"], last_checked_at=_now_sql())
+                await run_monitor(context.application, item)
+
+        await asyncio.gather(*(_run_one(m) for m in monitors), return_exceptions=True)
+    finally:
+        _due_check_running = False
 
 
 def setup(app: Application) -> None:

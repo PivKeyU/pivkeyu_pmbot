@@ -61,8 +61,8 @@ async def retry_telegram_api(
                 raise
 
             if isinstance(exc, tg_error.RetryAfter):
-                # 限流等待时间同样受 max_delay 封顶，避免单次睡眠远超配置上限
-                delay = min(float(exc.retry_after), max_delay)
+                # 按 Telegram 要求等待，设宽松上限（300 秒）防止短截断后立即再次限流
+                delay = min(float(exc.retry_after) + 1.0, max(max_delay, 300.0))
                 logger.warning(
                     "遇到限流错误，等待 %s 秒后重试 (尝试 %s/%s)",
                     delay,

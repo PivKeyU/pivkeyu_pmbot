@@ -43,7 +43,13 @@ async def _check_token() -> None:
 
 
 async def _stop_after_delay(application) -> None:
+    global _restarting
     await asyncio.sleep(STOP_DELAY_SECONDS)
+    if broadcast.is_running():
+        logger.warning('等待停止期间发现广播正在运行，已取消本次重启。')
+        _restarting = False
+        await db.set_app_meta(NOTIFY_META_KEY, '')
+        return
     application.stop_running()
 
 
@@ -74,7 +80,14 @@ async def announce_restart(application) -> None:
     if not raw:
         return
     await db.set_app_meta(NOTIFY_META_KEY, '')
-    for chat_id in json.loads(raw):
+    try:
+        chat_ids = json.loads(raw)
+    except ValueError:
+        logger.warning('重启通知目标格式损坏，已忽略: %r', raw[:100])
+        return
+    if not isinstance(chat_ids, list):
+        return
+    for chat_id in chat_ids:
         try:
             await application.bot.send_message(
                 chat_id=chat_id, text=copy_text.with_deco(copy_text.RESTART_DONE, 'OK'))

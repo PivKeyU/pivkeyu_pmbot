@@ -1,3 +1,4 @@
+import asyncio
 import random
 import time
 from dataclasses import dataclass
@@ -11,6 +12,19 @@ from services import captcha_image
 from services.gemini_service import gemini_service
 
 pending_verifications = {}
+_MAX_PENDING_VERIFICATIONS = 5000
+_verification_locks: dict[int, asyncio.Lock] = {}
+
+
+def _get_verification_lock(user_id: int) -> asyncio.Lock:
+    lock = _verification_locks.get(user_id)
+    if lock is None:
+        if len(_verification_locks) >= _MAX_PENDING_VERIFICATIONS:
+            for uid in [uid for uid, lck in _verification_locks.items() if not lck.locked()]:
+                _verification_locks.pop(uid, None)
+        lock = asyncio.Lock()
+        _verification_locks[user_id] = lock
+    return lock
 
 # 验证方式：text = 常识文字题，image = 图片验证码，random = 每次随机二选一，
 # turnstile = Mini App 里的 Cloudflare Turnstile。
@@ -35,6 +49,9 @@ def _cleanup_expired_verifications() -> None:
     expired = [uid for uid, session in pending_verifications.items() if now > session.get('expires_at', now)]
     for uid in expired:
         del pending_verifications[uid]
+    while len(pending_verifications) > _MAX_PENDING_VERIFICATIONS:
+        oldest = next(iter(pending_verifications))
+        pending_verifications.pop(oldest, None)
 
 
 def miniapp_url() -> str:
@@ -67,7 +84,7 @@ async def _new_challenge(mode: str) -> dict:
     if mode == 'turnstile':
         return {'question': copy_text.VERIFY_TURNSTILE_INVITE, 'correct_answer': None, 'options': []}
     if mode == 'image':
-        return captcha_image.generate_image_challenge()
+        return await asyncio.to_thread(captcha_image.generate_image_challenge)
     return await gemini_service.generate_verification_challenge()
 
 
@@ -121,9 +138,10 @@ async def send_verification_prompt(message, prompt: VerificationPrompt, text: st
 
 
 async def create_verification(user_id: int) -> VerificationPrompt:
-    _cleanup_expired_verifications()
-    existing_attempts = pending_verifications.get(user_id, {}).get('attempts', 0)
-    return await _start_session(user_id, existing_attempts)
+    async with _get_verification_lock(user_id):
+        _cleanup_expired_verifications()
+        existing_attempts = pending_verifications.get(user_id, {}).get('attempts', 0)
+        return await _start_session(user_id, existing_attempts)
 
 
 def turnstile_pending(user_id: int) -> bool:
@@ -133,61 +151,66 @@ def turnstile_pending(user_id: int) -> bool:
 
 async def complete_turnstile(user_id: int) -> Optional[dict]:
     """Turnstile 校验通过后放行；返回被消费的会话，没有待完成的验证时返回 None。"""
-    if not turnstile_pending(user_id):
-        return None
-    session = pending_verifications.pop(user_id)
-    await db.update_user_verification(user_id, is_verified=True)
-    return session
+    async with _get_verification_lock(user_id):
+        if not turnstile_pending(user_id):
+            return None
+        session = pending_verifications.pop(user_id)
+        await db.update_user_verification(user_id, is_verified=True)
+        return session
 
 
 async def fallback_verification(user_id: int) -> Optional[VerificationPrompt]:
     """网页打不开时换成普通验证题；没有待完成的 Turnstile 验证时返回 None。"""
-    if not turnstile_pending(user_id):
-        return None
-    attempts = pending_verifications[user_id].get('attempts', 0)
-    return await _start_session(user_id, attempts, allow_turnstile=False)
+    async with _get_verification_lock(user_id):
+        if not turnstile_pending(user_id):
+            return None
+        attempts = pending_verifications[user_id].get('attempts', 0)
+        return await _start_session(user_id, attempts, allow_turnstile=False)
 
 
 async def verify_answer(user_id: int, answer: str):
-    _cleanup_expired_verifications()
+    async with _get_verification_lock(user_id):
+        _cleanup_expired_verifications()
 
-    if user_id not in pending_verifications:
-        return False, copy_text.with_deco("小验证已经过期或不见啦，请客人重新来一次。", 'ERROR'), False, None
+        if user_id not in pending_verifications:
+            return False, copy_text.with_deco("小验证已经过期或不见啦，请客人重新来一次。", 'ERROR'), False, None
 
-    verification = pending_verifications[user_id]
+        verification = pending_verifications[user_id]
 
-    if time.time() > verification['expires_at']:
+        if time.time() > verification['expires_at']:
+            del pending_verifications[user_id]
+            return False, copy_text.with_deco("小验证超时啦，请客人重新发送消息。", 'ERROR'), False, None
+
+        if verification.get('mode') == 'turnstile':
+            # 点到了换题前留下的旧按钮：不算答错，也不计入失败次数
+            return False, copy_text.with_deco("这道题作废啦，请用最新的验证按钮。", 'ERROR'), False, None
+
+        verification['attempts'] += 1
+
+        if answer == verification['answer']:
+            del pending_verifications[user_id]
+            await db.update_user_verification(user_id, is_verified=True)
+            return True, copy_text.with_deco("验证通过啦，女仆为客人开门。", 'OK'), False, None
+
+        if verification['attempts'] >= config.MAX_VERIFICATION_ATTEMPTS:
+            del pending_verifications[user_id]
+
+            await db.add_to_blacklist(user_id, reason="女仆小验证失败次数过多", blocked_by=config.BOT_ID)
+            message = copy_text.with_deco_head(
+                "哼，才不是女仆要为难客人呢……失败次数太多，女仆只能先把通道关上。\n\n"
+                "如果客人觉得是误会，重新发消息走一遍解封验证就好啦。",
+                'BLOCK'
+            )
+            return False, message, True, None
+
+        # 答错先使旧会话失效再异步换题，防止并发点击再次命中旧答案
+        attempts = verification['attempts']
         del pending_verifications[user_id]
-        return False, copy_text.with_deco("小验证超时啦，请客人重新发送消息。", 'ERROR'), False, None
-
-    if verification.get('mode') == 'turnstile':
-        # 点到了换题前留下的旧按钮：不算答错，也不计入失败次数
-        return False, copy_text.with_deco("这道题作废啦，请用最新的验证按钮。", 'ERROR'), False, None
-
-    verification['attempts'] += 1
-
-    if answer == verification['answer']:
-        del pending_verifications[user_id]
-        await db.update_user_verification(user_id, is_verified=True)
-        return True, copy_text.with_deco("验证通过啦，女仆为客人开门。", 'OK'), False, None
-
-    if verification['attempts'] >= config.MAX_VERIFICATION_ATTEMPTS:
-        del pending_verifications[user_id]
-
-        await db.add_to_blacklist(user_id, reason="女仆小验证失败次数过多", blocked_by=config.BOT_ID)
-        message = copy_text.with_deco_head(
-            "哼，才不是女仆要为难客人呢……失败次数太多，女仆只能先把通道关上。\n\n"
-            "如果客人觉得是误会，重新发消息走一遍解封验证就好啦。",
-            'BLOCK'
-        )
-        return False, message, True, None
-
-    # 答错换一道新题（随机模式下题型也会重新抽）；走到这里说明客人打不开网页，不再切回 Turnstile
-    new_prompt = await _start_session(user_id, verification['attempts'], allow_turnstile=False)
-    remaining = config.MAX_VERIFICATION_ATTEMPTS - verification['attempts']
-    # 首次答错保持温柔，第 2 次起升级为傲娇；{remaining} 次机会的真实信息不变
-    new_message = copy_text.verify_wrong(remaining, verification['attempts'])
-    return False, new_message, False, new_prompt
+        new_prompt = await _start_session(user_id, attempts, allow_turnstile=False)
+        remaining = config.MAX_VERIFICATION_ATTEMPTS - attempts
+        # 首次答错保持温柔，第 2 次起升级为傲娇；{remaining} 次机会的真实信息不变
+        new_message = copy_text.verify_wrong(remaining, attempts)
+        return False, new_message, False, new_prompt
 
 def is_verification_pending(user_id: int) -> tuple[bool, bool]:
     _cleanup_expired_verifications()

@@ -70,12 +70,31 @@ def verify_password(candidate: str) -> bool:
 
 
 def client_ip(request) -> str:
-    """取来源 IP。经反向代理时（WEB_PANEL_TRUST_PROXY=true）读 X-Forwarded-For 首段。"""
+    """取来源 IP。经反向代理时（WEB_PANEL_TRUST_PROXY=true）优先取最右可信非内网跳，防止伪造最左端绕过限速。"""
     if config.WEB_PANEL_TRUST_PROXY:
         forwarded = request.headers.get('X-Forwarded-For') or ''
         if forwarded:
-            return forwarded.split(',')[0].strip() or 'unknown'
+            parts = [p.strip() for p in forwarded.split(',') if p.strip()]
+            for candidate in reversed(parts):
+                try:
+                    addr = ipaddress.ip_address(candidate)
+                    if not (addr.is_private or addr.is_loopback or addr.is_link_local):
+                        return candidate
+                except ValueError:
+                    continue
+            if parts:
+                return parts[-1]
     return request.remote or 'unknown'
+
+
+def is_https_request(request) -> bool:
+    """判断请求外部协议是否为 HTTPS（兼容可信反向代理 X-Forwarded-Proto）。"""
+    if request.scheme == 'https':
+        return True
+    if config.WEB_PANEL_TRUST_PROXY:
+        proto = (request.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+        return proto == 'https'
+    return False
 
 
 def is_loopback_ip(ip: str) -> bool:
@@ -94,15 +113,32 @@ def login_lock_remaining(ip: str) -> int:
     if not record:
         return 0
     remaining = int(record.get('locked_until', 0) - time.time())
+    if remaining <= 0 and (time.time() - record.get('last_ts', 0)) > LOGIN_LOCK_SECONDS:
+        _login_failures.pop(ip, None)
     return remaining if remaining > 0 else 0
+
+
+def _purge_login_failures() -> None:
+    now = time.time()
+    for ip_key in [
+        k for k, rec in _login_failures.items()
+        if rec.get('locked_until', 0) <= now and (now - rec.get('last_ts', 0)) > LOGIN_LOCK_SECONDS
+    ]:
+        _login_failures.pop(ip_key, None)
+    while len(_login_failures) > 4096:
+        oldest = next(iter(_login_failures))
+        _login_failures.pop(oldest, None)
 
 
 def record_login_failure(ip: str) -> int:
     """记一次失败；连续失败达到上限后锁定。返回剩余锁定秒数。"""
-    record = _login_failures.setdefault(ip, {'count': 0, 'locked_until': 0})
+    _purge_login_failures()
+    now = time.time()
+    record = _login_failures.setdefault(ip, {'count': 0, 'locked_until': 0, 'last_ts': now})
     record['count'] += 1
+    record['last_ts'] = now
     if record['count'] >= LOGIN_MAX_FAILURES:
-        record['locked_until'] = time.time() + LOGIN_LOCK_SECONDS
+        record['locked_until'] = now + LOGIN_LOCK_SECONDS
         record['count'] = 0
     return login_lock_remaining(ip)
 

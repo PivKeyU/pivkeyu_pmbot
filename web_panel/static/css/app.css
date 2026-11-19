@@ -517,6 +517,75 @@ pre.result {
   .params-table .input { min-width: 0; }
 }
 
+/* ---------- 网盘 ---------- */
+
+.drive-file-input, .drive-copy-buffer {
+  position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; left: -9999px;
+}
+.drive-status { display: flex; flex-direction: column; gap: 6px; }
+.drive-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-dim); font-size: 13px; }
+.drive-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.drive-toolbar .input { flex: 1 1 180px; min-width: 0; }
+.drive-sort { flex: 0 0 auto; width: auto; }
+.drive-crumbs { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 10px; font-size: 13px; }
+.drive-crumbs a, .drive-crumbs button {
+  border: 0; background: none; padding: 2px 6px; border-radius: 8px; cursor: pointer;
+  color: var(--accent-strong); font: inherit; text-decoration: none;
+}
+.drive-crumbs a:hover, .drive-crumbs button:hover { background: var(--accent-soft); }
+.drive-main { position: relative; border: 2px dashed transparent; border-radius: var(--radius); transition: border-color .15s; }
+.drive-main.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.drive-drop-hint { color: var(--text-dim); font-size: 12px; }
+.drive-list { display: flex; flex-direction: column; }
+.drive-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.drive-item:last-child { border-bottom: 0; }
+.drive-item-main {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px;
+  border: 0; background: none; padding: 0; margin: 0; text-align: left;
+  color: inherit; font: inherit; cursor: pointer;
+}
+.drive-item-main:hover .drive-item-name { color: var(--accent-strong); }
+.drive-item-text { min-width: 0; display: flex; flex-direction: column; }
+.drive-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.drive-item-text small { color: var(--text-dim); font-size: 12px; }
+.drive-item-actions { display: flex; gap: 4px; flex: 0 0 auto; }
+.drive-icon {
+  flex: 0 0 40px; width: 40px; height: 40px; display: grid; place-items: center;
+  border-radius: 10px; background: var(--accent-soft); font-size: 20px;
+}
+.drive-icon.big { width: 96px; height: 96px; flex-basis: 96px; font-size: 48px; margin: 0 auto; }
+.drive-thumb { flex: 0 0 40px; width: 40px; height: 40px; object-fit: cover; border-radius: 10px; background: var(--accent-soft); }
+.drive-empty { padding: 32px 0; text-align: center; color: var(--text-dim); }
+.drive-detail { display: flex; flex-direction: column; gap: 12px; }
+.drive-preview { text-align: center; }
+.drive-preview img, .drive-preview video { max-width: 100%; max-height: 60vh; border-radius: 12px; }
+.drive-preview audio { width: 100%; }
+.drive-preview-empty { padding: 20px 0; color: var(--text-dim); text-align: center; }
+.drive-link-row { display: grid; grid-template-columns: 80px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.drive-link-label { color: var(--text-dim); font-size: 12px; }
+.drive-link-row .input { font-family: var(--mono); font-size: 12px; }
+.drive-queue { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.drive-queue:empty { display: none; }
+.drive-queue-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.drive-queue-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+.drive-queue-head span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.drive-progress { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--accent-soft); overflow: hidden; }
+.drive-progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+.drive-queue-item.done .drive-progress-bar { background: var(--ok); }
+.drive-queue-item.failed { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+.drive-queue-item.failed .drive-progress-bar { background: var(--danger); }
+
+@media (max-width: 600px) {
+  .drive-item { flex-wrap: wrap; }
+  .drive-item-main { flex-basis: 100%; }
+  .drive-item-actions { flex-wrap: wrap; margin-left: 50px; }
+  .drive-link-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .drive-link-label { grid-column: 1 / -1; }
+}
+
 /* ---------- Telegram Mini App ---------- */
 
 .miniapp-shell { min-height: 100vh; padding-bottom: calc(64px + env(safe-area-inset-bottom)); }

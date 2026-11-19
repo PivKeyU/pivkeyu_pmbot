@@ -14,6 +14,7 @@ import broadcastPage from './pages/broadcast.js';
 import feedsPage from './pages/feeds.js';
 import toolsPage from './pages/tools.js';
 import updatePage from './pages/update.js';
+import drivePage from './pages/drive.js';
 
 const root = document.getElementById('app');
 
@@ -37,6 +38,7 @@ const NAV = [
   { group: '总览', items: [
     { id: 'overview', label: '仪表盘', icon: '📊', page: overview },
     { id: 'conversations', label: '会话回复', icon: '💬', page: conversations },
+    { id: 'drive', label: '网盘', icon: '☁️', page: drivePage },
   ] },
   { group: '配置', items: [
     { id: 'config', label: '配置中心', icon: '⚙️', page: configPage },

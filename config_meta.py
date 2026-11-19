@@ -26,6 +26,7 @@ CATEGORIES = [
     ('tg', 'Telegram 监听'),
     ('update', '更新部署'),
     ('web', 'Web 面板'),
+    ('drive', '网盘'),
 ]
 
 META = [
@@ -275,6 +276,38 @@ META = [
         'key': 'MINIAPP_PUBLIC_URL', 'type': 'str', 'category': 'web',
         'label': 'Mini App 公网地址', 'hint': '填面板的 https 地址加 /miniapp，例如 https://panel.example.com/miniapp；留空则不启用 Mini App',
         'default': '', 'restart': True,
+    },
+
+    # --- 网盘 ---
+    {
+        'key': 'DRIVE_ENABLED', 'type': 'bool', 'category': 'drive',
+        'label': '启用网盘', 'hint': '关闭后机器人不再收文件，面板网盘页只读不可上传，已有直链继续可用',
+        'default': 'true', 'restart': False,
+    },
+    {
+        'key': 'DRIVE_STORAGE_CHAT_ID', 'type': 'int', 'category': 'drive',
+        'label': '存储频道 ID', 'hint': '私有频道 ID（-100 开头），机器人需是频道管理员；填 0 时文件暂存在管理员私聊里',
+        'default': '0', 'restart': False,
+    },
+    {
+        'key': 'DRIVE_PUBLIC_URL', 'type': 'str', 'category': 'drive',
+        'label': '直链域名', 'hint': '直链使用的 https 地址，例如 https://pm.example.com；留空时按 Mini App 地址推导',
+        'default': '', 'restart': False,
+    },
+    {
+        'key': 'DRIVE_AUTO_UPLOAD', 'type': 'bool', 'category': 'drive',
+        'label': '私聊自动入库', 'hint': '管理员私聊发图片或文件时自动存进网盘并回复直链',
+        'default': 'true', 'restart': False,
+    },
+    {
+        'key': 'DRIVE_MAX_UPLOAD_MB', 'type': 'int', 'category': 'drive',
+        'label': '单文件上限（MB）', 'hint': '官方 Bot API 只允许机器人取回 20MB 以内的文件，自建 Bot API 服务器可调大',
+        'default': '20', 'restart': False, 'min': 1, 'max': 2000,
+    },
+    {
+        'key': 'DRIVE_CACHE_MAX_MB', 'type': 'int', 'category': 'drive',
+        'label': '本地缓存上限（MB）', 'hint': '直链访问过的文件缓存在 data/drive_cache，超出后先清最久没用的',
+        'default': '1024', 'restart': False, 'min': 50, 'max': 102400,
     },
 ]
 

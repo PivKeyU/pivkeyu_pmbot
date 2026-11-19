@@ -222,6 +222,7 @@ class DatabaseManager:
             await self.create_review_appeals_table(db)
             await self.create_conversation_reads_table(db)
             await self.create_app_meta_table(db)
+            await self.create_drive_files_table(db)
             await self.migrate_database(db)
             await self.add_feature_columns(db)
             await self.create_monitor_events_table(db)
@@ -696,6 +697,42 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+    async def create_drive_files_table(self, db):
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS drive_files (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER,
+                name TEXT NOT NULL,
+                is_folder INTEGER NOT NULL DEFAULT 0,
+                size INTEGER NOT NULL DEFAULT 0,
+                mime_type TEXT,
+                extension TEXT,
+                token TEXT UNIQUE,
+                media_kind TEXT,
+                tg_chat_id INTEGER,
+                tg_message_id INTEGER,
+                tg_owned INTEGER NOT NULL DEFAULT 0,
+                tg_file_id TEXT,
+                tg_file_unique_id TEXT,
+                thumb_file_id TEXT,
+                uploader_id INTEGER,
+                source TEXT NOT NULL DEFAULT 'bot',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_drive_files_parent ON drive_files(parent_id, is_folder)')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS drive_copy_cleanup (
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                next_attempt INTEGER DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_id, message_id)
+            )
+        ''')
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_drive_cleanup_due ON drive_copy_cleanup(next_attempt)')
 
     async def get_filtered_messages_by_user(self, user_id, limit=5):
         async with self.get_connection() as db:

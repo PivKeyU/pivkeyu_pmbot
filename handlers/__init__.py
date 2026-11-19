@@ -7,6 +7,7 @@ from .command_handler import (
 from .user_handler import handle_message, handle_edited_private_message
 from .callback_handler import handle_callback
 from .admin_handler import handle_admin_reply, handle_edited_admin_message, view_filtered
+from .drive_handler import drive_command
 from services.tg_monitor import handle_bot_group_message
 from config import config
 from utils.commands import names_for
@@ -77,6 +78,7 @@ def register_handlers(app: Application):
         app.add_handler(CommandHandler(names_for("updatebot"), updatebot, filters=_command_filters()))
         app.add_handler(CommandHandler(names_for("restart"), restart_bot, filters=_command_filters()))
         app.add_handler(CommandHandler(names_for("restock"), restock, filters=_command_filters()))
+        app.add_handler(CommandHandler(names_for("drive"), drive_command, filters=_command_filters()))
         # 放在单独的分组里：只处理目录里没有的命令，已有命令继续走上面的处理器
         app.add_handler(MessageHandler(
             filters.UpdateType.MESSAGE & filters.ChatType.PRIVATE & filters.COMMAND,

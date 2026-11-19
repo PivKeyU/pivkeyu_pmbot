@@ -160,6 +160,19 @@
 | `TURNSTILE_SITE_KEY` | ❌ | 空 | Cloudflare Turnstile Site Key |
 | `TURNSTILE_SECRET_KEY` | ❌ | 空 | Cloudflare Turnstile Secret Key |
 
+## ☁️ 网盘 / 图床
+
+文件本体存在 Telegram，数据库只记目录结构和文件映射，详见 [Web 管理面板 → 网盘](web-panel.md#网盘图床)。
+
+| 变量 | 必填 | 默认值 | 说明 |
+| :--- | :---: | :--- | :--- |
+| `DRIVE_ENABLED` | ❌ | `true` | 是否启用网盘 |
+| `DRIVE_STORAGE_CHAT_ID` | ❌ | 空 | 存放文件的私有频道 ID，机器人需是频道管理员；留空则直接引用管理员私聊里的文件，面板上传的文件发到第一位管理员的私聊 |
+| `DRIVE_PUBLIC_URL` | ❌ | 空 | 直链使用的公网地址，例如 `https://pm.example.com`；留空时依次尝试 `MINIAPP_PUBLIC_URL`、当前访问地址 |
+| `DRIVE_AUTO_UPLOAD` | ❌ | `true` | 管理员私聊发图片或文件时自动存进网盘并回复直链 |
+| `DRIVE_MAX_UPLOAD_MB` | ❌ | `20` | 单文件上限（MB）；官方 Bot API 只允许机器人取回 20MB 以内的文件 |
+| `DRIVE_CACHE_MAX_MB` | ❌ | `1024` | 直链本地缓存上限（MB），缓存放在数据库同目录的 `drive_cache` |
+
 ## 🔑 获取必要信息
 
 1. **Bot Token**：与 [@BotFather](https://t.me/BotFather) 对话，使用 `/newbot` 创建机器人即可获得。
@@ -185,6 +198,7 @@
 | 网页监控 | 无需额外配置 | `/watch_web add <名称> <url> [关键词]` |
 | 补货监控 | 无需额外配置 | 面板「RSS / 监控 → 补货监控」，或 `/restock add <名称> <url> [商品关键词]` |
 | Mini App | `MINIAPP_PUBLIC_URL`（https） | 管理员点聊天框的「管理面板」，或发 `/mobile` |
+| 网盘 / 图床 | 默认开启；建议配置 `DRIVE_PUBLIC_URL` 和 `DRIVE_STORAGE_CHAT_ID` | 管理员私聊发图片或文件，或打开面板「网盘」页 |
 | Turnstile 人机验证 | Mini App 配置 + `TURNSTILE_SITE_KEY` + `TURNSTILE_SECRET_KEY` | 新用户自动触发 |
 | RSS 推送 | `RSS_ENABLED=true`（或面板开启） | `/rss_add <url>` |
 | 安全更新 | git 方式部署 | `/upgrade status` → `/upgrade apply` |

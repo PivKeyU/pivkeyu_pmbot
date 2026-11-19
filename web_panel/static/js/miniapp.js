@@ -12,6 +12,7 @@ import broadcastPage from './pages/broadcast.js';
 import feedsPage from './pages/feeds.js';
 import toolsPage from './pages/tools.js';
 import updatePage from './pages/update.js';
+import drivePage from './pages/drive.js';
 
 const root = document.getElementById('app');
 const telegram = window.Telegram && window.Telegram.WebApp;
@@ -22,6 +23,7 @@ const TURNSTILE_SCRIPT = 'https://challenges.cloudflare.com/turnstile/v0/api.js?
 const TABS = [
   { id: 'overview', label: '概览', icon: '📊', page: overview },
   { id: 'users', label: '用户', icon: '👥', page: usersPage },
+  { id: 'drive', label: '网盘', icon: '☁️', page: drivePage },
   { id: 'config', label: '配置', icon: '⚙️', page: configPage },
   { id: 'ai', label: 'AI', icon: '🤖', page: aiPage },
   { id: 'automation', label: '回复', icon: '💡', page: automation },
@@ -178,6 +180,11 @@ function renderAdmin(session) {
 
   routeHandler = renderRoute;
   window.addEventListener('hashchange', routeHandler);
+  /* 机器人按钮用 ?page=xxx 指定打开哪一页（哈希被 Telegram 用来传启动参数） */
+  const startPage = new URLSearchParams(location.search).get('page');
+  if (startPage && TABS.some((tab) => tab.id === startPage) && !/^#\/[a-z]/.test(location.hash)) {
+    history.replaceState(null, '', `${location.pathname}#/${startPage}`);
+  }
   renderRoute();
 }
 

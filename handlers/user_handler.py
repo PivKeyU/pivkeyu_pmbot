@@ -331,6 +331,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     is_admin_user = await db.is_admin(user.id)
 
+    if is_admin_user and config.DRIVE_AUTO_UPLOAD and update.message is not None:
+        from services import drive
+        from .drive_handler import has_media, reply_with_link
+
+        if drive.enabled() and has_media(update.message):
+            await reply_with_link(update.message, context.bot, user.id)
+            return
+
     if not is_admin_user:
         is_over_limit, was_warned = await rate_limiter.check_user_rate_limit(user.id)
 

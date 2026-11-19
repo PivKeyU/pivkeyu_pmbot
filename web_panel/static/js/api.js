@@ -61,6 +61,46 @@ export const api = {
   del: (path, body) => request('DELETE', path, body),
 };
 
+/* 上传单个文件（multipart 字段名 file），onProgress 收到 0~1 的进度 */
+export function upload(path, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${isMiniApp ? '/miniapp' : ''}${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('X-Requested-With', PANEL_HEADER);
+    if (miniAppToken) xhr.setRequestHeader('X-MiniApp-Token', miniAppToken);
+    if (onProgress) {
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) onProgress(event.loaded / event.total);
+      });
+    }
+    xhr.addEventListener('load', () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText);
+      } catch (err) {
+        payload = null;
+      }
+      if (xhr.status === 401) {
+        if (unauthorizedHandler) unauthorizedHandler();
+        reject(new ApiError((payload && payload.error) || '未登录或会话已过期', 401));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300 || (payload && payload.ok === false)) {
+        const fallback = xhr.status === 413 ? '文件太大，超过了服务器允许的大小' : `上传失败（HTTP ${xhr.status}）`;
+        reject(new ApiError((payload && payload.error) || fallback, xhr.status));
+        return;
+      }
+      resolve(payload ? payload.data : null);
+    });
+    xhr.addEventListener('error', () => reject(new ApiError('网络出错，上传没有完成', 0)));
+    xhr.addEventListener('abort', () => reject(new ApiError('上传已取消', 0)));
+    const form = new FormData();
+    form.append('file', file, file.name);
+    xhr.send(form);
+  });
+}
+
 export function connectEvents({ onEvent, onStatus }) {
   let socket = null;
   let heartbeat = null;

@@ -20,7 +20,7 @@ from config import config
 from database import models as db
 from database.db_manager import DatabaseManager
 from services import telegram_commands, verification, web_monitor
-from web_panel import api_admin, api_config, api_overview, keys, miniapp
+from web_panel import api_admin, api_config, api_drive, api_overview, keys, miniapp
 from web_panel.server import MINIAPP_API_PREFIX, MINIAPP_PREFIX, create_app as create_panel_app
 
 BOT_TOKEN = '123456:STUB'
@@ -121,7 +121,7 @@ def test_init_data_rejects_forgery_and_replay():
 
 def test_allowed_routes_exist_and_exclude_sensitive_interfaces():
     # 白名单写错时路由会静默消失，这里要求每一项都对应真实接口
-    tables = (api_overview.routes, api_config.routes, api_admin.routes)
+    tables = (api_overview.routes, api_config.routes, api_admin.routes, api_drive.routes)
     defined = {(route.method, route.path) for table in tables for route in table}
     assert miniapp.ALLOWED_ROUTES <= defined
 

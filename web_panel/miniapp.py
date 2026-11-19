@@ -25,7 +25,7 @@ from config import config
 from database import models as db
 from services import verification
 from utils import copy as copy_text
-from . import api_admin, api_config, api_overview, http_utils, keys
+from . import api_admin, api_config, api_drive, api_overview, http_utils, keys
 from .server import (
     MINIAPP_API_PREFIX, MINIAPP_PREFIX, STATIC_DIR, VERSIONED_STATIC_PREFIX,
     compute_asset_version, error_middleware, render_index,
@@ -147,6 +147,14 @@ ALLOWED_ROUTES = {
     ('POST', '/api/restart'),
     ('GET', '/api/update/auto'),
     ('PUT', '/api/update/auto'),
+    # 网盘
+    ('GET', '/api/drive/status'),
+    ('GET', '/api/drive/files'),
+    ('GET', '/api/drive/folders'),
+    ('POST', '/api/drive/folders'),
+    ('POST', '/api/drive/upload'),
+    ('PUT', '/api/drive/files/{file_id}'),
+    ('DELETE', '/api/drive/files/{file_id}'),
 }
 
 # 网页版 Telegram 用 iframe 嵌入 Mini App，所以这里不能沿用面板的 frame-ancestors 'none'
@@ -417,7 +425,7 @@ def create_app(application, http_session) -> web.Application:
     app[keys.HTTP_SESSION_KEY] = http_session
     app[keys.BROADCAST_TASKS_KEY] = keys.BROADCAST_TASKS
     app.add_routes(routes)
-    _add_allowed_routes(app, (api_overview.routes, api_config.routes, api_admin.routes))
+    _add_allowed_routes(app, (api_overview.routes, api_config.routes, api_admin.routes, api_drive.routes))
 
     asset_version = compute_asset_version()
 

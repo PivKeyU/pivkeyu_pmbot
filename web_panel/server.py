@@ -6,7 +6,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import api_admin, api_auth, api_config, api_conversations, api_overview, auth, http_utils, keys, ws
+from . import api_admin, api_auth, api_config, api_conversations, api_drive, api_overview, auth, http_utils, keys, ws
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +141,8 @@ def create_app(bot, http_session, application=None) -> web.Application:
     app.add_routes(api_config.routes)
     app.add_routes(api_conversations.routes)
     app.add_routes(api_admin.routes)
+    app.add_routes(api_drive.routes)
+    app.add_routes(api_drive.public_routes)
     app.add_routes(ws.routes)
     asset_version = compute_asset_version()
     app.router.add_get('/', make_index_handler(asset_version))

@@ -31,6 +31,7 @@ ADMIN_SECTIONS = (
         Command('mobile', '打开手机管理页', private_only=True),
         Command('manage', '打开管理面板'),
         Command('stats', '查看宅邸统计'),
+        Command('drive', '网盘：查看状态或把回复的文件存进网盘', '/drive（回复一条带文件的消息即可存入）'),
     )),
     ('用户', (
         Command('ban', '拉黑用户', '/ban [user_id] [理由]（话题里可省略 ID）'),

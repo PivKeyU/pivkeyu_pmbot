@@ -47,7 +47,7 @@ def parse_config_value(raw_value, type_name: str, key: str = ''):
         text = text.lower()
     if key in ('GEMINI_BASE_URL', 'ANTHROPIC_BASE_URL'):
         return text or None
-    if key in ('DECISION_BASE_URL', 'MINIAPP_PUBLIC_URL'):
+    if key in ('DECISION_BASE_URL', 'MINIAPP_PUBLIC_URL', 'DRIVE_PUBLIC_URL'):
         return text.rstrip('/')
     if key == 'WEB_PANEL_PASSWORD_SHA256':
         return text.lower()
@@ -124,6 +124,14 @@ class Config:
 
     # Mini App 挂在面板的 /miniapp/ 路径下，只带白名单接口；留空公网地址则不启动
     MINIAPP_PUBLIC_URL = os.getenv('MINIAPP_PUBLIC_URL', '').strip().rstrip('/')
+
+    # 网盘：文件本体存在 Telegram（存储频道或管理员私聊），数据库只记元数据，面板对外提供直链
+    DRIVE_ENABLED = _env_bool('DRIVE_ENABLED', True)
+    DRIVE_STORAGE_CHAT_ID = _env_int('DRIVE_STORAGE_CHAT_ID', 0)
+    DRIVE_PUBLIC_URL = os.getenv('DRIVE_PUBLIC_URL', '').strip().rstrip('/')
+    DRIVE_AUTO_UPLOAD = _env_bool('DRIVE_AUTO_UPLOAD', True)
+    DRIVE_MAX_UPLOAD_MB = _env_int('DRIVE_MAX_UPLOAD_MB', 20)
+    DRIVE_CACHE_MAX_MB = _env_int('DRIVE_CACHE_MAX_MB', 1024)
 
     # 镜像更新：services/image_update.py 直接读 os.environ，
     # 这里登记一份让面板能统一管理（覆盖时会同步写入 os.environ）

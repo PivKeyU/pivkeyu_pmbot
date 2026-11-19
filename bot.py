@@ -6,7 +6,7 @@ from handlers import register_handlers
 from rss import setup as setup_rss
 from database.db_manager import DatabaseManager
 from services.telegram_commands import register_bot_commands
-from services import auto_update, moderation, restart, tg_monitor, web_monitor
+from services import auto_update, drive, moderation, restart, tg_monitor, web_monitor
 import web_panel
 from utils import about
 
@@ -59,6 +59,7 @@ def main():
     web_monitor.setup(app)
     moderation.setup(app)
     auto_update.setup(app)
+    app.job_queue.run_repeating(drive.retry_cleanup, interval=60, first=10, name='drive_copy_cleanup')
     web_panel.setup(app)
 
     logging.info(about.startup_banner())
